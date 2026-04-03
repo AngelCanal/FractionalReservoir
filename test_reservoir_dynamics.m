@@ -19,7 +19,7 @@ fprintf('=================================================================\n\n')
 fprintf('Step 1: Setting up parameters...\n');
 
 % === Reservoir Architecture ===
-n = 210;                      % Total number of neurons (try: 20-200)
+n = 600;                      % Total number of neurons (try: 20-200)
 fraction_E = 0.5;            % Fraction of excitatory neurons (try: 0.3-0.5)
 
 % === Time Parameters ===
