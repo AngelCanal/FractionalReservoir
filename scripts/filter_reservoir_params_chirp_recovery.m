@@ -15,6 +15,14 @@ function viable_configs = filter_reservoir_params_chirp_recovery()
     %% Setup paths
     setup_paths();
 
+    %% Setup parallel pool
+    % Initialize parallel pool if it doesn't exist
+    poolobj = gcp('nocreate');
+    if isempty(poolobj)
+        fprintf('\nStarting parallel pool to run on all available cores...\n');
+        parpool;
+    end
+
     %% Fixed defaults
     defaults = struct();
     defaults.n             = 300;
@@ -162,35 +170,51 @@ end
 %  =========================================================================
 function [results, pass_table] = run_pair_scan(name1, vals1, name2, vals2, ...
                                                defaults, u_full, tu, dt)
-% RUN_PAIR_SCAN  Run a 2-D grid scan over two parameters.
+% RUN_PAIR_SCAN  Run a 2-D grid scan over two parameters using parallel pool.
 
     n1 = numel(vals1);
     n2 = numel(vals2);
     total = n1 * n2;
 
-    % Pre-allocate results struct array
-    emptyResult = make_empty_result(name1, name2);
-    results = repmat(emptyResult, n1, n2);
-
-    fprintf('  Grid: %d x %d = %d configs\n', n1, n2, total);
-
-    count = 0;
+    % Create flattened parameter lists for parfor
+    configs_pairs = cell(total, 2);
     for i = 1:n1
         for j = 1:n2
-            count = count + 1;
-            if mod(count, 10) == 0 || count == 1
-                fprintf('    [%d/%d] %s=%.4g, %s=%.4g\n', ...
-                    count, total, name1, vals1(i), name2, vals2(j));
-            end
-
-            % Override the two scanned parameters
-            cfg = defaults;
-            cfg.(name1) = vals1(i);
-            cfg.(name2) = vals2(j);
-
-            results(i,j) = run_single_config(cfg, u_full, tu, dt, name1, vals1(i), name2, vals2(j));
+            % Store val1 and val2
+            configs_pairs{(j-1)*n1 + i, 1} = vals1(i);
+            configs_pairs{(j-1)*n1 + i, 2} = vals2(j);
         end
     end
+
+    % Pre-allocate flat results struct array for parfor
+    emptyResult = make_empty_result(name1, name2);
+    results_flat = repmat(emptyResult, total, 1);
+
+    fprintf('  Starting parallel grid: %d x %d = %d configs\n', n1, n2, total);
+
+    % Run configurations in parallel
+    parfor k = 1:total
+        val1 = configs_pairs{k, 1};
+        val2 = configs_pairs{k, 2};
+
+        % Override the two scanned parameters
+        cfg = defaults;
+        cfg.(name1) = val1;
+        cfg.(name2) = val2;
+
+        % Execute configuration
+        results_flat(k) = run_single_config(cfg, u_full, tu, dt, name1, val1, name2, val2);
+        
+        % Report progress sporadically
+        if mod(k, max(1, round(total/10))) == 0 || k == 1
+            fprintf('    [Worker finished task %d/%d] %s=%.4g, %s=%.4g\n', ...
+                    k, total, name1, val1, name2, val2);
+        end
+    end
+    fprintf('  Parallel grid computation complete.\n');
+
+    % Reshape results back to 2D
+    results = reshape(results_flat, n1, n2);
 
     % Build pass table
     pass_mask = reshape([results.passed], n1, n2);
