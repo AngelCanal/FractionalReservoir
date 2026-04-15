@@ -1,618 +1,889 @@
 function viable_configs = filter_reservoir_params_chirp_recovery()
-% FILTER_RESERVOIR_PARAMS_CHIRP_RECOVERY  Phase 1 hyperparameter search
+% FILTER_RESERVOIR_PARAMS_CHIRP_RECOVERY  3-stage hyperparameter search
 %
-% Runs a dense pairwise scan over 5 parameter pairs using a chirp-recovery
-% protocol to filter silent, unstable, and non-recovering reservoirs.
+% Stage 1 – GPU-batched coarse sweep  (Latin Hypercube, semi-implicit Euler)
+% Stage 2 – CPU-parallel fine sweep   (ode23s, focused on viable region)
+% Stage 3 – Multi-seed validation     (robustness check + ranking)
 %
-% Protocol per configuration:
-%   1. Silence Phase 1 (200 steps): u=0, let transients settle
-%   2. Chirp Phase     (400 steps): frequency+amplitude sweep
-%   3. Silence Phase 2 (200 steps): u=0, evaluate recovery
-%
-% Outputs:
-%   viable_configs - struct array of all passing configurations
+% Discard criteria (applied at every stage):
+%   1. Silent networks       – no measurable response to chirp stimulation
+%   2. Chaotic chatter       – background activity > 5 % of peak output
+%   3. Non-decaying networks – activity does not decay after stimulation
+%   4. Unstable / diverging  – NaN, Inf, or extreme values
 
-    %% Setup paths
+    %% Setup
     setup_paths();
 
-    %% Setup parallel pool
-    % Initialize parallel pool if it doesn't exist
+    resultsDir = fullfile(fileparts(fileparts(mfilename('fullpath'))), ...
+                          'results', 'phase1_filter');
+    if ~exist(resultsDir, 'dir'), mkdir(resultsDir); end
+
+    %% Fixed defaults (parameters NOT searched over)
+    defaults        = struct();
+    defaults.n      = 300;
+    defaults.fractionE = 0.5;
+    defaults.naE    = 3;
+    defaults.naI    = 2;
+    defaults.tauaE  = logspace(log10(0.25), log10(25), 3);
+    defaults.tauaI  = logspace(log10(0.25), log10(25), 2);
+    defaults.nbE    = 0;
+    defaults.nbI    = 0;
+    defaults.cI     = 0.1;
+    defaults.rngseed = 42;
+    defaults.dt     = 1.0;
+
+    ranges = define_param_ranges();
+    shared = build_shared_reservoir(defaults);
+
+    %% ==================== STAGE 1: GPU Coarse Sweep =====================
+    fprintf('\n==============================================================\n');
+    fprintf('  STAGE 1: GPU Coarse Sweep  (LHS + semi-implicit Euler)\n');
+    fprintf('==============================================================\n');
+
+    N_coarse = 4000;
+    configs_coarse = generate_lhs_configs(N_coarse, ranges);
+    [u_short, proto_short] = make_chirp_protocol('short');
+
+    tic;
+    [s1_passed, s1_fail, s1_metrics] = gpu_batch_euler_screen( ...
+        configs_coarse, u_short, proto_short, shared, defaults);
+    t1 = toc;
+
+    n_pass1 = sum(s1_passed);
+    fprintf('  Stage 1 complete: %d / %d passed  (%.1f s)\n', n_pass1, N_coarse, t1);
+
+    save(fullfile(resultsDir, 'stage1_coarse.mat'), ...
+         'configs_coarse', 's1_passed', 's1_fail', 's1_metrics', 'ranges');
+    plot_stage_scatter(configs_coarse, s1_passed, ...
+                       'Stage 1: Coarse GPU Sweep', resultsDir, 'stage1');
+
+    if n_pass1 == 0
+        warning('filter:NoPass1', 'No configurations passed Stage 1.');
+        viable_configs = struct([]);
+        return;
+    end
+
+    %% ==================== STAGE 2: CPU Fine Sweep =======================
+    fprintf('\n==============================================================\n');
+    fprintf('  STAGE 2: CPU Fine Sweep  (ode23s in viable region)\n');
+    fprintf('==============================================================\n');
+
+    fine_ranges = identify_viable_bounds(configs_coarse, s1_passed, ranges);
+    N_fine = 3000;
+    configs_fine = generate_lhs_configs(N_fine, fine_ranges);
+    [u_full, proto_full] = make_chirp_protocol('full');
+
     poolobj = gcp('nocreate');
     if isempty(poolobj)
-        fprintf('\nStarting parallel pool to run on all available cores...\n');
+        fprintf('  Starting parallel pool...\n');
         parpool;
     end
 
-    %% Fixed defaults
-    defaults = struct();
-    defaults.n             = 300;
-    defaults.fractionE     = 0.5;
-    defaults.naE           = 3;
-    defaults.naI           = 2;
-    defaults.tauaE         = logspace(log10(0.25), log10(25), 3);
-    defaults.tauaI         = logspace(log10(0.25), log10(25), 2);
-    defaults.nbE           = 0;
-    defaults.nbI           = 0;   % disable STD initially
-    defaults.cI            = 0.1;
-    defaults.cE            = 0.1; % default adaptation scaling for E
-    defaults.rngseed       = 42;
-    defaults.inputscaling  = 1.0;
-    defaults.spectralradius = 0.9;  % a0thresh -> piecewiseSigmoid 'c' param
-    defaults.a0thresh      = 0.4;
-    defaults.levelofchaos  = 1.5;
-    defaults.taud          = 0.5;
+    tic;
+    [s2_passed, s2_fail, s2_metrics] = run_fine_sweep( ...
+        configs_fine, u_full, proto_full, shared, defaults);
+    t2 = toc;
 
-    %% Generate chirp protocol
-    [u_full, tu, dt] = make_chirp_protocol();
+    n_pass2 = sum(s2_passed);
+    fprintf('  Stage 2 complete: %d / %d passed  (%.1f s)\n', n_pass2, N_fine, t2);
 
-    %% Results directory
-    resultsDir = fullfile(fileparts(fileparts(mfilename('fullpath'))), 'results', 'phase1_filter');
-    if ~exist(resultsDir, 'dir')
-        mkdir(resultsDir);
+    save(fullfile(resultsDir, 'stage2_fine.mat'), ...
+         'configs_fine', 's2_passed', 's2_fail', 's2_metrics', 'fine_ranges');
+    plot_stage_scatter(configs_fine, s2_passed, ...
+                       'Stage 2: Fine CPU Sweep', resultsDir, 'stage2');
+
+    if n_pass2 == 0
+        warning('filter:NoPass2', 'No configurations passed Stage 2.');
+        viable_configs = configs_coarse(s1_passed);
+        return;
     end
 
-    %% =====================================================================
-    %  PAIR 1: inputscaling vs a0thresh
-    %  =====================================================================
-    fprintf('\n========== PAIR 1: inputscaling vs a0thresh ==========\n');
-    inputscaling_vals = linspace(0.2, 2.5, 10);
-    a0thresh_vals     = linspace(0.1, 1.5, 10);
+    %% ==================== STAGE 3: Multi-seed Validation ================
+    fprintf('\n==============================================================\n');
+    fprintf('  STAGE 3: Multi-seed Validation & Ranking\n');
+    fprintf('==============================================================\n');
 
-    [results1, pass1] = run_pair_scan('inputscaling', inputscaling_vals, ...
-                                       'a0thresh', a0thresh_vals, ...
-                                       defaults, u_full, tu, dt);
-    save(fullfile(resultsDir, 'pair1_inputscaling_a0thresh.mat'), 'results1', 'pass1', ...
-         'inputscaling_vals', 'a0thresh_vals');
-    plot_pair_heatmaps(results1, 'inputscaling', inputscaling_vals, ...
-                       'a0thresh', a0thresh_vals, 'Pair 1', resultsDir);
-    fprintf('  Pair 1 complete: %d / %d passed\n', sum([results1.passed]), numel(results1));
+    top_K  = min(100, n_pass2);
+    top_configs = select_top_configs(configs_fine, s2_passed, s2_metrics, top_K);
 
-    %% =====================================================================
-    %  PAIR 2: spectralradius vs levelofchaos
-    %  =====================================================================
-    fprintf('\n========== PAIR 2: spectralradius vs levelofchaos ==========\n');
-    spectralradius_vals = linspace(0.4, 1.5, 10);
-    levelofchaos_vals   = linspace(0.7, 2.5, 10);
+    N_seeds = 5;
+    tic;
+    stage3 = validate_multi_seed(top_configs, u_full, proto_full, ...
+                                  N_seeds, defaults);
+    t3 = toc;
 
-    [results2, pass2] = run_pair_scan('spectralradius', spectralradius_vals, ...
-                                       'levelofchaos', levelofchaos_vals, ...
-                                       defaults, u_full, tu, dt);
-    save(fullfile(resultsDir, 'pair2_spectralradius_levelofchaos.mat'), 'results2', 'pass2', ...
-         'spectralradius_vals', 'levelofchaos_vals');
-    plot_pair_heatmaps(results2, 'spectralradius', spectralradius_vals, ...
-                       'levelofchaos', levelofchaos_vals, 'Pair 2', resultsDir);
-    fprintf('  Pair 2 complete: %d / %d passed\n', sum([results2.passed]), numel(results2));
+    n_robust = sum(stage3.robust);
+    fprintf('  Stage 3 complete: %d / %d robust across %d seeds  (%.1f s)\n', ...
+            n_robust, top_K, N_seeds, t3);
 
-    %% =====================================================================
-    %  PAIR 3: inputscaling vs cE
-    %  =====================================================================
-    fprintf('\n========== PAIR 3: inputscaling vs cE ==========\n');
-    inputscaling_vals3 = linspace(0.4, 2.0, 10);
-    cE_vals3           = logspace(-2, log10(0.5), 10);
+    viable_configs = stage3.ranked_configs;
 
-    [results3, pass3] = run_pair_scan('inputscaling', inputscaling_vals3, ...
-                                       'cE', cE_vals3, ...
-                                       defaults, u_full, tu, dt);
-    save(fullfile(resultsDir, 'pair3_inputscaling_cE.mat'), 'results3', 'pass3', ...
-         'inputscaling_vals3', 'cE_vals3');
-    plot_pair_heatmaps(results3, 'inputscaling', inputscaling_vals3, ...
-                       'cE', cE_vals3, 'Pair 3', resultsDir);
-    fprintf('  Pair 3 complete: %d / %d passed\n', sum([results3.passed]), numel(results3));
-
-    %% =====================================================================
-    %  PAIR 4: spectralradius vs cE
-    %  =====================================================================
-    fprintf('\n========== PAIR 4: spectralradius vs cE ==========\n');
-    spectralradius_vals4 = linspace(0.6, 1.4, 10);
-    cE_vals4             = logspace(-2, log10(0.4), 10);
-
-    [results4, pass4] = run_pair_scan('spectralradius', spectralradius_vals4, ...
-                                       'cE', cE_vals4, ...
-                                       defaults, u_full, tu, dt);
-    save(fullfile(resultsDir, 'pair4_spectralradius_cE.mat'), 'results4', 'pass4', ...
-         'spectralradius_vals4', 'cE_vals4');
-    plot_pair_heatmaps(results4, 'spectralradius', spectralradius_vals4, ...
-                       'cE', cE_vals4, 'Pair 4', resultsDir);
-    fprintf('  Pair 4 complete: %d / %d passed\n', sum([results4.passed]), numel(results4));
-
-    %% =====================================================================
-    %  PAIR 5: taud vs inputscaling
-    %  =====================================================================
-    fprintf('\n========== PAIR 5: taud vs inputscaling ==========\n');
-    taud_vals5         = logspace(-2, 0, 10);
-    inputscaling_vals5 = linspace(0.5, 2.0, 10);
-
-    [results5, pass5] = run_pair_scan('taud', taud_vals5, ...
-                                       'inputscaling', inputscaling_vals5, ...
-                                       defaults, u_full, tu, dt);
-    save(fullfile(resultsDir, 'pair5_taud_inputscaling.mat'), 'results5', 'pass5', ...
-         'taud_vals5', 'inputscaling_vals5');
-    plot_pair_heatmaps(results5, 'taud', taud_vals5, ...
-                       'inputscaling', inputscaling_vals5, 'Pair 5', resultsDir);
-    fprintf('  Pair 5 complete: %d / %d passed\n', sum([results5.passed]), numel(results5));
-
-    %% =====================================================================
-    %  Collect all viable configs
-    %  =====================================================================
-    viable_configs = collect_viable(results1, results2, results3, results4, results5);
+    save(fullfile(resultsDir, 'stage3_validation.mat'), 'stage3');
     save(fullfile(resultsDir, 'viable_configs.mat'), 'viable_configs');
+    plot_stage3_ranking(stage3, resultsDir);
 
-    fprintf('\n========== SUMMARY ==========\n');
-    fprintf('  Total configs tested: %d\n', ...
-        numel(results1)+numel(results2)+numel(results3)+numel(results4)+numel(results5));
-    fprintf('  Viable configs:       %d\n', numel(viable_configs));
-    fprintf('  Results saved to:     %s\n', resultsDir);
-    fprintf('=============================\n');
+    %% Summary
+    fprintf('\n==============================================================\n');
+    fprintf('  SUMMARY\n');
+    fprintf('==============================================================\n');
+    fprintf('  Stage 1 (GPU coarse):  %4d / %d passed   (%.1f s)\n', n_pass1, N_coarse, t1);
+    fprintf('  Stage 2 (CPU fine):    %4d / %d passed   (%.1f s)\n', n_pass2, N_fine, t2);
+    fprintf('  Stage 3 (validation):  %4d / %d robust   (%.1f s)\n', n_robust, top_K, t3);
+    fprintf('  Final viable configs:  %d\n', numel(viable_configs));
+    fprintf('  Total time:            %.1f s\n', t1 + t2 + t3);
+    fprintf('  Results saved to:      %s\n', resultsDir);
+    fprintf('==============================================================\n');
 end
 
-%% =========================================================================
-%  HELPER: make_chirp_protocol
-%  =========================================================================
-function [u_full, tu, dt] = make_chirp_protocol()
-% MAKE_CHIRP_PROTOCOL Build the 800-step chirp-recovery input signal.
-    t_chirp   = 0:399;
-    f_start   = 0.05;
-    f_end     = 2.0;
-    amp_start = 0.5;
-    amp_end   = 3.0;
-
-    amp_t   = amp_start + (amp_end - amp_start) * (t_chirp / 399);
-    phase_t = 2*pi*(f_start*t_chirp + (f_end - f_start) * (t_chirp.^2) / (2*400));
-    u_chirp = amp_t .* sin(phase_t);
-
-    u_full = [zeros(1,200), u_chirp, zeros(1,200)];
-    tu     = 0:799;
-    dt     = 1.0;
+%% ========================================================================
+%  PARAMETER RANGES
+%  ========================================================================
+function ranges = define_param_ranges()
+    ranges = struct();
+    ranges.inputscaling   = struct('lo', 0.05,  'hi', 5.0,   'logscale', false);
+    ranges.a0thresh       = struct('lo', 0.05,  'hi', 0.99,  'logscale', false);
+    ranges.spectralradius = struct('lo', 0.1,   'hi', 2.5,   'logscale', false);
+    ranges.levelofchaos   = struct('lo', 0.3,   'hi', 4.0,   'logscale', false);
+    ranges.cE             = struct('lo', 0.001, 'hi', 1.0,   'logscale', true);
+    ranges.taud           = struct('lo', 0.01,  'hi', 3.0,   'logscale', true);
 end
 
-%% =========================================================================
-%  HELPER: run_pair_scan
-%  =========================================================================
-function [results, pass_table] = run_pair_scan(name1, vals1, name2, vals2, ...
-                                               defaults, u_full, tu, dt)
-% RUN_PAIR_SCAN  Run a 2-D grid scan over two parameters using parallel pool.
+%% ========================================================================
+%  SHARED RESERVOIR (pre-compute W0 normalised + W_in0 unscaled)
+%  ========================================================================
+function shared = build_shared_reservoir(defaults, seed)
+    if nargin < 2, seed = defaults.rngseed; end
 
-    n1 = numel(vals1);
-    n2 = numel(vals2);
-    total = n1 * n2;
-
-    % Create flattened parameter lists for parfor
-    configs_pairs = cell(total, 2);
-    for i = 1:n1
-        for j = 1:n2
-            % Store val1 and val2
-            configs_pairs{(j-1)*n1 + i, 1} = vals1(i);
-            configs_pairs{(j-1)*n1 + i, 2} = vals2(j);
-        end
-    end
-
-    % Pre-allocate flat results struct array for parfor
-    emptyResult = make_empty_result(name1, name2);
-    results_flat = repmat(emptyResult, total, 1);
-
-    fprintf('  Starting parallel grid: %d x %d = %d configs\n', n1, n2, total);
-
-    % Run configurations in parallel
-    parfor k = 1:total
-        val1 = configs_pairs{k, 1};
-        val2 = configs_pairs{k, 2};
-
-        % Override the two scanned parameters
-        cfg = defaults;
-        cfg.(name1) = val1;
-        cfg.(name2) = val2;
-
-        % Execute configuration
-        results_flat(k) = run_single_config(cfg, u_full, tu, dt, name1, val1, name2, val2);
-        
-        % Report progress sporadically
-        if mod(k, max(1, round(total/10))) == 0 || k == 1
-            fprintf('    [Worker finished task %d/%d] %s=%.4g, %s=%.4g\n', ...
-                    k, total, name1, val1, name2, val2);
-        end
-    end
-    fprintf('  Parallel grid computation complete.\n');
-
-    % Reshape results back to 2D
-    results = reshape(results_flat, n1, n2);
-
-    % Build pass table
-    pass_mask = reshape([results.passed], n1, n2);
-    pass_table = table();
-    k = 0;
-    for i = 1:n1
-        for j = 1:n2
-            if pass_mask(i,j)
-                k = k + 1;
-                pass_table(k,:) = struct2table(results(i,j), 'AsArray', true);
-            end
-        end
-    end
-end
-
-%% =========================================================================
-%  HELPER: run_single_config
-%  =========================================================================
-function result = run_single_config(cfg, u_full, tu, dt, name1, val1, name2, val2)
-% RUN_SINGLE_CONFIG  Build reservoir, run chirp protocol, compute metrics.
-
-    result = struct();
-    result.param1_name  = name1;
-    result.param1_value = val1;
-    result.param2_name  = name2;
-    result.param2_value = val2;
-
-    n   = cfg.n;
-    n_E = round(n * cfg.fractionE);
+    n   = defaults.n;
+    n_E = round(n * defaults.fractionE);
     n_I = n - n_E;
 
-    %% Build weight matrix W
-    rng(cfg.rngseed);
-    W = randn(n, n);
-    W(:, 1:n_E)     = abs(W(:, 1:n_E));       % Dale's law: E positive
-    W(:, n_E+1:end) = -abs(W(:, n_E+1:end));   % Dale's law: I negative
-    W = W - mean(W, 2);                         % center rows
+    rng(seed);
+    W0 = randn(n, n);
+    W0(:, 1:n_E)     = abs(W0(:, 1:n_E));
+    W0(:, n_E+1:end) = -abs(W0(:, n_E+1:end));
+    W0 = W0 - mean(W0, 2);
 
-    % Step 1: Normalize W to unit spectral radius, then scale to desired
-    W_eigs   = eig(W);
-    rho0     = max(abs(W_eigs));          % spectral radius (max |eig|)
-    if rho0 > 0
-        W = W / rho0;                     % unit spectral radius
+    rho0    = max(abs(eig(W0)));
+    W0_norm = W0 / max(rho0, eps);
+
+    rng(seed + 1);
+    W_in0 = 2*rand(n, 1) - 1;
+    W_in0(rand(n, 1) > 0.2) = 0;
+
+    shared = struct('W0_norm', W0_norm, 'W_in0', W_in0, ...
+                    'n', n, 'n_E', n_E, 'n_I', n_I, ...
+                    'naE', defaults.naE, 'naI', defaults.naI, ...
+                    'tauaE', defaults.tauaE, 'tauaI', defaults.tauaI);
+end
+
+%% ========================================================================
+%  LATIN HYPERCUBE CONFIG GENERATOR
+%  ========================================================================
+function configs = generate_lhs_configs(N, ranges)
+    pnames   = fieldnames(ranges);
+    n_params = numel(pnames);
+
+    X = lhsdesign(N, n_params, 'Criterion', 'maximin', 'Iterations', 30);
+
+    vals = zeros(N, n_params);
+    for i = 1:n_params
+        r = ranges.(pnames{i});
+        if r.logscale
+            vals(:,i) = 10.^(log10(r.lo) + X(:,i) * (log10(r.hi) - log10(r.lo)));
+        else
+            vals(:,i) = r.lo + X(:,i) * (r.hi - r.lo);
+        end
     end
 
-    % Step 2: Apply combined scaling
-    % spectralradius controls the base spectral radius
-    % levelofchaos provides an additional multiplicative gain
-    W = cfg.spectralradius * cfg.levelofchaos * W;
+    configs = repmat(struct(), 1, N);
+    for i = 1:n_params
+        v = num2cell(vals(:,i));
+        [configs.(pnames{i})] = v{:};
+    end
+end
 
-    %% Build input weight matrix W_in
-    rng(cfg.rngseed + 1);
-    W_in = (2*rand(n, 1) - 1) * cfg.inputscaling;
-    W_in(rand(n, 1) > 0.2) = 0;  % 20 % connectivity
+%% ========================================================================
+%  CHIRP PROTOCOL
+%  ========================================================================
+function [u_full, protocol] = make_chirp_protocol(mode)
+    switch lower(mode)
+        case 'short'
+            T1 = 100;  T2 = 200;  T3 = 100;
+        case 'full'
+            T1 = 200;  T2 = 400;  T3 = 200;
+        otherwise
+            error('Unknown protocol mode: %s', mode);
+    end
 
-    %% Activation function
-    S_a = cfg.a0thresh;  % maps a0thresh -> piecewiseSigmoid 'a' param
+    t_chirp   = 0:(T2-1);
+    f_start   = 0.05;   f_end   = 2.0;
+    amp_start = 0.5;     amp_end = 3.0;
+    amp_t   = amp_start + (amp_end - amp_start) * (t_chirp / max(T2-1,1));
+    phase_t = 2*pi*(f_start*t_chirp + (f_end - f_start) * t_chirp.^2 / (2*T2));
+    u_chirp = amp_t .* sin(phase_t);
+
+    u_full = [zeros(1,T1), u_chirp, zeros(1,T3)];
+
+    protocol.T_silence1 = T1;
+    protocol.T_chirp    = T2;
+    protocol.T_silence2 = T3;
+    protocol.T_total    = T1 + T2 + T3;
+    protocol.dt         = 1.0;
+    protocol.tu         = 0:(protocol.T_total - 1);
+end
+
+%% ========================================================================
+%  STAGE 1 – GPU-BATCHED SEMI-IMPLICIT EULER SCREEN
+%  ========================================================================
+function [passed, fail_reasons, metrics] = gpu_batch_euler_screen( ...
+        configs, u_full, protocol, shared, defaults)
+
+    N = numel(configs);
+    batch_sz = 4096;
+
+    use_gpu = false;
+    try
+        gd = gpuDevice;
+        if gd.DeviceAvailable
+            use_gpu = true;
+            fprintf('  GPU: %s  (%.1f GB free)\n', gd.Name, gd.AvailableMemory/1e9);
+        end
+    catch
+    end
+    if ~use_gpu
+        fprintf('  No GPU detected – falling back to CPU vectorised screening.\n');
+    end
+
+    W0_dev    = to_dev(shared.W0_norm, use_gpu);
+    W_in0_dev = to_dev(shared.W_in0,   use_gpu);
+    u_dev     = to_dev(u_full(:)',      use_gpu);
+    tau_aE_3d = reshape(to_dev(shared.tauaE, use_gpu), 1, shared.naE, 1);
+    tau_aI_3d = reshape(to_dev(shared.tauaI, use_gpu), 1, shared.naI, 1);
+
+    n = shared.n;  n_E = shared.n_E;  n_I = shared.n_I;
+    naE = shared.naE;  naI = shared.naI;
+    cI_s = single(defaults.cI);
+    S_c  = single(0.4);
+    dt_s = single(protocol.dt);
+    T1 = protocol.T_silence1;
+    T2 = protocol.T_chirp;
+    T3 = protocol.T_silence2;
+
+    all_is = [configs.inputscaling];
+    all_a0 = [configs.a0thresh];
+    all_sr = [configs.spectralradius];
+    all_lc = [configs.levelofchaos];
+    all_cE = [configs.cE];
+    all_td = [configs.taud];
+
+    passed       = false(1, N);
+    fail_reasons = cell(1, N);
+    metrics      = struct( ...
+        'pre_settle_level',   nan(1, N), ...
+        'chirp_response_std', nan(1, N), ...
+        'chirp_response_amp', nan(1, N), ...
+        'max_abs_all',        nan(1, N), ...
+        'post_mean_abs',      nan(1, N), ...
+        'recovery_slope',     nan(1, N));
+
+    for bs = 1:batch_sz:N
+        be  = min(bs + batch_sz - 1, N);
+        B   = be - bs + 1;
+        idx = bs:be;
+        fprintf('    Batch %d – %d / %d ... ', bs, be, N);
+
+        w_sc  = to_dev(all_sr(idx) .* all_lc(idx), use_gpu);
+        S_a   = to_dev(all_a0(idx), use_gpu);
+        c_E_b = to_dev(all_cE(idx), use_gpu);
+        td_b  = to_dev(all_td(idx), use_gpu);
+        W_in_b = W_in0_dev .* to_dev(all_is(idx), use_gpu);
+
+        x   = zeros(n,   B,           'like', W0_dev);
+        a_E = zeros(n_E, naE, B,      'like', W0_dev);
+        a_I = zeros(n_I, naI, B,      'like', W0_dev);
+
+        % ---- Phase 1: pre-stimulus silence ----
+        settle_n   = min(50, T1);
+        settle_sum = zeros(1, B, 'like', W0_dev);
+        max_p1     = zeros(1, B, 'like', W0_dev);
+
+        for t = 1:T1
+            [x, a_E, a_I] = euler_step_batch(x, a_E, a_I, single(0), ...
+                W0_dev, W_in_b, w_sc, S_a, S_c, c_E_b, cI_s, ...
+                td_b, tau_aE_3d, tau_aI_3d, n_E, n_I, dt_s);
+            max_p1 = max(max_p1, max(abs(x), [], 1));
+            if t > T1 - settle_n
+                settle_sum = settle_sum + mean(abs(x), 1);
+            end
+        end
+        pre_settle = settle_sum / settle_n;
+
+        % ---- Phase 2: chirp stimulation ----
+        cnt    = single(0);
+        mu_x   = zeros(n, B, 'like', W0_dev);
+        M2_x   = zeros(n, B, 'like', W0_dev);
+        max_ch = zeros(1, B, 'like', W0_dev);
+
+        for t = 1:T2
+            u_t = u_dev(T1 + t);
+            [x, a_E, a_I] = euler_step_batch(x, a_E, a_I, u_t, ...
+                W0_dev, W_in_b, w_sc, S_a, S_c, c_E_b, cI_s, ...
+                td_b, tau_aE_3d, tau_aI_3d, n_E, n_I, dt_s);
+            cnt   = cnt + 1;
+            d1    = x - mu_x;
+            mu_x  = mu_x + d1 / cnt;
+            d2    = x - mu_x;
+            M2_x  = M2_x + d1 .* d2;
+            max_ch = max(max_ch, max(abs(x), [], 1));
+        end
+        c_std = mean(sqrt(M2_x / max(cnt - 1, 1)), 1);
+        c_amp = max_ch;
+
+        % ---- Phase 3: post-stimulus silence ----
+        T3h     = max(round(T3 / 2), 1);
+        e_sum   = zeros(1, B, 'like', W0_dev);
+        l_sum   = zeros(1, B, 'like', W0_dev);
+        max_p3  = zeros(1, B, 'like', W0_dev);
+
+        for t = 1:T3
+            [x, a_E, a_I] = euler_step_batch(x, a_E, a_I, single(0), ...
+                W0_dev, W_in_b, w_sc, S_a, S_c, c_E_b, cI_s, ...
+                td_b, tau_aE_3d, tau_aI_3d, n_E, n_I, dt_s);
+            ma = mean(abs(x), 1);
+            if t <= T3h
+                e_sum = e_sum + ma;
+            else
+                l_sum = l_sum + ma;
+            end
+            max_p3 = max(max_p3, max(abs(x), [], 1));
+        end
+        post_early = e_sum / T3h;
+        post_late  = l_sum / max(T3 - T3h, 1);
+
+        % ---- Classification ----
+        max_all = max(max(max_p1, max_ch), max_p3);
+        g_nan   = any(isnan(x), 1);
+
+        is_silent     = (c_amp < 0.05) | (c_std < 0.02);
+        has_chatter   = (post_late > 0.05 * max_all) | (pre_settle > 0.05 * max_all);
+        rec_sl        = post_late ./ max(post_early, single(1e-6));
+        no_decay      = rec_sl >= 1.0;
+        is_unstable   = max_all > 15;
+
+        bp = gather(~g_nan & ~is_silent & ~has_chatter & ~no_decay & ~is_unstable);
+
+        g_pre  = double(gather(pre_settle));
+        g_cstd = double(gather(c_std));
+        g_camp = double(gather(c_amp));
+        g_max  = double(gather(max_all));
+        g_post = double(gather(post_late));
+        g_rsl  = double(gather(rec_sl));
+
+        g_nan_c = gather(g_nan);
+        g_sil   = gather(is_silent);
+        g_cht   = gather(has_chatter);
+        g_ndc   = gather(no_decay);
+        g_ust   = gather(is_unstable);
+
+        passed(idx) = bp;
+        metrics.pre_settle_level(idx)   = g_pre;
+        metrics.chirp_response_std(idx) = g_cstd;
+        metrics.chirp_response_amp(idx) = g_camp;
+        metrics.max_abs_all(idx)        = g_max;
+        metrics.post_mean_abs(idx)      = g_post;
+        metrics.recovery_slope(idx)     = g_rsl;
+
+        for k = 1:B
+            reasons = {};
+            if g_nan_c(k), reasons{end+1} = 'nan_inf';          end %#ok<AGROW>
+            if g_sil(k),   reasons{end+1} = 'silent';           end %#ok<AGROW>
+            if g_cht(k),   reasons{end+1} = 'chatter_gt_5pct';  end %#ok<AGROW>
+            if g_ndc(k),   reasons{end+1} = 'no_decay';         end %#ok<AGROW>
+            if g_ust(k),   reasons{end+1} = 'unstable';         end %#ok<AGROW>
+            fail_reasons{idx(k)} = reasons;
+        end
+        fprintf('%d passed\n', sum(bp));
+    end
+end
+
+%% ========================================================================
+%  BATCHED SEMI-IMPLICIT EULER STEP  (GPU or CPU)
+%  ========================================================================
+function [x, a_E, a_I] = euler_step_batch(x, a_E, a_I, u_scalar, ...
+        W0, W_in_b, w_sc, S_a, S_c, c_E_b, cI, tau_d, ...
+        tau_aE, tau_aI, n_E, n_I, dt)
+    B = size(x, 2);
+
+    x_eff = x;
+    if ~isempty(a_E)
+        sa = reshape(sum(a_E, 2), n_E, B);
+        x_eff(1:n_E, :) = x_eff(1:n_E, :) - c_E_b .* sa;
+    end
+    if ~isempty(a_I)
+        sa = reshape(sum(a_I, 2), n_I, B);
+        x_eff(n_E+1:end, :) = x_eff(n_E+1:end, :) - cI .* sa;
+    end
+
+    r   = piecewise_sigmoid_batch(x_eff, S_a, S_c);
+    Wr  = w_sc .* (W0 * r);
+    u_e = W_in_b * u_scalar;
+
+    x = (x + dt * (Wr + u_e) ./ tau_d) ./ (1 + dt ./ tau_d);
+
+    if ~isempty(a_E)
+        rE = reshape(r(1:n_E, :), n_E, 1, B);
+        a_E = (a_E + dt * rE ./ tau_aE) ./ (1 + dt ./ tau_aE);
+    end
+    if ~isempty(a_I)
+        rI = reshape(r(n_E+1:end, :), n_I, 1, B);
+        a_I = (a_I + dt * rI ./ tau_aI) ./ (1 + dt ./ tau_aI);
+    end
+end
+
+%% ========================================================================
+%  BATCHED PIECEWISE SIGMOID  (branch-free, GPU-compatible)
+%  ========================================================================
+function y = piecewise_sigmoid_batch(x, S_a, S_c)
+% x: (n,B),  S_a: (1,B) or scalar,  S_c: scalar
+    a  = S_a / 2;
+    k  = single(0.5) ./ max(1 - 2*a, single(1e-6));
+    x1 = S_c + a - 1;
+    x2 = S_c - a;
+    x3 = S_c + a;
+    x4 = S_c + 1 - a;
+
+    m_lq = (x >= x1) & (x < x2);
+    m_li = (x >= x2) & (x <= x3);
+    m_rq = (x > x3)  & (x <= x4);
+    m_rs = (x > x4);
+
+    y = m_lq .* (k .* (x - x1).^2) ...
+      + m_li .* ((x - S_c) + single(0.5)) ...
+      + m_rq .* (1 - k .* (x - x4).^2) ...
+      + single(1) .* m_rs;
+end
+
+%% ========================================================================
+%  IDENTIFY VIABLE BOUNDS FROM STAGE 1
+%  ========================================================================
+function fine = identify_viable_bounds(configs, passed, orig)
+    pnames = fieldnames(orig);
+    pass_idx = find(passed);
+
+    fine = struct();
+    for i = 1:numel(pnames)
+        p  = pnames{i};
+        ro = orig.(p);
+        if isempty(pass_idx)
+            fine.(p) = ro;
+            continue;
+        end
+        vals = [configs(pass_idx).(p)];
+        lo = min(vals);  hi = max(vals);
+        span   = hi - lo;
+        margin = 0.15 * span;
+
+        % Guarantee a minimum width of 20 % of the original range
+        orig_span = ro.hi - ro.lo;
+        if ro.logscale
+            orig_span = log10(ro.hi) - log10(ro.lo);
+        end
+        if ro.logscale
+            lo_log = log10(lo) - 0.15*(log10(hi)-log10(lo));
+            hi_log = log10(hi) + 0.15*(log10(hi)-log10(lo));
+            if (hi_log - lo_log) < 0.20 * orig_span
+                centre = (log10(lo)+log10(hi)) / 2;
+                half   = 0.10 * orig_span;
+                lo_log = centre - half;
+                hi_log = centre + half;
+            end
+            fine.(p) = struct('lo', max(10^lo_log, ro.lo), ...
+                              'hi', min(10^hi_log, ro.hi), ...
+                              'logscale', true);
+        else
+            lo2 = lo - margin;
+            hi2 = hi + margin;
+            if (hi2 - lo2) < 0.20 * orig_span
+                centre = (lo + hi) / 2;
+                half   = 0.10 * orig_span;
+                lo2 = centre - half;
+                hi2 = centre + half;
+            end
+            fine.(p) = struct('lo', max(lo2, ro.lo), ...
+                              'hi', min(hi2, ro.hi), ...
+                              'logscale', false);
+        end
+    end
+end
+
+%% ========================================================================
+%  STAGE 2 – CPU FINE SWEEP  (parfor + ode23s)
+%  ========================================================================
+function [passed, fail_reasons, metrics_cells] = run_fine_sweep( ...
+        configs, u_full, protocol, shared, defaults)
+
+    N  = numel(configs);
+    tu = protocol.tu;
+    dt = protocol.dt;
+
+    tmp_passed = false(1, N);
+    tmp_fail   = cell(1, N);
+    tmp_met    = cell(1, N);
+
+    fprintf('  Running %d configs with parfor + ode23s ...\n', N);
+    parfor k = 1:N
+        r = run_single_config_ode(configs(k), u_full, tu, dt, shared, defaults);
+        tmp_passed(k) = r.passed;
+        tmp_fail{k}   = r.fail_reasons;
+        tmp_met{k}    = r.metrics;
+    end
+
+    passed       = tmp_passed;
+    fail_reasons = tmp_fail;
+    metrics_cells = tmp_met;
+end
+
+%% ========================================================================
+%  SINGLE CONFIG – FULL ODE23s SIMULATION
+%  ========================================================================
+function result = run_single_config_ode(cfg, u_full, tu, dt, shared, defaults)
+    n   = shared.n;
+    n_E = shared.n_E;
+    n_I = shared.n_I;
+
+    W    = cfg.spectralradius * cfg.levelofchaos * shared.W0_norm;
+    W_in = shared.W_in0 * cfg.inputscaling;
+
+    S_a = cfg.a0thresh;
     S_c = 0.4;
     activation_fn = @(x) piecewiseSigmoid(x, S_a, S_c);
 
-    %% Pack parameters for SRNN_ESN
-    params        = struct();
-    params.n      = n;
-    params.n_E    = n_E;
-    params.n_I    = n_I;
-    params.W      = W;
-    params.W_in   = W_in;
-    params.tau_d  = cfg.taud;
-    params.n_a_E  = cfg.naE;
-    params.n_a_I  = cfg.naI;
-    params.tau_a_E = cfg.tauaE;
-    params.tau_a_I = cfg.tauaI;
-    params.n_b_E  = cfg.nbE;
-    params.n_b_I  = cfg.nbI;
-    params.c_E    = cfg.cE;
-    params.c_I    = cfg.cI;
+    params              = struct();
+    params.n            = n;
+    params.n_E          = n_E;
+    params.n_I          = n_I;
+    params.E_indices    = 1:n_E;
+    params.I_indices    = (n_E+1):n;
+    params.W            = W;
+    params.W_in         = W_in;
+    params.tau_d        = cfg.taud;
+    params.n_a_E        = defaults.naE;
+    params.n_a_I        = defaults.naI;
+    params.tau_a_E      = defaults.tauaE;
+    params.tau_a_I      = defaults.tauaI;
+    params.n_b_E        = defaults.nbE;
+    params.n_b_I        = defaults.nbI;
+    params.c_E          = cfg.cE;
+    params.c_I          = defaults.cI;
     params.activation_function = activation_fn;
-    params.which_states   = 'x';
-    params.include_input  = false;
-    params.lambda         = 1e-6;
-    params.dt             = dt;
+    params.which_states = 'x';
+    params.include_input = false;
+    params.lambda       = 1e-6;
+    params.dt           = dt;
 
-    %% Create ESN and run
+    result = struct('passed', false, 'fail_reasons', {{}}, ...
+                    'metrics', struct(), 'quality_score', 0, ...
+                    'config', cfg);
     try
-        clear_SRNN_persistent();    % reset interpolant cache
+        clear_SRNN_persistent();
         esn = SRNN_ESN(params);
         esn.resetState();
-
-        U = u_full(:);  % column vector (800 x 1)
+        U = u_full(:);
         [~, Shist] = esn.runReservoir(U);
-
-        %% Extract x-states
-        x_all = extract_x_states(Shist, n, n_E, n_I, cfg.naE, cfg.naI, cfg.nbE, cfg.nbI);
-        % x_all: (n x T)
-
+        x_all = extract_x_states(Shist, n, n_E, n_I, ...
+                    defaults.naE, defaults.naI, defaults.nbE, defaults.nbI);
     catch ME
-        % Simulation failed – mark as fail
-        result = fill_failed_result(result, sprintf('sim_error: %s', ME.message));
+        result.fail_reasons = {sprintf('sim_error: %s', ME.message)};
+        result.metrics = empty_metrics();
         return;
     end
 
-    %% Compute metrics
-    metrics = compute_reservoir_metrics(x_all, u_full);
+    m = compute_reservoir_metrics(x_all, u_full);
+    [p, reasons] = classify_recovery(m);
 
-    %% Classify
-    [passed, recovery_type, fail_reasons] = classify_recovery(metrics);
-
-    %% Pack result
-    result.metrics       = metrics;
-    result.passed        = passed;
-    result.recovery_type = recovery_type;
-    result.fail_reasons  = fail_reasons;
-
-    % Store key scalar config values for table export
-    result.inputscaling   = cfg.inputscaling;
-    result.a0thresh       = cfg.a0thresh;
-    result.spectralradius = cfg.spectralradius;
-    result.levelofchaos   = cfg.levelofchaos;
-    result.cE             = cfg.cE;
-    result.taud           = cfg.taud;
+    result.passed        = p;
+    result.fail_reasons  = reasons;
+    result.metrics       = m;
+    result.quality_score = compute_quality_score(m);
 end
 
-%% =========================================================================
-%  HELPER: extract_x_states
-%  =========================================================================
+%% ========================================================================
+%  EXTRACT x-STATES FROM FULL STATE HISTORY
+%  ========================================================================
 function x_all = extract_x_states(Shist, n, n_E, n_I, naE, naI, nbE, nbI)
-% EXTRACT_X_STATES  Pull out x (dendritic) states from full state history.
-%   Returns x_all as (n x T).
-
-    len_aE = n_E * naE;
-    len_aI = n_I * naI;
-    len_bE = n_E * nbE;
-    len_bI = n_I * nbI;
-    x_start = len_aE + len_aI + len_bE + len_bI + 1;
-    x_end   = x_start + n - 1;
-
-    x_all = Shist(:, x_start:x_end)';   % (n x T)
+    offset = n_E*naE + n_I*naI + n_E*nbE + n_I*nbI;
+    x_all  = Shist(:, offset+1 : offset+n)';
 end
 
-%% =========================================================================
-%  HELPER: compute_reservoir_metrics
-%  =========================================================================
-function metrics = compute_reservoir_metrics(x_all, u_full)
-% COMPUTE_RESERVOIR_METRICS  Compute all filtering metrics.
-%   x_all: (n x T), u_full: (1 x T) or (T x 1)
-
+%% ========================================================================
+%  RESERVOIR METRICS (full protocol)
+%  ========================================================================
+function m = compute_reservoir_metrics(x_all, u_full)
     T = size(x_all, 2);
-    assert(T >= 800, 'Expected at least 800 time steps, got %d', T);
+    assert(T >= 800, 'Expected >= 800 time steps, got %d', T);
 
-    x_silence1 = x_all(:, 1:200);
-    x_chirp    = x_all(:, 201:600);
-    x_silence2 = x_all(:, 601:800);
+    x_s1 = x_all(:, 1:200);
+    x_ch = x_all(:, 201:600);
+    x_s2 = x_all(:, 601:800);
 
-    % 1. Pre-settle level (last 50 steps of silence 1)
-    metrics.pre_settle_level = mean(abs(x_silence1(:, end-49:end)), 'all');
+    m.pre_settle_level   = mean(abs(x_s1(:, end-49:end)), 'all');
+    m.chirp_response_std = mean(std(x_ch, 0, 2));
+    m.chirp_response_amp = mean(max(abs(x_ch), [], 2));
+    m.max_abs_all        = max(abs(x_all), [], 'all');
+    m.post_mean_abs      = mean(abs(x_s2(:, end-49:end)), 'all');
+    m.post_std           = mean(std(x_s2(:, end-49:end), 0, 2));
+    m.recovery_ratio     = m.post_mean_abs / max(m.chirp_response_amp, eps);
 
-    % 2. Chirp response std
-    metrics.chirp_response_std = mean(std(x_chirp, 0, 2));
+    post_early = mean(abs(x_s2(:, 1:50)),    'all');
+    post_late  = mean(abs(x_s2(:, 151:200)), 'all');
+    m.recovery_slope = post_late / max(post_early, eps);
 
-    % 3. Chirp response amplitude
-    metrics.chirp_response_amp = mean(max(abs(x_chirp), [], 2));
-
-    % 4. Max absolute value over entire run
-    metrics.max_abs_all = max(abs(x_all), [], 'all');
-
-    % 5. Post-stimulus mean absolute (last 50 steps)
-    metrics.post_mean_abs = mean(abs(x_silence2(:, end-49:end)), 'all');
-
-    % 6. Post-stimulus std (last 50 steps)
-    metrics.post_std = mean(std(x_silence2(:, end-49:end), 0, 2));
-
-    % 7. Recovery ratio
-    metrics.recovery_ratio = metrics.post_mean_abs / max(metrics.chirp_response_amp, eps);
-
-    % 8. Recovery slope (early vs late post-stim)
-    post_early = mean(abs(x_silence2(:, 1:50)), 'all');
-    post_late  = mean(abs(x_silence2(:, 151:200)), 'all');
-    metrics.recovery_slope = post_late / max(post_early, eps);
-
-    % 9. Responsiveness: correlation between input chirp and mean reservoir
-    u_chirp = u_full(201:600);
-    u_chirp = u_chirp(:);
-    mean_x_chirp = mean(x_chirp, 1)';  % (400 x 1)
-    if std(mean_x_chirp) > 1e-12 && std(u_chirp) > 1e-12
-        R = corrcoef(u_chirp, mean_x_chirp);
-        metrics.responsiveness_corr = R(1,2);
+    u_ch = u_full(201:600);  u_ch = u_ch(:);
+    mean_xch = mean(x_ch, 1)';
+    if std(mean_xch) > 1e-12 && std(u_ch) > 1e-12
+        R = corrcoef(u_ch, mean_xch);
+        m.responsiveness_corr = R(1,2);
     else
-        metrics.responsiveness_corr = 0;
+        m.responsiveness_corr = 0;
     end
-
-    % Check for NaN / Inf
-    metrics.has_nan_inf = any(~isfinite(x_all(:)));
+    m.has_nan_inf = any(~isfinite(x_all(:)));
 end
 
-%% =========================================================================
-%  HELPER: classify_recovery
-%  =========================================================================
-function [passed, recovery_type, fail_reasons] = classify_recovery(m)
-% CLASSIFY_RECOVERY  Apply the full filtering logic.
-
+%% ========================================================================
+%  CLASSIFY RECOVERY  (updated 5 % chatter rule)
+%  ========================================================================
+function [passed, fail_reasons] = classify_recovery(m)
     fail_reasons = {};
-    passed = true;
-    recovery_type = "fail";
-
-    % Handle NaN/Inf
     if m.has_nan_inf
         passed = false;
-        fail_reasons{end+1} = 'nan_inf';
+        fail_reasons = {'nan_inf'};
         return;
     end
 
-    %% A. Not silent during stimulation
-    if m.chirp_response_std <= 0.08
+    % A. Silent during stimulation
+    if m.chirp_response_std <= 0.05
         fail_reasons{end+1} = 'silent_std';
     end
-    if m.chirp_response_amp <= 0.15
+    if m.chirp_response_amp <= 0.10
         fail_reasons{end+1} = 'silent_amp';
     end
 
-    %% B. Not unstable
+    % B. Unstable
     if m.max_abs_all >= 15
-        fail_reasons{end+1} = 'unstable_max';
+        fail_reasons{end+1} = 'unstable';
     end
 
-    %% D. Settling sanity
-    if m.pre_settle_level >= 0.5 * m.chirp_response_amp
-        fail_reasons{end+1} = 'transient_dominated';
+    % C. Pre-stimulus chatter exceeds 5 % of peak output
+    if m.pre_settle_level > 0.05 * m.max_abs_all
+        fail_reasons{end+1} = 'pre_chatter_gt_5pct';
     end
 
-    %% C. Recovery classification
-    % Type 1: background chatter
-    type1 = (m.post_mean_abs < 0.25 * m.chirp_response_amp) && ...
-            (m.post_std < 0.15 * m.chirp_response_amp) && ...
-            (m.recovery_slope < 1.0);
-
-    % Type 2: nearly silent
-    type2 = (m.post_mean_abs < 0.05) && (m.post_std < 0.03);
-
-    if type1
-        recovery_type = "chatter";
-    elseif type2
-        recovery_type = "silent";
-    else
-        fail_reasons{end+1} = 'bad_recovery';
+    % D. Post-stimulus chatter exceeds 5 % of peak output
+    if m.post_mean_abs > 0.05 * m.max_abs_all
+        fail_reasons{end+1} = 'post_chatter_gt_5pct';
     end
 
-    if ~isempty(fail_reasons)
-        passed = false;
-        recovery_type = "fail";
+    % E. Does not decay after stimulation
+    if m.recovery_slope >= 1.0
+        fail_reasons{end+1} = 'no_decay';
     end
+
+    passed = isempty(fail_reasons);
 end
 
-%% =========================================================================
-%  HELPER: fill_failed_result
-%  =========================================================================
-function result = fill_failed_result(result, reason)
-    result.metrics       = struct('pre_settle_level', NaN, ...
-                                  'chirp_response_std', NaN, ...
-                                  'chirp_response_amp', NaN, ...
-                                  'max_abs_all', NaN, ...
-                                  'post_mean_abs', NaN, ...
-                                  'post_std', NaN, ...
-                                  'recovery_ratio', NaN, ...
-                                  'recovery_slope', NaN, ...
-                                  'responsiveness_corr', NaN, ...
-                                  'has_nan_inf', true);
-    result.passed        = false;
-    result.recovery_type = "fail";
-    result.fail_reasons  = {reason};
-    result.inputscaling  = NaN;
-    result.a0thresh      = NaN;
-    result.spectralradius = NaN;
-    result.levelofchaos  = NaN;
-    result.cE            = NaN;
-    result.taud          = NaN;
-end
-
-%% =========================================================================
-%  HELPER: make_empty_result
-%  =========================================================================
-function r = make_empty_result(name1, name2)
-    r = struct();
-    r.param1_name  = name1;
-    r.param1_value = NaN;
-    r.param2_name  = name2;
-    r.param2_value = NaN;
-    r.metrics       = struct();
-    r.passed        = false;
-    r.recovery_type = "fail";
-    r.fail_reasons  = {};
-    r.inputscaling  = NaN;
-    r.a0thresh      = NaN;
-    r.spectralradius = NaN;
-    r.levelofchaos  = NaN;
-    r.cE            = NaN;
-    r.taud          = NaN;
-end
-
-%% =========================================================================
-%  HELPER: collect_viable
-%  =========================================================================
-function viable = collect_viable(varargin)
-% COLLECT_VIABLE  Gather all passed configs across all pairs.
-    viable = struct([]);
-    for k = 1:nargin
-        R = varargin{k};
-        for idx = 1:numel(R)
-            if R(idx).passed
-                if isempty(viable)
-                    viable = R(idx);
-                else
-                    viable(end+1) = R(idx); %#ok<AGROW>
-                end
-            end
-        end
+%% ========================================================================
+%  QUALITY SCORE  (higher = better)
+%  ========================================================================
+function s = compute_quality_score(m)
+    if ~isstruct(m) || ~isfield(m, 'has_nan_inf') || m.has_nan_inf
+        s = 0; return;
     end
-    if isempty(viable)
-        viable = struct([]);
-    end
+    resp  = abs(m.responsiveness_corr);
+    recov = max(1 - m.recovery_ratio, 0);
+    amp   = min(m.chirp_response_amp / 5, 1);
+    s     = resp * recov * amp;
+    if ~isfinite(s), s = 0; end
 end
 
-%% =========================================================================
-%  HELPER: plot_pair_heatmaps
-%  =========================================================================
-function plot_pair_heatmaps(results, name1, vals1, name2, vals2, pair_label, resultsDir)
-% PLOT_PAIR_HEATMAPS  Create 2x2 heatmap figure for a parameter pair.
+%% ========================================================================
+%  SELECT TOP CONFIGS FROM STAGE 2
+%  ========================================================================
+function top = select_top_configs(configs, passed, metrics_cells, K)
+    pidx   = find(passed);
+    scores = zeros(size(pidx));
+    for i = 1:numel(pidx)
+        scores(i) = compute_quality_score(metrics_cells{pidx(i)});
+    end
+    [~, ord] = sort(scores, 'descend');
+    K = min(K, numel(ord));
+    sel = pidx(ord(1:K));
+    top = configs(sel);
+end
 
-    n1 = numel(vals1);
-    n2 = numel(vals2);
+%% ========================================================================
+%  STAGE 3 – MULTI-SEED VALIDATION
+%  ========================================================================
+function s3 = validate_multi_seed(top_configs, u_full, protocol, N_seeds, defaults)
+    K     = numel(top_configs);
+    seeds = defaults.rngseed + (0:N_seeds-1) * 1000;
+    tu    = protocol.tu;
+    dt    = protocol.dt;
 
-    % Extract matrices
-    pass_map  = reshape([results.passed], n1, n2);
+    shared_all = cell(1, N_seeds);
+    for s = 1:N_seeds
+        shared_all{s} = build_shared_reservoir(defaults, seeds(s));
+    end
 
-    chirp_std_map   = NaN(n1, n2);
-    rec_ratio_map   = NaN(n1, n2);
-    post_mean_map   = NaN(n1, n2);
+    total   = K * N_seeds;
+    flat_p  = false(1, total);
+    flat_sc = zeros(1, total);
 
-    for i = 1:n1
-        for j = 1:n2
-            m = results(i,j).metrics;
-            if isstruct(m) && isfield(m, 'chirp_response_std')
-                chirp_std_map(i,j) = m.chirp_response_std;
-                rec_ratio_map(i,j) = m.recovery_ratio;
-                post_mean_map(i,j) = m.post_mean_abs;
-            end
+    fprintf('  Validating %d configs x %d seeds = %d runs ...\n', K, N_seeds, total);
+    parfor fi = 1:total
+        [ki, si] = ind2sub([K, N_seeds], fi);
+        r = run_single_config_ode(top_configs(ki), u_full, tu, dt, ...
+                                   shared_all{si}, defaults);
+        flat_p(fi)  = r.passed;
+        flat_sc(fi) = r.quality_score;
+    end
+
+    seed_passed = reshape(flat_p,  K, N_seeds);
+    seed_scores = reshape(flat_sc, K, N_seeds);
+
+    robust      = all(seed_passed, 2);
+    mean_scores = mean(seed_scores, 2);
+
+    [sorted_ms, ord] = sort(mean_scores, 'descend');
+
+    ranked = struct([]);
+    for i = 1:K
+        ki = ord(i);
+        c  = top_configs(ki);
+        entry = struct('inputscaling',   c.inputscaling, ...
+                        'a0thresh',       c.a0thresh, ...
+                        'spectralradius', c.spectralradius, ...
+                        'levelofchaos',   c.levelofchaos, ...
+                        'cE',             c.cE, ...
+                        'taud',           c.taud, ...
+                        'quality_score',  sorted_ms(i), ...
+                        'robustness',     mean(seed_passed(ki,:)), ...
+                        'rank',           i);
+        if isempty(ranked)
+            ranked = entry;
+        else
+            ranked(end+1) = entry; %#ok<AGROW>
         end
     end
 
-    fig = figure('Color', 'w', 'Position', [100 100 1200 900], ...
-                 'Name', pair_label);
+    s3 = struct('configs', {top_configs}, ...
+                'seed_passed',  seed_passed, ...
+                'seed_scores',  seed_scores, ...
+                'robust',       robust, ...
+                'mean_scores',  mean_scores, ...
+                'ranked_configs', ranked, ...
+                'seeds',        seeds);
+end
 
-    % 1. Pass/fail
-    subplot(2,2,1);
-    imagesc(vals2, vals1, double(pass_map));
-    colormap(gca, [0.85 0.2 0.2; 0.2 0.7 0.3]);
-    colorbar('Ticks', [0.25, 0.75], 'TickLabels', {'Fail','Pass'});
-    xlabel(name2, 'Interpreter', 'none');
-    ylabel(name1, 'Interpreter', 'none');
-    title([pair_label ': Pass / Fail']);
-    set(gca, 'YDir', 'normal');
+%% ========================================================================
+%  EMPTY METRICS STUB  (for failed simulations)
+%  ========================================================================
+function m = empty_metrics()
+    m = struct('pre_settle_level', NaN, 'chirp_response_std', NaN, ...
+               'chirp_response_amp', NaN, 'max_abs_all', NaN, ...
+               'post_mean_abs', NaN, 'post_std', NaN, ...
+               'recovery_ratio', NaN, 'recovery_slope', NaN, ...
+               'responsiveness_corr', NaN, 'has_nan_inf', true);
+end
 
-    % 2. Chirp response std
-    subplot(2,2,2);
-    imagesc(vals2, vals1, chirp_std_map);
-    colormap(gca, parula);
-    colorbar;
-    xlabel(name2, 'Interpreter', 'none');
-    ylabel(name1, 'Interpreter', 'none');
-    title([pair_label ': chirp\_response\_std']);
-    set(gca, 'YDir', 'normal');
+%% ========================================================================
+%  PLOTTING – CORNER SCATTER (Stages 1 & 2)
+%  ========================================================================
+function plot_stage_scatter(configs, passed, fig_title, resultsDir, prefix)
+    pnames = {'inputscaling','a0thresh','spectralradius','levelofchaos','cE','taud'};
+    np = numel(pnames);
 
-    % 3. Recovery ratio
-    subplot(2,2,3);
-    h = imagesc(vals2, vals1, rec_ratio_map);
-    set(h, 'AlphaData', ~isnan(rec_ratio_map));
-    colormap(gca, hot);
-    colorbar;
-    xlabel(name2, 'Interpreter', 'none');
-    ylabel(name1, 'Interpreter', 'none');
-    title([pair_label ': recovery\_ratio']);
-    set(gca, 'YDir', 'normal');
+    vals = zeros(numel(configs), np);
+    for i = 1:np
+        vals(:, i) = [configs.(pnames{i})];
+    end
 
-    % 4. Post mean abs
-    subplot(2,2,4);
-    h2 = imagesc(vals2, vals1, post_mean_map);
-    set(h2, 'AlphaData', ~isnan(post_mean_map));
-    colormap(gca, cool);
-    colorbar;
-    xlabel(name2, 'Interpreter', 'none');
-    ylabel(name1, 'Interpreter', 'none');
-    title([pair_label ': post\_mean\_abs']);
-    set(gca, 'YDir', 'normal');
+    pidx = find(passed);
+    fidx = find(~passed);
+    max_fail = 800;
+    if numel(fidx) > max_fail
+        fidx = fidx(randperm(numel(fidx), max_fail));
+    end
 
-    sgtitle(pair_label, 'FontSize', 14, 'FontWeight', 'bold');
+    fig = figure('Color','w','Position',[50 50 1400 1200],'Name',fig_title);
+    for r = 1:np
+        for c = 1:np
+            subplot(np, np, (r-1)*np + c);
+            if r == c
+                histogram(vals(pidx, r), 20, 'FaceColor', [0.1 0.7 0.2], ...
+                    'FaceAlpha', 0.6, 'EdgeColor', 'none');
+                hold on;
+                histogram(vals(:, r), 40, 'FaceColor', [0.6 0.6 0.6], ...
+                    'FaceAlpha', 0.2, 'EdgeColor', 'none');
+                hold off;
+                if r == 1, ylabel('count','FontSize',6); end
+                title(strrep(pnames{r},'_','\_'),'FontSize',7);
+            elseif r > c
+                scatter(vals(fidx, c), vals(fidx, r), 3, ...
+                    [0.78 0.22 0.22], '.', 'MarkerEdgeAlpha', 0.12);
+                hold on;
+                scatter(vals(pidx, c), vals(pidx, r), 10, ...
+                    [0.1 0.7 0.2], 'filled', 'MarkerFaceAlpha', 0.55);
+                hold off;
+            else
+                axis off; continue;
+            end
+            set(gca, 'FontSize', 5);
+            if r == np, xlabel(strrep(pnames{c},'_','\_'),'FontSize',6); end
+            if c == 1 && r ~= c, ylabel(strrep(pnames{r},'_','\_'),'FontSize',6); end
+        end
+    end
+    sgtitle(sprintf('%s  (%d/%d pass)', fig_title, numel(pidx), numel(configs)), ...
+            'FontSize', 12, 'FontWeight', 'bold');
+    saveas(fig, fullfile(resultsDir, [prefix '_corner.png']));
+    savefig(fig, fullfile(resultsDir, [prefix '_corner.fig']));
+end
 
-    % Save figure
-    safeName = strrep(lower(pair_label), ' ', '_');
-    saveas(fig, fullfile(resultsDir, [safeName '_heatmaps.png']));
-    savefig(fig, fullfile(resultsDir, [safeName '_heatmaps.fig']));
-    fprintf('  Saved heatmaps for %s\n', pair_label);
+%% ========================================================================
+%  PLOTTING – STAGE 3 RANKING BAR CHART
+%  ========================================================================
+function plot_stage3_ranking(s3, resultsDir)
+    rc  = s3.ranked_configs;
+    K   = min(30, numel(rc));
+
+    scores = [rc(1:K).quality_score];
+    robust = [rc(1:K).robustness];
+
+    fig = figure('Color', 'w', 'Position', [100 100 900 500], ...
+                 'Name', 'Stage 3 Ranking');
+    b = barh(1:K, scores, 'FaceColor', 'flat');
+
+    cmap = zeros(K, 3);
+    for i = 1:K
+        frac = robust(i);
+        cmap(i,:) = frac * [0.1 0.75 0.2] + (1-frac) * [0.85 0.2 0.15];
+    end
+    b.CData = cmap;
+
+    set(gca, 'YDir', 'reverse', 'FontSize', 8);
+    xlabel('Mean quality score');
+    ylabel('Rank');
+    title(sprintf('Top %d configs  (green = robust, red = fragile)', K));
+    ylim([0.5 K+0.5]);
+
+    saveas(fig, fullfile(resultsDir, 'stage3_ranking.png'));
+    savefig(fig, fullfile(resultsDir, 'stage3_ranking.fig'));
+end
+
+%% ========================================================================
+%  UTILITY – move array to device (single precision)
+%  ========================================================================
+function arr = to_dev(arr, use_gpu)
+    arr = single(arr);
+    if use_gpu, arr = gpuArray(arr); end
 end
