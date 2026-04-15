@@ -123,9 +123,11 @@ function esp = verify_echo_state_property(esn_or_params, U, options)
         end
         switch lower(use_reference)
             case 'first'
-                ref = X_ref(ti, :);
+                ref = Xi(:, 1);
+                dnorm = sqrt(sum((Xi - ref).^2, 1));
             case 'mean'
                 ref = mean(X_ref, 2);
+                dnorm = sqrt(sum((Xi - ref).^2, 1));
             otherwise
                 error('verify_echo_state_property:InvalidReference', ...
                     'use_reference must be ''first'' or ''mean''');
