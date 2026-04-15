@@ -40,19 +40,22 @@ function lya_results = compute_lyapunov_exponents(Lya_method, S_out, t_out, dt, 
         return;
     end
     
-    % Adjust lya_dt based on method: QR needs longer interval
+    % Choose a target renormalisation interval (seconds) then snap it to an
+    % integer number of simulation steps so it is compatible with dt.
     if strcmpi(Lya_method, 'qr')
-        lya_dt = 0.1;  % Longer interval for QR method
+        lya_dt_target = 0.1;   % QR typically benefits from longer intervals
     elseif strcmpi(Lya_method, 'benettin')
-        lya_dt = 0.02;  % Standard interval for Benettin
+        lya_dt_target = 0.02;  % Standard interval for Benettin (when dt allows)
     else
-        lya_dt = 0.1;
+        lya_dt_target = 0.1;
     end
-    
-    % Check lya_dt is a nice multiple of dt
-    if abs(round(lya_dt/dt) - lya_dt/dt) > 1e-11
-        error('lya_dt must be a multiple of dt');
+
+    if ~(isscalar(dt) && isfinite(dt) && dt > 0)
+        error('dt must be a positive, finite scalar');
     end
+
+    n_steps = max(1, round(lya_dt_target / dt));
+    lya_dt = n_steps * dt;
     
     lya_fs = 1 / lya_dt;
     
