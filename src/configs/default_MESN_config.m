@@ -22,7 +22,7 @@ function [params, meta] = default_MESN_config(overrides)
     % Base scalar defaults
     % -------------------------
     cfg = struct();
-    cfg.n = 600;
+    cfg.n = 100;
     cfg.fraction_E = 0.5;
 
     cfg.dt = 0.1;

@@ -44,6 +44,7 @@ classdef SRNN_ESN < handle
         c_E            % Adaptation scaling for E neurons
         c_I            % Adaptation scaling for I neurons
         activation_function  % Nonlinearity (function handle)
+        activation_function_derivative % Derivative of nonlinearity (function handle)
         
         % Reservoir state
         S              % Current state vector [a_E(:); a_I(:); b_E(:); b_I(:); x(:)]
@@ -102,6 +103,7 @@ classdef SRNN_ESN < handle
             obj.W_in = params.W_in;
             obj.tau_d = params.tau_d;
             obj.activation_function = params.activation_function;
+            obj.activation_function_derivative = getFieldOrDefault(params, 'activation_function_derivative', []);
             
             % Compute indices
             obj.E_indices = 1:obj.n_E;
