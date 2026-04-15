@@ -53,8 +53,11 @@ function bench = mackey_glass_benchmark(esn_or_params, options)
     [t, x] = generate_mackey_glass('tau', tau, 'dt', dt_mg, 'n_samples', T, 'discard', discard);
 
     % One-step prediction: input is x(t), target is x(t+1)
+    % Force column vectors to keep metric shapes consistent (MATLAB may return row vectors)
     u = x(1:end-1);
     y = x(2:end);
+    u = u(:);
+    y = y(:);
 
     T2 = numel(u);
     n_train = floor(T2 * train_ratio);
@@ -103,6 +106,7 @@ function bench = mackey_glass_benchmark(esn_or_params, options)
         esn.W_out = Wout;
         esn.b_out = bout(:);
         esn.is_trained = true;
+        esn.n_outputs = size(Wout, 2);
 
         init_len = max(2*washout, 200);
         init_data = u_test(1:init_len);
@@ -111,6 +115,7 @@ function bench = mackey_glass_benchmark(esn_or_params, options)
         bench.rollout.init_len = init_len;
         bench.rollout.y_roll = y_roll;
         bench.rollout.y_true = y_test((init_len+1):(init_len+rollout_steps));
+        bench.rollout.y_true = bench.rollout.y_true(:);
         bench.rollout.metrics = compute_metrics(y_roll, bench.rollout.y_true);
     end
 end
