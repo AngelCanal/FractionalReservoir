@@ -26,8 +26,8 @@ flags.memory = true;
 flags.kernel_rank = true;
 flags.benchmarks = true;
 flags.bio = true;
-flags.parameter_sweep = false;     % can take long
-flags.meanfield_bifurcation = false; % optional (DDE-BIFTOOL or dde23 sweep)
+flags.parameter_sweep = true;     % can take long
+flags.meanfield_bifurcation = true; % optional (DDE-BIFTOOL or dde23 sweep)
 
 % -------------------------
 % Reference config and representative drive

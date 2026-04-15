@@ -117,16 +117,18 @@ function esp = verify_echo_state_property(esn_or_params, U, options)
     n_t = size(Xw, 1);
     spread = zeros(n_t, 1);
     for ti = 1:n_t
-        diffs = squeeze(Xw(ti, :, :) - X_ref(ti, :).'); % (n_feat x n_ic) or (n_feat x n_ic)
-        if ndims(diffs) == 2
-            % diffs is (n_feat x n_ic)
-            dnorm = sqrt(sum(diffs.^2, 1));
-        else
-            % fallback (should not happen)
-            dnorm = zeros(1, n_ic);
-            for kk = 1:n_ic
-                dnorm(kk) = norm(Xw(ti, :, kk) - X_ref(ti, :));
-            end
+        Xi = squeeze(Xw(ti, :, :));   % n_feat x n_ic
+        if size(Xi, 2) ~= n_ic
+            Xi = Xi.';
+        end
+        switch lower(use_reference)
+            case 'first'
+                ref = X_ref(ti, :);
+            case 'mean'
+                ref = mean(X_ref, 2);
+            otherwise
+                error('verify_echo_state_property:InvalidReference', ...
+                    'use_reference must be ''first'' or ''mean''');
         end
         spread(ti) = max(dnorm);
     end
@@ -137,7 +139,10 @@ function esp = verify_echo_state_property(esn_or_params, U, options)
     esp.t_idx = t_idx(:);
     esp.convergence_curve = spread;
     esp.final_spread = spread(end);
-    esp.esp_holds = isfinite(esp.final_spread) && (esp.final_spread <= eps_tol);
+
+    tail_len = min(50, numel(spread));
+    tail = spread(end-tail_len+1:end);
+    esp.esp_holds = all(isfinite(tail)) && max(tail) <= eps_tol;
 
     if verbose
         fprintf('ESP check: final spread = %.3e (tol=%.3e) => %s\n', ...
