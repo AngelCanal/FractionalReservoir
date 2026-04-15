@@ -26,7 +26,7 @@ flags.memory = true;
 flags.kernel_rank = true;
 flags.benchmarks = true;
 flags.bio = true;
-flags.parameter_sweep = true;     % can take long
+flags.parameter_sweep = false;     % can take long
 flags.meanfield_bifurcation = true; % optional (DDE-BIFTOOL or dde23 sweep)
 
 % -------------------------
