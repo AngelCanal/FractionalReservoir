@@ -1,9 +1,13 @@
 classdef SRNN_ESN < handle
-    % SRNN_ESN: Echo State Network wrapper for the fractional SRNN reservoir
+    % SRNN_ESN: Echo State Network wrapper for the SRNN reservoir
     %
     % This class implements a complete Reservoir Computing / Echo State Network
-    % paradigm using the fractional-order SRNN reservoir (SRNN_reservoir.m) as
-    % the dynamic core and adding a trainable linear readout layer.
+    % paradigm using the SRNN reservoir (SRNN_reservoir.m or SRNN_reservoir_DDE.m)
+    % as the dynamic core and adding a trainable linear readout layer.
+    %
+    % Reservoir dynamics (see SRNN_reservoir.m):
+    %   r_i = phi(x_eff_i),  s_j = b_j * r_j  (presynaptic STD)
+    %   dx/dt = (-x + W*s + u) / tau_d, plus SFA/STD on a and b
     %
     % Key features:
     %   - Wraps the fractional SRNN reservoir dynamics
@@ -607,8 +611,7 @@ classdef SRNN_ESN < handle
                     X = x_history;
                     
                 case 'r'
-                    % Compute firing rates from x
-                    % Need to recompute r = b .* activation_function(x_eff)
+                    % Compute firing rates r = phi(x_eff) from state history
                     X = zeros(n_timesteps, obj.n);
                     for t = 1:n_timesteps
                         S_t = S_history(t, :)';
@@ -690,8 +693,7 @@ classdef SRNN_ESN < handle
                 b(obj.I_indices) = b_I;
             end
             
-            % Corrected: r is the raw firing rate (phi), not scaled by b
-            % The b factor represents presynaptic depression applied in dx/dt
+            % Firing rate r = phi(x_eff); presynaptic depression b enters dx/dt only.
             r = obj.activation_function(x_eff);
         end
         

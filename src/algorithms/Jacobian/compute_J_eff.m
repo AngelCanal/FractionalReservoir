@@ -12,8 +12,7 @@ function J_eff = compute_J_eff(S, params)
 %
 %   Based on the derivation in J_eff_notes.md:
 %     J_eff(x,a,b) = (1/tau_d) * (-I + W * G)
-%   where
-%     G = diag(b_i * phi'(x_i - c * sum_k(a_{ik})))
+%   where G = diag(b_j * phi'(x_eff_j)) and s_j = b_j * phi(x_eff_j).
 %
 % Inputs:
 %   S      - State vector (N_sys_eqs x 1) at a single time point

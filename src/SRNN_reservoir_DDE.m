@@ -1,20 +1,36 @@
 function dS_dt = SRNN_reservoir_DDE(t, S, S_delay, t_ex, u_ex, params)
-% SRNN_RESERVOIR_DDE Implements the DDE version of the SRNN
+% SRNN_RESERVOIR_DDE  DDE version of the SRNN reservoir (same SFA/STD as SRNN_reservoir).
+%
+% From any state S (current or delayed), define:
+%   x_eff_i = x_i - c * sum_k(a_i,k)     (c = c_E for E, c_I for I)
+%   r_i     = phi(x_eff_i)               (firing rate; b is NOT inside r)
+%   s_j     = b_j * r_j                  (presynaptic synaptic output)
+%
+% Recurrent input (instantaneous + delayed presynaptic drive):
+%   I_rec_i(t) = sum_j W_components{1}(i,j) * s_j(t)
+%              + sum_k sum_j W_components{k+1}(i,j) * s_j(t - lags(k))
+%
+% Local dynamics at the current state S(t):
+%   tau_d * dx_i/dt = -x_i + I_rec_i(t) + u_i(t)
+%   da_i,k/dt = (-a_i,k + r_i) / tau_k
+%   db_i/dt = (1 - b_i) / tau_rec - (b_i * r_i) / tau_rel
+%
+% State organization: S = [a_E(:); a_I(:); b_E(:); b_I(:); x(:)]
 %
 % Syntax:
 %   dS_dt = SRNN_reservoir_DDE(t, S, S_delay, t_ex, u_ex, params)
 %
 % Inputs:
-%   t               - Current time
-%   S               - Current state vector
-%   S_delay         - Delayed state vectors (column k corresponds to params.lags(k))
-%   t_ex    - External input time vector
-%   u_ex    - External input matrix
-%   params  - Parameter struct
+%   t         - Current time
+%   S         - Current state vector
+%   S_delay   - Delayed state vectors (column k corresponds to params.lags(k))
+%   t_ex      - External input time vector
+%   u_ex      - External input matrix
+%   params    - Parameter struct
 %
-% Params must contain:
-%   params.W_components - Cell array where W_components{1} is instantaneous connectivity,
-%                         and W_components{k+1} corresponds to params.lags(k).
+% params.W_components:
+%   W_components{1}   - instantaneous connectivity (E presynaptic columns in SRNN_ESN)
+%   W_components{k+1} - connectivity delayed by params.lags(k) (I columns in SRNN_ESN)
 
     persistent u_interpolant t_ex_last u_ex_size_last;
 
@@ -193,7 +209,7 @@ function [r, x, a_cell, b_cell, b] = compute_rates_and_unpack(S, params)
         b(I_indices) = b_I;
     end
     
-    % r is the raw firing rate (phi), not scaled by b
+    % Firing rate r = phi(x_eff); presynaptic depression b enters synaptic drive only.
     r = activation_function(x_eff);
     
     % Pack aux outputs for derivative calc

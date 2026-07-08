@@ -1,14 +1,14 @@
 function [dS_dt] = SRNN_reservoir(t, S, t_ex, u_ex, params)
 % SRNN_reservoir implements a rate network with spike-frequency adaptation
-% and short-term synaptic depression
+% and presynaptic short-term synaptic depression (STD).
 %
 % Implements the following equations:
-%   dx_i/dt = (-x_i + sum_j(w_ij * r_j) + u_i) / tau_d
-%   r_i = b_i * phi(x_i - c * sum_k(a_i,k))
+%   x_eff_i = x_i - c * sum_k(a_i,k)     (c = c_E for E, c_I for I)
+%   r_i     = phi(x_eff_i)               (firing rate; b is NOT inside r)
+%   s_j     = b_j * r_j                  (presynaptic synaptic output)
+%   dx_i/dt = (-x_i + sum_j(w_ij * s_j) + u_i) / tau_d
 %   da_i,k/dt = (-a_i,k + r_i) / tau_k
 %   db_i/dt = (1 - b_i) / tau_rec - (b_i * r_i) / tau_rel
-%
-% where c = c_E for excitatory neurons and c = c_I for inhibitory neurons
 %
 % State organization: S = [a_E(:); a_I(:); b_E(:); b_I(:); x(:)]
 
@@ -147,12 +147,11 @@ function [dS_dt] = SRNN_reservoir(t, S, t_ex, u_ex, params)
         b(I_indices) = b_I;
     end
     
-    % Corrected: r is the raw firing rate (phi), not scaled by b
+    % Firing rate r = phi(x_eff); presynaptic depression b enters synaptic drive only.
     r = activation_function(x_eff); % n x 1, firing rate
 
     %% compute derivatives
-    % dx/dt = -x/tau_d + W*(b.*r) + u
-    % Corrected: Apply b (presynaptic depression) here
+    % dx/dt = (-x + W*(b.*r) + u) / tau_d  (presynaptic STD: s = b.*r)
     dx_dt = (-x + W * (b .* r) + u) / tau_d;
 
     % da_E/dt = (r_E - a_E) / tau_a_E

@@ -3,7 +3,13 @@ function J = compute_Jacobian(S, params)
 %
 % J = compute_Jacobian(S, params)
 %
-% Computes the Jacobian matrix ∂(dS/dt)/∂S for the SRNN system at a given state.
+% Computes the Jacobian matrix d(dS/dt)/dS for the SRNN system at a given state.
+%
+% Dynamics (presynaptic STD; see SRNN_reservoir.m):
+%   r_i = phi(x_eff_i),  s_j = b_j * r_j
+%   dx/dt = (-x + W*s + u) / tau_d
+%   da/dt = (r - a) ./ tau_a
+%   db/dt = (1-b)/tau_rec - (b.*r)/tau_rel
 %
 % Inputs:
 %   S      - State vector (N_sys_eqs × 1) with organization [a_E(:); a_I(:); b_E(:); b_I(:); x(:)]
@@ -144,8 +150,8 @@ function J = compute_Jacobian(S, params)
               'params.activation_function must be provided as a function handle');
     end
     
-    % Compute firing rates r = b .* φ(x_eff) - needed for STD Jacobian blocks
-    r_vec = b .* phi_x_eff;  % n x 1
+    % Firing rate r = phi(x_eff); presynaptic output s = b .* r
+    r_vec = phi_x_eff;  % n x 1
     
     %% Initialize Jacobian matrix
     N_sys_eqs = len_a_E + len_a_I + len_b_E + len_b_I + n;
@@ -177,21 +183,20 @@ function J = compute_Jacobian(S, params)
     col_x_start = len_a_E + len_a_I + len_b_E + len_b_I + 1;
     col_x_end = N_sys_eqs;
     
-    %% Block 1: ∂(da_E/dt)/∂a_E
-    % da_{i,k}/dt = (-a_{i,k} + r_i) / τ_k, where r_i = b_i * φ(x_eff_i)
-    % ∂(da_{i,k}/dt)/∂a_{i,j} = -δ_{kj}/τ_k - b_i*c_E*φ'(x_eff_i)/τ_k
+    %% Block 1: d(da_E/dt)/d(a_E)
+    % da_{i,k}/dt = (-a_{i,k} + r_i) / tau_k, where r_i = phi(x_eff_i)
+    % d(da_{i,k}/dt)/d(a_{i,j}) = -delta_{kj}/tau_k - c_E*phi'(x_eff_i)/tau_k
     if len_a_E > 0
         for i = 1:n_E
             neuron_idx = E_indices(i);
-            b_i = b(neuron_idx);
             for k = 1:n_a_E
                 row_idx = (i-1)*n_a_E + k;
                 for j = 1:n_a_E
                     col_idx = (i-1)*n_a_E + j;
                     if k == j
-                        J(row_idx, col_idx) = -1/tau_a_E(k) - b_i*c_E*phi_prime_x_eff(neuron_idx)/tau_a_E(k);
+                        J(row_idx, col_idx) = -1/tau_a_E(k) - c_E*phi_prime_x_eff(neuron_idx)/tau_a_E(k);
                     else
-                        J(row_idx, col_idx) = -b_i*c_E*phi_prime_x_eff(neuron_idx)/tau_a_E(k);
+                        J(row_idx, col_idx) = -c_E*phi_prime_x_eff(neuron_idx)/tau_a_E(k);
                     end
                 end
             end
@@ -202,33 +207,21 @@ function J = compute_Jacobian(S, params)
     % No coupling between E and I adaptation variables
     % This block remains zero
     
-    %% Block 2b: ∂(da_E/dt)/∂b_E
-    % da_{i,k}/dt = (-a_{i,k} + b_i*φ(x_eff_i)) / τ_k
-    % ∂(da_{i,k}/dt)/∂b_i = φ(x_eff_i) / τ_k
-    if len_a_E > 0 && len_b_E > 0
-        for i = 1:n_E
-            neuron_idx = E_indices(i);
-            for k = 1:n_a_E
-                row_idx = (i-1)*n_a_E + k;
-                col_idx = col_b_E_start + (i-1)*n_b_E;  % b_E is only 1 element per E neuron when n_b_E=1
-                J(row_idx, col_idx) = phi_x_eff(neuron_idx) / tau_a_E(k);
-            end
-        end
-    end
+    %% Block 2b: d(da_E/dt)/d(b_E)
+    % r_i does not depend on b_i, so this block remains zero
     
     %% Block 2c: ∂(da_E/dt)/∂b_I
     % No coupling between E adaptation and I STD
     % This block remains zero
     
-    %% Block 3: ∂(da_E/dt)/∂x
-    % ∂(da_{i,k}/dt)/∂x_j = (b_i * φ'(x_eff_i) * δ_{ij}) / τ_k
+    %% Block 3: d(da_E/dt)/d(x)
+    % d(da_{i,k}/dt)/d(x_j) = phi'(x_eff_i) * delta_{ij} / tau_k
     if len_a_E > 0
         for i = 1:n_E
             neuron_idx = E_indices(i);
-            b_i = b(neuron_idx);
             for k = 1:n_a_E
                 row_idx = (i-1)*n_a_E + k;
-                J(row_idx, col_x_start + neuron_idx - 1) = b_i * phi_prime_x_eff(neuron_idx) / tau_a_E(k);
+                J(row_idx, col_x_start + neuron_idx - 1) = phi_prime_x_eff(neuron_idx) / tau_a_E(k);
             end
         end
     end
@@ -237,21 +230,20 @@ function J = compute_Jacobian(S, params)
     % No coupling between I and E adaptation variables
     % This block remains zero
     
-    %% Block 5: ∂(da_I/dt)/∂a_I
-    % da_{i,k}/dt = (-a_{i,k} + r_i) / τ_k, where r_i = b_i * φ(x_eff_i)
-    % ∂(da_{i,k}/dt)/∂a_{i,j} = -δ_{kj}/τ_k - b_i*c_I*φ'(x_eff_i)/τ_k
+    %% Block 5: d(da_I/dt)/d(a_I)
+    % da_{i,k}/dt = (-a_{i,k} + r_i) / tau_k, where r_i = phi(x_eff_i)
+    % d(da_{i,k}/dt)/d(a_{i,j}) = -delta_{kj}/tau_k - c_I*phi'(x_eff_i)/tau_k
     if len_a_I > 0
         for i = 1:n_I
             neuron_idx = I_indices(i);
-            b_i = b(neuron_idx);
             for k = 1:n_a_I
                 row_idx = len_a_E + (i-1)*n_a_I + k;
                 for j = 1:n_a_I
                     col_idx = len_a_E + (i-1)*n_a_I + j;
                     if k == j
-                        J(row_idx, col_idx) = -1/tau_a_I(k) - b_i*c_I*phi_prime_x_eff(neuron_idx)/tau_a_I(k);
+                        J(row_idx, col_idx) = -1/tau_a_I(k) - c_I*phi_prime_x_eff(neuron_idx)/tau_a_I(k);
                     else
-                        J(row_idx, col_idx) = -b_i*c_I*phi_prime_x_eff(neuron_idx)/tau_a_I(k);
+                        J(row_idx, col_idx) = -c_I*phi_prime_x_eff(neuron_idx)/tau_a_I(k);
                     end
                 end
             end
@@ -262,39 +254,26 @@ function J = compute_Jacobian(S, params)
     % No coupling between I adaptation and E STD
     % This block remains zero
     
-    %% Block 5c: ∂(da_I/dt)/∂b_I
-    % da_{i,k}/dt = (-a_{i,k} + b_i*φ(x_eff_i)) / τ_k
-    % ∂(da_{i,k}/dt)/∂b_i = φ(x_eff_i) / τ_k
-    if len_a_I > 0 && len_b_I > 0
-        for i = 1:n_I
-            neuron_idx = I_indices(i);
-            for k = 1:n_a_I
-                row_idx = len_a_E + (i-1)*n_a_I + k;
-                col_idx = col_b_I_start + (i-1)*n_b_I;  % b_I is only 1 element per I neuron when n_b_I=1
-                J(row_idx, col_idx) = phi_x_eff(neuron_idx) / tau_a_I(k);
-            end
-        end
-    end
+    %% Block 5c: d(da_I/dt)/d(b_I)
+    % r_i does not depend on b_i, so this block remains zero
     
-    %% Block 6: ∂(da_I/dt)/∂x
-    % ∂(da_{i,k}/dt)/∂x_j = (b_i * φ'(x_eff_i) * δ_{ij}) / τ_k
+    %% Block 6: d(da_I/dt)/d(x)
+    % d(da_{i,k}/dt)/d(x_j) = phi'(x_eff_i) * delta_{ij} / tau_k
     if len_a_I > 0
         for i = 1:n_I
             neuron_idx = I_indices(i);
-            b_i = b(neuron_idx);
             for k = 1:n_a_I
                 row_idx = len_a_E + (i-1)*n_a_I + k;
-                J(row_idx, col_x_start + neuron_idx - 1) = b_i * phi_prime_x_eff(neuron_idx) / tau_a_I(k);
+                J(row_idx, col_x_start + neuron_idx - 1) = phi_prime_x_eff(neuron_idx) / tau_a_I(k);
             end
         end
     end
     
     %% NEW BLOCKS FOR b DYNAMICS
     
-    %% Block 7new: ∂(db_E/dt)/∂a_E
-    % db_i/dt = (1-b_i)/τ_rec - (b_i*r_i)/τ_rel, where r_i = b_i*φ(x_eff_i)
-    % ∂(db_i/dt)/∂a_{i,k} = -b_i * ∂r_i/∂a_{i,k} / τ_rel = -b_i * b_i * (-c_E) * φ'(x_eff_i) / τ_rel
-    %                      = b_i^2 * c_E * φ'(x_eff_i) / τ_rel
+    %% Block 7new: d(db_E/dt)/d(a_E)
+    % db_i/dt = (1-b_i)/tau_rec - (b_i*r_i)/tau_rel, where r_i = phi(x_eff_i)
+    % d(db_i/dt)/d(a_{i,k}) = -b_i * (-c_E) * phi'(x_eff_i) / tau_rel = b_i * c_E * phi'(x_eff_i) / tau_rel
     if len_b_E > 0 && len_a_E > 0
         for i = 1:n_E
             neuron_idx = E_indices(i);
@@ -302,7 +281,7 @@ function J = compute_Jacobian(S, params)
             row_idx = row_b_E_start + (i-1)*n_b_E;
             for k = 1:n_a_E
                 col_idx = (i-1)*n_a_E + k;
-                J(row_idx, col_idx) = b_i^2 * c_E * phi_prime_x_eff(neuron_idx) / tau_b_E_rel;
+                J(row_idx, col_idx) = b_i * c_E * phi_prime_x_eff(neuron_idx) / tau_b_E_rel;
             end
         end
     end
@@ -311,17 +290,15 @@ function J = compute_Jacobian(S, params)
     % No coupling between E STD and I adaptation
     % This block remains zero
     
-    %% Block 9new: ∂(db_E/dt)/∂b_E
-    % db_i/dt = (1-b_i)/τ_rec - (b_i*r_i)/τ_rel
-    % ∂(db_i/dt)/∂b_i = -1/τ_rec - r_i/τ_rel - b_i * ∂r_i/∂b_i / τ_rel
-    %                 = -1/τ_rec - r_i/τ_rel - b_i * φ(x_eff_i) / τ_rel
-    %                 = -1/τ_rec - 2*r_i/τ_rel  (since r_i = b_i*φ(x_eff_i))
+    %% Block 9new: d(db_E/dt)/d(b_E)
+    % db_i/dt = (1-b_i)/tau_rec - (b_i*r_i)/tau_rel, r_i = phi(x_eff_i)
+    % d(db_i/dt)/d(b_i) = -1/tau_rec - r_i/tau_rel
     if len_b_E > 0
         for i = 1:n_E
             neuron_idx = E_indices(i);
             row_idx = row_b_E_start + (i-1)*n_b_E;
             col_idx = col_b_E_start + (i-1)*n_b_E;
-            J(row_idx, col_idx) = -1/tau_b_E_rec - 2*r_vec(neuron_idx)/tau_b_E_rel;
+            J(row_idx, col_idx) = -1/tau_b_E_rec - r_vec(neuron_idx)/tau_b_E_rel;
         end
     end
     
@@ -329,16 +306,14 @@ function J = compute_Jacobian(S, params)
     % No coupling between E STD and I STD
     % This block remains zero
     
-    %% Block 11new: ∂(db_E/dt)/∂x
-    % db_i/dt = (1-b_i)/τ_rec - (b_i*r_i)/τ_rel
-    % ∂(db_i/dt)/∂x_j = -b_i * ∂r_i/∂x_j / τ_rel = -b_i * b_i * φ'(x_eff_i) * δ_{ij} / τ_rel
-    %                  = -b_i^2 * φ'(x_eff_i) / τ_rel
+    %% Block 11new: d(db_E/dt)/d(x)
+    % d(db_i/dt)/d(x_j) = -b_i * phi'(x_eff_i) / tau_rel
     if len_b_E > 0
         for i = 1:n_E
             neuron_idx = E_indices(i);
             b_i = b(neuron_idx);
             row_idx = row_b_E_start + (i-1)*n_b_E;
-            J(row_idx, col_x_start + neuron_idx - 1) = -b_i^2 * phi_prime_x_eff(neuron_idx) / tau_b_E_rel;
+            J(row_idx, col_x_start + neuron_idx - 1) = -b_i * phi_prime_x_eff(neuron_idx) / tau_b_E_rel;
         end
     end
     
@@ -346,9 +321,7 @@ function J = compute_Jacobian(S, params)
     % No coupling between I STD and E adaptation
     % This block remains zero
     
-    %% Block 13new: ∂(db_I/dt)/∂a_I
-    % db_i/dt = (1-b_i)/τ_rec - (b_i*r_i)/τ_rel
-    % Similar to Block 7new but for I neurons
+    %% Block 13new: d(db_I/dt)/d(a_I)
     if len_b_I > 0 && len_a_I > 0
         for i = 1:n_I
             neuron_idx = I_indices(i);
@@ -356,7 +329,7 @@ function J = compute_Jacobian(S, params)
             row_idx = row_b_I_start + (i-1)*n_b_I;
             for k = 1:n_a_I
                 col_idx = col_a_I_start + (i-1)*n_a_I + k - 1;
-                J(row_idx, col_idx) = b_i^2 * c_I * phi_prime_x_eff(neuron_idx) / tau_b_I_rel;
+                J(row_idx, col_idx) = b_i * c_I * phi_prime_x_eff(neuron_idx) / tau_b_I_rel;
             end
         end
     end
@@ -365,32 +338,30 @@ function J = compute_Jacobian(S, params)
     % No coupling between I STD and E STD
     % This block remains zero
     
-    %% Block 15new: ∂(db_I/dt)/∂b_I
-    % Similar to Block 9new but for I neurons
+    %% Block 15new: d(db_I/dt)/d(b_I)
     if len_b_I > 0
         for i = 1:n_I
             neuron_idx = I_indices(i);
             row_idx = row_b_I_start + (i-1)*n_b_I;
             col_idx = col_b_I_start + (i-1)*n_b_I;
-            J(row_idx, col_idx) = -1/tau_b_I_rec - 2*r_vec(neuron_idx)/tau_b_I_rel;
+            J(row_idx, col_idx) = -1/tau_b_I_rec - r_vec(neuron_idx)/tau_b_I_rel;
         end
     end
     
-    %% Block 16new: ∂(db_I/dt)/∂x
-    % Similar to Block 11new but for I neurons
+    %% Block 16new: d(db_I/dt)/d(x)
     if len_b_I > 0
         for i = 1:n_I
             neuron_idx = I_indices(i);
             b_i = b(neuron_idx);
             row_idx = row_b_I_start + (i-1)*n_b_I;
-            J(row_idx, col_x_start + neuron_idx - 1) = -b_i^2 * phi_prime_x_eff(neuron_idx) / tau_b_I_rel;
+            J(row_idx, col_x_start + neuron_idx - 1) = -b_i * phi_prime_x_eff(neuron_idx) / tau_b_I_rel;
         end
     end
     
-    %% ORIGINAL BLOCKS FOR dx/dt (updated to account for b in r)
+    %% Blocks for dx/dt (presynaptic STD: s_j = b_j * phi(x_eff_j))
     
-    %% Block 7: ∂(dx/dt)/∂a_E
-    % dx_i/dt = (-x_i + Σ_j w_ij r_j + u_i) / τ_d, where r_j = b_j*φ(x_eff_j)
+    %% Block 7: d(dx/dt)/d(a_E)
+    % dx_i/dt = (-x_i + sum_j w_ij s_j + u_i) / tau_d, where s_j = b_j*phi(x_eff_j)
     % ∂(dx_i/dt)/∂a_{j,k} = (w_ij * b_j * φ'(x_eff_j) * (-c_E)) / τ_d for j in E_indices
     if len_a_E > 0
         for i = 1:n
@@ -422,9 +393,8 @@ function J = compute_Jacobian(S, params)
         end
     end
     
-    %% Block 8b: ∂(dx/dt)/∂b_E
-    % dx_i/dt = (-x_i + Σ_j w_ij r_j + u_i) / τ_d, where r_j = b_j*φ(x_eff_j)
-    % ∂(dx_i/dt)/∂b_j = (w_ij * φ(x_eff_j)) / τ_d for j in E_indices
+    %% Block 8b: d(dx/dt)/d(b_E)
+    % d(dx_i/dt)/d(b_j) = (w_ij * phi(x_eff_j)) / tau_d for j in E_indices
     if len_b_E > 0
         for i = 1:n
             row_idx = row_x_start + i - 1;

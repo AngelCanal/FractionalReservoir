@@ -7,8 +7,11 @@ function J = compute_Jacobian_fast(S, params)
 % block operations (kron, spdiags) for improved scalability in Lyapunov
 % calculations and other workflows that require frequent Jacobian evaluations.
 %
+% Dynamics (presynaptic STD; see SRNN_reservoir.m):
+%   r_i = phi(x_eff_i),  s_j = b_j * r_j
+%
 % Assumptions:
-%   - At most one short-term depression state per neuron (n_b_E, n_b_I ∈ {0,1}),
+%   - At most one short-term depression state per neuron (n_b_E, n_b_I in {0,1}),
 %     matching the current SRNN_reservoir dynamics.
 
     %% Load parameters
@@ -110,7 +113,7 @@ function J = compute_Jacobian_fast(S, params)
     
     phi_x_eff = phi_fun(x_eff);
     phi_prime_x_eff = phi_prime(x_eff);
-    r_vec = b .* phi_x_eff;
+    r_vec = phi_x_eff;
     
     %% Dimensions and indexing
     N_sys_eqs = len_a_E + len_a_I + len_b_E + len_b_I + n;
@@ -134,65 +137,55 @@ function J = compute_Jacobian_fast(S, params)
     if len_a_E > 0
         tau_inv_E = 1 ./ tau_a_E(:);
         diag_block_E = kron(speye(n_E), spdiags(-tau_inv_E, 0, n_a_E, n_a_E));
-        gamma_E = c_E * (b(E_indices) .* phi_prime_x_eff(E_indices));
+        gamma_E = c_E * phi_prime_x_eff(E_indices);
         row_template_E = sparse(tau_inv_E * ones(1, n_a_E));
         coupling_block_E = kron(spdiags(-gamma_E, 0, n_E, n_E), row_template_E);
         J(row_a_E, col_a_E) = diag_block_E + coupling_block_E;
         
-        beta_E = b(E_indices) .* phi_prime_x_eff(E_indices);
+        beta_E = phi_prime_x_eff(E_indices);
         vals = kron(beta_E, tau_inv_E);
         rows = (1:len_a_E)';
         cols = repelem(E_indices(:), n_a_E);
         J(row_a_E, col_x) = sparse(rows, cols, vals, len_a_E, n);
-        
-        if len_b_E > 0
-            phi_E = phi_x_eff(E_indices);
-            J(row_a_E, col_b_E) = kron(spdiags(phi_E, 0, n_E, n_E), sparse(tau_inv_E));
-        end
     end
     
     if len_a_I > 0
         tau_inv_I = 1 ./ tau_a_I(:);
         diag_block_I = kron(speye(n_I), spdiags(-tau_inv_I, 0, n_a_I, n_a_I));
-        gamma_I = c_I * (b(I_indices) .* phi_prime_x_eff(I_indices));
+        gamma_I = c_I * phi_prime_x_eff(I_indices);
         row_template_I = sparse(tau_inv_I * ones(1, n_a_I));
         coupling_block_I = kron(spdiags(-gamma_I, 0, n_I, n_I), row_template_I);
         J(row_a_I, col_a_I) = diag_block_I + coupling_block_I;
         
-        beta_I = b(I_indices) .* phi_prime_x_eff(I_indices);
+        beta_I = phi_prime_x_eff(I_indices);
         vals = kron(beta_I, tau_inv_I);
         rows = (1:len_a_I)';
         cols = repelem(I_indices(:), n_a_I);
         J(row_a_I, col_x) = sparse(rows, cols, vals, len_a_I, n);
-        
-        if len_b_I > 0
-            phi_I = phi_x_eff(I_indices);
-            J(row_a_I, col_b_I) = kron(spdiags(phi_I, 0, n_I, n_I), sparse(tau_inv_I));
-        end
     end
     
     %% STD blocks (E)
     if len_b_E > 0
         phi_prime_E = phi_prime_x_eff(E_indices);
-        coeff_a_E = (b(E_indices).^2) * c_E .* phi_prime_E / tau_b_E_rel;
+        coeff_a_E = b(E_indices) * c_E .* phi_prime_E / tau_b_E_rel;
         if len_a_E > 0
             J(row_b_E, col_a_E) = kron(spdiags(coeff_a_E, 0, n_E, n_E), sparse(ones(1, n_a_E)));
         end
-        diag_vals_b_E = -1/tau_b_E_rec - 2 * r_vec(E_indices) / tau_b_E_rel;
+        diag_vals_b_E = -1/tau_b_E_rec - r_vec(E_indices) / tau_b_E_rel;
         J(row_b_E, col_b_E) = spdiags(diag_vals_b_E, 0, len_b_E, len_b_E);
-        J(row_b_E, col_x) = sparse(1:n_E, E_indices, - (b(E_indices).^2) .* phi_prime_E / tau_b_E_rel, n_E, n);
+        J(row_b_E, col_x) = sparse(1:n_E, E_indices, - b(E_indices) .* phi_prime_E / tau_b_E_rel, n_E, n);
     end
     
     %% STD blocks (I)
     if len_b_I > 0
         phi_prime_I = phi_prime_x_eff(I_indices);
-        coeff_a_I = (b(I_indices).^2) * c_I .* phi_prime_I / tau_b_I_rel;
+        coeff_a_I = b(I_indices) * c_I .* phi_prime_I / tau_b_I_rel;
         if len_a_I > 0
             J(row_b_I, col_a_I) = kron(spdiags(coeff_a_I, 0, n_I, n_I), sparse(ones(1, n_a_I)));
         end
-        diag_vals_b_I = -1/tau_b_I_rec - 2 * r_vec(I_indices) / tau_b_I_rel;
+        diag_vals_b_I = -1/tau_b_I_rec - r_vec(I_indices) / tau_b_I_rel;
         J(row_b_I, col_b_I) = spdiags(diag_vals_b_I, 0, len_b_I, len_b_I);
-        J(row_b_I, col_x) = sparse(1:n_I, I_indices, - (b(I_indices).^2) .* phi_prime_I / tau_b_I_rel, n_I, n);
+        J(row_b_I, col_x) = sparse(1:n_I, I_indices, - b(I_indices) .* phi_prime_I / tau_b_I_rel, n_I, n);
     end
     
     %% dx/dt blocks
