@@ -14,6 +14,10 @@ function spec = compute_spectral_properties(W, params, options)
 %   options - (optional) struct:
 %       .do_plot (default false)
 %       .plot_title (default '')
+%       .do_nonnormality (default false) attach non-normality diagnostics
+%                        (departure from normality, numerical abscissa,
+%                         Kreiss constant, transient growth) via
+%                         compute_nonnormality.
 %
 % Output:
 %   spec - struct with fields:
@@ -25,6 +29,8 @@ function spec = compute_spectral_properties(W, params, options)
 %       .n
 %     and if params provided:
 %       .eigvals_EE, .eigvals_II  (sub-block eigenvalues)
+%     and if options.do_nonnormality:
+%       .nonnormality             struct from compute_nonnormality(W)
 
     if nargin < 2
         params = struct();
@@ -35,6 +41,7 @@ function spec = compute_spectral_properties(W, params, options)
 
     do_plot = getFieldOrDefault(options, 'do_plot', false);
     plot_title = getFieldOrDefault(options, 'plot_title', '');
+    do_nonnormality = getFieldOrDefault(options, 'do_nonnormality', false);
 
     spec = struct();
     spec.n = size(W, 1);
@@ -58,6 +65,11 @@ function spec = compute_spectral_properties(W, params, options)
         spec.spectral_gap_abscissa = re_sorted(1) - re_sorted(2);
     else
         spec.spectral_gap_abscissa = nan;
+    end
+
+    % Optional non-normality / transient-growth diagnostics
+    if do_nonnormality
+        spec.nonnormality = compute_nonnormality(W, options);
     end
 
     % Optional E/I block diagnostics (useful for Dale structured W)

@@ -57,3 +57,13 @@ Thumbs.db
 *.png
 *.pdf
 
+# Keep the results/ directory scaffold tracked (but not its heavy contents)
+!results/
+!results/**/
+!**/.gitkeep
+
+# Exception: publication figures are committed for reproducibility/sharing
+!results/figures/paper/
+!results/figures/paper/*.png
+!results/figures/paper/*.pdf
+
