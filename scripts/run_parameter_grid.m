@@ -68,7 +68,10 @@ n_cells = prod(dim_sizes);
 fprintf('Parameter grid: %d dimensions, sizes [%s], %d networks total\n', ...
     n_dims, num2str(dim_sizes(:)'), n_cells);
 
-results(n_cells) = struct(); %#ok<SAGROW>
+% Use a cell array inside parfor: nested structs (regime_diag, specW) can
+% differ across networks, and struct-array assignment then errors with
+% "Subscripted assignment between dissimilar structures".
+results_cell = cell(n_cells, 1);
 
 parfor lin = 1:n_cells
     % Recover the multi-index for this flat index
@@ -169,7 +172,32 @@ parfor lin = 1:n_cells
     r.esp_holds = esp_holds;
     r.esp_spread = esp_spread;
     r.MC_total = MC_total;
-    results(lin) = r;
+    results_cell{lin} = r;
+end
+
+% Convert cell -> struct array after the parallel loop. Assign field-by-field
+% so nested structs (regime_diag, specW) need not share identical field sets.
+results = repmat(struct( ...
+    'param_values', struct(), ...
+    'LLE', nan, ...
+    'LE_spectrum', [], ...
+    'regime', '', ...
+    'regime_diag', struct(), ...
+    'specW', struct(), ...
+    'esp_holds', NaN, ...
+    'esp_spread', NaN, ...
+    'MC_total', NaN), n_cells, 1);
+for i = 1:n_cells
+    ri = results_cell{i};
+    results(i).param_values = ri.param_values;
+    results(i).LLE = ri.LLE;
+    results(i).LE_spectrum = ri.LE_spectrum;
+    results(i).regime = ri.regime;
+    results(i).regime_diag = ri.regime_diag;
+    results(i).specW = ri.specW;
+    results(i).esp_holds = ri.esp_holds;
+    results(i).esp_spread = ri.esp_spread;
+    results(i).MC_total = ri.MC_total;
 end
 
 save_path = fullfile(out_dir, sprintf('grid_%s.mat', datestr(now, 'yyyymmdd_HHMMSS')));

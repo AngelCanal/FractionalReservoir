@@ -41,7 +41,8 @@ ode_opts = odeset('RelTol', 1e-6, 'AbsTol', 1e-8);
 % Run sweep (parfor compatible)
 % -------------------------
 n_vals = numel(sweep.values);
-results(n_vals) = struct(); %#ok<SAGROW>
+% Use a cell array inside parfor to avoid dissimilar nested-struct errors.
+results_cell = cell(n_vals, 1);
 
 fprintf('Running parameter sweep: %s (%d values)\n', sweep.param_name, n_vals);
 
@@ -102,7 +103,22 @@ parfor ii = 1:n_vals
     r.LLE = LLE;
     r.specW = specW;
     r.meta = meta; %#ok<PFOUS> % meta contains W0/cfg, helpful for provenance
-    results(ii) = r;
+    results_cell{ii} = r;
+end
+
+results = repmat(struct( ...
+    'param_name', '', 'param_value', nan, 'regime', '', ...
+    'regime_diag', struct(), 'LLE', nan, 'specW', struct(), 'meta', struct()), ...
+    n_vals, 1);
+for ii = 1:n_vals
+    ri = results_cell{ii};
+    results(ii).param_name = ri.param_name;
+    results(ii).param_value = ri.param_value;
+    results(ii).regime = ri.regime;
+    results(ii).regime_diag = ri.regime_diag;
+    results(ii).LLE = ri.LLE;
+    results(ii).specW = ri.specW;
+    results(ii).meta = ri.meta;
 end
 
 save_path = fullfile(out_dir, sprintf('sweep_%s_%s.mat', sweep.param_name, datestr(now, 'yyyymmdd_HHMMSS')));

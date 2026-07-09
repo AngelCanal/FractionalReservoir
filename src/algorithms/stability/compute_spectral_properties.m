@@ -52,6 +52,18 @@ function spec = compute_spectral_properties(W, params, options)
         spec.spectral_radius = nan;
         spec.spectral_abscissa = nan;
         spec.spectral_gap_abscissa = nan;
+        % Keep field set identical across early/late returns for parfor safety.
+        if do_nonnormality
+            spec.nonnormality = compute_nonnormality(W, options);
+        end
+        if isfield(params, 'E_indices') && isfield(params, 'I_indices')
+            E = params.E_indices(:);
+            I = params.I_indices(:);
+            if ~isempty(E) && ~isempty(I) && max([E; I]) <= spec.n
+                spec.eigvals_EE = complex(nan(numel(E), 1), nan(numel(E), 1));
+                spec.eigvals_II = complex(nan(numel(I), 1), nan(numel(I), 1));
+            end
+        end
         return;
     end
 

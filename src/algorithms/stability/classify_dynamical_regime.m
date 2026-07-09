@@ -36,17 +36,20 @@ function [regime, diagnostics] = classify_dynamical_regime(x_history, dt, LLE, o
     entropy_low = getFieldOrDefault(options, 'entropy_low', 0.5);
     entropy_high = getFieldOrDefault(options, 'entropy_high', 0.8);
 
+    % Always populate the same fields so callers can store diagnostics in
+    % structure arrays / parfor results without "dissimilar structures" errors.
     diagnostics = struct();
     diagnostics.has_nan_inf = any(~isfinite(x_history), 'all');
     diagnostics.max_abs = max(abs(x_history), [], 'all');
     diagnostics.LLE = LLE;
+    diagnostics.variance = nan;
+    diagnostics.dominant_freq = nan;
+    diagnostics.peak_ratio = nan;
+    diagnostics.spectral_entropy = nan;
+    diagnostics.n_peaks_rel10 = nan;
 
     if diagnostics.has_nan_inf || diagnostics.max_abs > divergence_thresh
         regime = 'divergent';
-        diagnostics.variance = nan;
-        diagnostics.dominant_freq = nan;
-        diagnostics.peak_ratio = nan;
-        diagnostics.spectral_entropy = nan;
         return;
     end
 
@@ -61,6 +64,7 @@ function [regime, diagnostics] = classify_dynamical_regime(x_history, dt, LLE, o
         diagnostics.dominant_freq = 0;
         diagnostics.peak_ratio = 0;
         diagnostics.spectral_entropy = 0;
+        diagnostics.n_peaks_rel10 = 0;
         return;
     end
 
@@ -89,6 +93,7 @@ function [regime, diagnostics] = classify_dynamical_regime(x_history, dt, LLE, o
         diagnostics.dominant_freq = 0;
         diagnostics.peak_ratio = 0;
         diagnostics.spectral_entropy = 0;
+        diagnostics.n_peaks_rel10 = 0;
         return;
     end
 
