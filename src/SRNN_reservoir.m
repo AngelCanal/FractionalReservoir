@@ -1,190 +1,104 @@
-function [dS_dt] = SRNN_reservoir(t, S, t_ex, u_ex, params)
-% SRNN_reservoir implements a rate network with spike-frequency adaptation
-% and presynaptic short-term synaptic depression (STD).
+function [dS_dt] = SRNN_reservoir(t, S, u_fun, params)
+% SRNN_reservoir  ODE reservoir dynamics with SFA and STD.
 %
-% Implements the following equations:
-%   x_eff_i = x_i - c * sum_k(a_i,k)     (c = c_E for E, c_I for I)
-%   r_i     = phi(x_eff_i)               (firing rate; b is NOT inside r)
-%   s_j     = b_j * r_j                  (presynaptic synaptic output)
-%   dx_i/dt = (-x_i + sum_j(w_ij * s_j) + u_i) / tau_d
-%   da_i,k/dt = (-a_i,k + r_i) / tau_k
-%   db_i/dt = (1 - b_i) / tau_rec - (b_i * r_i) / tau_rel
+% State order: S = [a_E(:); a_I(:); b_E(:); b_I(:); x(:)]
 %
-% State organization: S = [a_E(:); a_I(:); b_E(:); b_I(:); x(:)]
+%   q(E) = x(E) - c_E*sum(a_E,2);  q(I) analogous
+%   r    = activation_function(q)
+%   dx   = (-x + W*(b.*r) + u) / tau_d
+%   da   = (r - a) ./ tau_a
+%   db   = (1-b)/tau_rec - (b.*r)/tau_rel
 
-    persistent u_interpolant t_ex_last u_ex_size_last;
-
-    % To improve performance, create a griddedInterpolant for the external
-    % input u_ex and store it in a persistent variable. This avoids
-    % repeatedly setting up the interpolation on every function call.
-    % The interpolant is rebuilt only if the time vector t_ex appears
-    % to have changed between simulations, OR if u_ex dimensions changed.
-    u_ex_size = size(u_ex);
-    needs_rebuild = isempty(u_interpolant) || isempty(t_ex_last) || ...
-       numel(t_ex_last) ~= numel(t_ex) || t_ex_last(1) ~= t_ex(1) || t_ex_last(end) ~= t_ex(end) || ...
-       isempty(u_ex_size_last) || ~isequal(u_ex_size, u_ex_size_last);
-    
-    if needs_rebuild
-        % We use 'none' for extrapolation to match the behavior of the
-        % previous interp1qr implementation, which returns NaN for
-        % out-of-bounds queries. This can help catch errors if the
-        % ODE solver attempts to step outside the defined time range of u_ex.
-        u_interpolant = griddedInterpolant(t_ex, u_ex', 'linear', 'none');
-        t_ex_last = t_ex;
-        u_ex_size_last = u_ex_size;
+    u = u_fun(t);
+    if ~isequal(size(u), [params.n, 1])
+        error('SRNN_reservoir:InvalidInputShape', ...
+            'u_fun(t) must return an n x 1 column vector.');
     end
 
-    %% interpolate u vector
-    u = u_interpolant(t)'; % u_interpolant(t) is 1-by-n, so we transpose to n x 1
+    state = unpack_state(S, params);
+    [q, r, b] = compute_q_r_b(state, params);
 
-    %% load parameters
-    n = params.n; % total number of neurons
-    n_E = params.n_E; % number of excitatory neurons
-    n_I = params.n_I; % number of inhibitory neurons
-    E_indices = params.E_indices; % indices of E neurons
-    I_indices = params.I_indices; % indices of I neurons
-    
-    n_a_E = params.n_a_E; % number of adaptation time constants for E neurons
-    n_a_I = params.n_a_I; % number of adaptation time constants for I neurons
-    n_b_E = params.n_b_E; % number of STD timescales for E neurons (0 or 1)
-    n_b_I = params.n_b_I; % number of STD timescales for I neurons (0 or 1)
-    
-    W = params.W; % connection matrix (n x n)
-    tau_d = params.tau_d; % dendritic time constant (scalar)
-    tau_a_E = params.tau_a_E; % adaptation time constants for E neurons (1 x n_a_E)
-    tau_a_I = params.tau_a_I; % adaptation time constants for I neurons (1 x n_a_I)
-    tau_b_E_rec = params.tau_b_E_rec; % STD recovery time constant for E neurons (scalar)
-    tau_b_E_rel = params.tau_b_E_rel; % STD release time constant for E neurons (scalar)
-    tau_b_I_rec = params.tau_b_I_rec; % STD recovery time constant for I neurons (scalar)
-    tau_b_I_rel = params.tau_b_I_rel; % STD release time constant for I neurons (scalar)
-    
-    % Adaptation scaling parameters
-    if isfield(params, 'c_E')
-        c_E = params.c_E; % adaptation scaling for E neurons (scalar)
+    n_E = params.n_E;
+    n_I = params.n_I;
+    E_indices = params.E_indices;
+    I_indices = params.I_indices;
+
+    W = params.W;
+    tau_d = params.tau_d;
+    tau_a_E = params.tau_a_E;
+    tau_a_I = params.tau_a_I;
+    tau_b_E_rec = params.tau_b_E_rec;
+    tau_b_E_rel = params.tau_b_E_rel;
+    tau_b_I_rec = params.tau_b_I_rec;
+    tau_b_I_rel = params.tau_b_I_rel;
+
+    dx_dt = (-state.x + W * (b .* r) + u) / tau_d;
+
+    if params.n_a_E > 0
+        da_E_dt = (r(E_indices) - state.a_E) ./ tau_a_E;
     else
-        c_E = 1.0; % default to 1.0
+        da_E_dt = zeros(params.n_E, 0);
     end
-    
-    if isfield(params, 'c_I')
-        c_I = params.c_I; % adaptation scaling for I neurons (scalar)
+
+    if params.n_a_I > 0
+        da_I_dt = (r(I_indices) - state.a_I) ./ tau_a_I;
     else
-        c_I = 1.0; % default to 1.0
+        da_I_dt = zeros(params.n_I, 0);
     end
-    
-    % Activation function (nonlinearity)
-    if isfield(params, 'activation_function') && isa(params.activation_function, 'function_handle')
-        activation_function = params.activation_function;
+
+    if params.n_b_E > 0
+        db_E_dt = (1 - state.b_E) / tau_b_E_rec - (state.b_E .* r(E_indices)) / tau_b_E_rel;
     else
-        error('SRNN_reservoir:MissingActivationFunction', ...
-              'params.activation_function must be provided as a function handle');
+        db_E_dt = zeros(0, 1);
     end
 
-    %% unpack state variables
-    % State organization: S = [a_E(:); a_I(:); b_E(:); b_I(:); x(:)]
-    % S is N_sys_eqs x 1 here.
-    current_idx = 0;
-
-    % --- Adaptation states for E neurons (a_E) ---
-    len_a_E = n_E * n_a_E;
-    if len_a_E > 0
-        a_E = reshape(S(current_idx + (1:len_a_E)), n_E, n_a_E);
+    if params.n_b_I > 0
+        db_I_dt = (1 - state.b_I) / tau_b_I_rec - (state.b_I .* r(I_indices)) / tau_b_I_rel;
     else
-        a_E = [];
-    end
-    current_idx = current_idx + len_a_E;
-
-    % --- Adaptation states for I neurons (a_I) ---
-    len_a_I = n_I * n_a_I;
-    if len_a_I > 0
-        a_I = reshape(S(current_idx + (1:len_a_I)), n_I, n_a_I);
-    else
-        a_I = [];
-    end
-    current_idx = current_idx + len_a_I;
-
-    % --- STD states for E neurons (b_E) ---
-    len_b_E = n_E * n_b_E;
-    if len_b_E > 0
-        b_E = S(current_idx + (1:len_b_E));
-    else
-        b_E = [];
-    end
-    current_idx = current_idx + len_b_E;
-
-    % --- STD states for I neurons (b_I) ---
-    len_b_I = n_I * n_b_I;
-    if len_b_I > 0
-        b_I = S(current_idx + (1:len_b_I));
-    else
-        b_I = [];
-    end
-    current_idx = current_idx + len_b_I;
-
-    % --- Dendritic states (x) ---
-    x = S(current_idx + (1:n));
-
-    %% compute firing rates
-    x_eff = x; % n x 1, effective dendritic potential before activation function
-
-    % Apply adaptation effect to E neurons (scaled by c_E)
-    if n_E > 0 && n_a_E > 0 && ~isempty(a_E)
-        % sum(a_E, 2) is n_E x 1, summing across all adaptation variables
-        x_eff(E_indices) = x_eff(E_indices) - c_E * sum(a_E, 2);
-    end
-    
-    % Apply adaptation effect to I neurons (scaled by c_I)
-    if n_I > 0 && n_a_I > 0 && ~isempty(a_I)
-        % sum(a_I, 2) is n_I x 1, summing across all adaptation variables
-        x_eff(I_indices) = x_eff(I_indices) - c_I * sum(a_I, 2);
-    end
-    
-    % Apply STD effect (b multiplicative factor)
-    b = ones(n, 1);  % Initialize b = 1 for all neurons (no depression)
-    if n_b_E > 0 && ~isempty(b_E)
-        b(E_indices) = b_E;
-    end
-    if n_b_I > 0 && ~isempty(b_I)
-        b(I_indices) = b_I;
-    end
-    
-    % Firing rate r = phi(x_eff); presynaptic depression b enters synaptic drive only.
-    r = activation_function(x_eff); % n x 1, firing rate
-
-    %% compute derivatives
-    % dx/dt = (-x + W*(b.*r) + u) / tau_d  (presynaptic STD: s = b.*r)
-    dx_dt = (-x + W * (b .* r) + u) / tau_d;
-
-    % da_E/dt = (r_E - a_E) / tau_a_E
-    da_E_dt = [];
-    if n_E > 0 && n_a_E > 0 && ~isempty(a_E)
-        % r(E_indices) is n_E x 1. tau_a_E is 1 x n_a_E.
-        % Broadcasting makes (r_E - a_E) ./ tau_a_E valid (n_E x n_a_E).
-        da_E_dt = (r(E_indices) - a_E) ./ tau_a_E;
+        db_I_dt = zeros(0, 1);
     end
 
-    % da_I/dt = (r_I - a_I) / tau_a_I
-    da_I_dt = [];
-    if n_I > 0 && n_a_I > 0 && ~isempty(a_I)
-        % r(I_indices) is n_I x 1. tau_a_I is 1 x n_a_I.
-        % Broadcasting makes (r_I - a_I) ./ tau_a_I valid (n_I x n_a_I).
-        da_I_dt = (r(I_indices) - a_I) ./ tau_a_I;
-    end
+    dstate = struct();
+    dstate.a_E = da_E_dt;
+    dstate.a_I = da_I_dt;
+    dstate.b_E = db_E_dt;
+    dstate.b_I = db_I_dt;
+    dstate.x = dx_dt;
 
-    % db_E/dt = (1 - b_E) / tau_b_E_rec - (b_E .* r_E) / tau_b_E_rel
-    db_E_dt = [];
-    if n_E > 0 && n_b_E > 0 && ~isempty(b_E)
-        db_E_dt = (1 - b_E) / tau_b_E_rec - (b_E .* r(E_indices)) / tau_b_E_rel;
-    end
-
-    % db_I/dt = (1 - b_I) / tau_b_I_rec - (b_I .* r_I) / tau_b_I_rel
-    db_I_dt = [];
-    if n_I > 0 && n_b_I > 0 && ~isempty(b_I)
-        db_I_dt = (1 - b_I) / tau_b_I_rec - (b_I .* r(I_indices)) / tau_b_I_rel;
-    end
-
-    %% pack derivatives into output vector
-    % State organization: S = [a_E(:); a_I(:); b_E(:); b_I(:); x(:)]
-    dS_dt = [da_E_dt(:); da_I_dt(:); db_E_dt(:); db_I_dt(:); dx_dt];
-
+    dS_dt = pack_state(dstate, params);
 end
 
+function [q, r, b] = compute_q_r_b(state, params)
+    c_E = get_coupling(params, 'c_E');
+    c_I = get_coupling(params, 'c_I');
+
+    n = params.n;
+    E_indices = params.E_indices;
+    I_indices = params.I_indices;
+
+    q = state.x;
+    if params.n_a_E > 0
+        q(E_indices) = q(E_indices) - c_E * sum(state.a_E, 2);
+    end
+    if params.n_a_I > 0
+        q(I_indices) = q(I_indices) - c_I * sum(state.a_I, 2);
+    end
+
+    r = params.activation_function(q);
+
+    b = ones(n, 1);
+    if params.n_b_E > 0
+        b(E_indices) = state.b_E;
+    end
+    if params.n_b_I > 0
+        b(I_indices) = state.b_I;
+    end
+end
+
+function c = get_coupling(params, field)
+    if isfield(params, field)
+        c = params.(field);
+    else
+        c = 1.0;
+    end
+end
