@@ -52,6 +52,12 @@ function testInconsistentExplicitTauFailsValidation(testCase)
         'n_a_E', 3, 'tau_a_E', [1, 2])), 'MESN:InvalidTauA');
 end
 
+function testDaleCenteringRejected(testCase)
+    testCase.verifyError(@() default_MESN_config(struct( ...
+        'dale', true, 'row_center_W', true)), ...
+        'default_MESN_config:DaleCenteringUnsupported');
+end
+
 function testExplicitWOverride(testCase)
     W = eye(8);
     params = default_MESN_config(struct('n', 8, 'fraction_E', 0.5, 'W', W));

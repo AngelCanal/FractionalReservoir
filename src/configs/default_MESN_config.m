@@ -55,7 +55,7 @@ function [params, meta] = default_MESN_config(overrides)
     cfg.input_sparsity = 0.8;
 
     cfg.level_of_chaos = 1.7;
-    cfg.row_center_W = true;
+    cfg.row_center_W = false;
     cfg.dale = true;
     cfg.W_scale_method = 'abscissa';
 
@@ -90,24 +90,6 @@ function [params, meta] = default_MESN_config(overrides)
         cfg.tau_a_I = logspace(log10(0.25), log10(25), cfg.n_a_I);
     end
 
-    weight_stream = RandStream('mt19937ar', 'Seed', cfg.weight_rng_seed);
-    W0 = randn(weight_stream, n, n);
-    if cfg.dale
-        W0(:, E_indices) = abs(W0(:, E_indices));
-        W0(:, I_indices) = -abs(W0(:, I_indices));
-    end
-    if cfg.row_center_W
-        W0 = W0 - mean(W0, 2);
-    end
-    W = scale_W(W0, cfg.level_of_chaos, cfg.W_scale_method);
-
-    input_stream = RandStream('mt19937ar', 'Seed', cfg.input_rng_seed);
-    W_in = (2 * rand(input_stream, n, cfg.n_inputs) - 1) * cfg.input_scaling;
-    if cfg.input_sparsity > 0
-        mask = rand(input_stream, n, cfg.n_inputs) < (1 - cfg.input_sparsity);
-        W_in = W_in .* mask;
-    end
-
     % -------------------------
     % 4. Nonstructural scalar overrides
     % -------------------------
@@ -118,20 +100,48 @@ function [params, meta] = default_MESN_config(overrides)
         'which_states', 'include_input', 'lambda'};
     cfg = apply_selected_overrides(cfg, overrides, nonstructural_fields);
 
+    if cfg.dale && cfg.row_center_W
+        error('default_MESN_config:DaleCenteringUnsupported', ...
+            'Row centering is incompatible with Dale sign constraints.');
+    end
+
+    if isfield(overrides, 'W')
+        W0 = overrides.W;
+        W = overrides.W;
+        w_generated = false;
+    else
+        w_generated = true;
+        weight_stream = RandStream('mt19937ar', 'Seed', cfg.weight_rng_seed);
+        W0 = randn(weight_stream, n, n);
+        if cfg.dale
+            W0(:, E_indices) = abs(W0(:, E_indices));
+            W0(:, I_indices) = -abs(W0(:, I_indices));
+        end
+        if cfg.row_center_W
+            W0 = W0 - mean(W0, 2);
+        end
+        W = scale_W(W0, cfg.level_of_chaos, cfg.W_scale_method);
+    end
+
+    if isfield(overrides, 'W_in')
+        W_in = overrides.W_in;
+    else
+        input_stream = RandStream('mt19937ar', 'Seed', cfg.input_rng_seed);
+        W_in = (2 * rand(input_stream, n, cfg.n_inputs) - 1) * cfg.input_scaling;
+        if cfg.input_sparsity > 0
+            mask = rand(input_stream, n, cfg.n_inputs) < (1 - cfg.input_sparsity);
+            W_in = W_in .* mask;
+        end
+    end
+
     % -------------------------
-    % 5. Explicit tau_a_*, W, and W_in overrides
+    % 5. Explicit tau_a_* overrides
     % -------------------------
     if isfield(overrides, 'tau_a_E')
         cfg.tau_a_E = overrides.tau_a_E;
     end
     if isfield(overrides, 'tau_a_I')
         cfg.tau_a_I = overrides.tau_a_I;
-    end
-    if isfield(overrides, 'W')
-        W = overrides.W;
-    end
-    if isfield(overrides, 'W_in')
-        W_in = overrides.W_in;
     end
 
     activation_function = @(x) piecewiseSigmoid(x, cfg.S_a, cfg.S_c);
@@ -180,6 +190,11 @@ function [params, meta] = default_MESN_config(overrides)
     meta = struct();
     meta.cfg = cfg;
     meta.W0 = W0;
+    meta.sign_violations_E = sum(W(:, E_indices) < 0, 'all');
+    meta.sign_violations_I = sum(W(:, I_indices) > 0, 'all');
+    if cfg.dale && w_generated
+        assert(meta.sign_violations_E == 0 && meta.sign_violations_I == 0);
+    end
 end
 
 function s = apply_selected_overrides(s, overrides, fields)

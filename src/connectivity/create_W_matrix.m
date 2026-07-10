@@ -1,64 +1,57 @@
-function [W, M, G, Z] = create_W_matrix(params)
+function [W, M, G, Z, meta] = create_W_matrix(params)
 % create_W_matrix - Generate connectivity matrix for SRNN
 %
 % Syntax:
-%   [W, M, G, Z] = create_W_matrix(params)
+%   [W, M, G, Z, meta] = create_W_matrix(params)
 %
-% Description:
-%   Creates a sparse connectivity matrix W with structured excitatory/inhibitory
-%   balance and row-mean centering. The matrix is composed of:
-%   - M: Mean connectivity structure (E-to-all and I-to-all)
-%   - G: Gaussian random perturbations
-%   - Z: Binary sparsification mask
-%   - Row-mean centering applied to non-zero elements
-%
-% Inputs:
-%   params - Struct containing:
-%            .n         - Total number of neurons
-%            .n_E       - Number of excitatory neurons
-%            .n_I       - Number of inhibitory neurons
-%            .mu_E      - Mean excitatory connection strength
-%            .mu_I      - Mean inhibitory connection strength
-%            .G_stdev   - Standard deviation of Gaussian perturbations
-%            .indegree  - Expected in-degree (number of inputs per neuron)
-%
-% Outputs:
-%   W - n x n connectivity matrix (sparse, row-mean centered)
-%   M - n x n mean structure matrix
-%   G - n x n Gaussian perturbation matrix
-%   Z - n x n binary sparsification mask (1 = connection removed)
-%
-% Example:
-%   params.n = 100;
-%   params.n_E = 50;
-%   params.n_I = 50;
-%   params.mu_E = 1;
-%   params.mu_I = -1;
-%   params.G_stdev = 2;
-%   params.indegree = 15;
-%   [W, M, G, Z] = create_W_matrix(params);
+% Presynaptic Dale signs are enforced on columns when params.dale is true
+% (default). Row centering is disabled by default and is incompatible with
+% Dale constraints.
 
-    % Create mean structure matrix M
-    % First n_E columns get mu_E (excitatory), remaining get mu_I (inhibitory)
+    dale = get_param(params, 'dale', true);
+    row_center_W = get_param(params, 'row_center_W', false);
+    if dale && row_center_W
+        error('create_W_matrix:DaleCenteringUnsupported', ...
+            'Row centering is incompatible with Dale sign constraints.');
+    end
+
+    E_cols = 1:params.n_E;
+    I_cols = (params.n_E + 1):params.n;
+
     M = [params.mu_E .* ones(params.n, params.n_E), ...
          params.mu_I .* ones(params.n, params.n_I)];
-    
-    % Add Gaussian perturbations
+
     G = params.G_stdev * randn(params.n, params.n);
     W = M + G;
-    
-    % Apply sparsification
-    d = params.indegree / params.n;  % density
-    Z = rand(params.n, params.n) > d;  % 1 where connections are removed
+
+    d = params.indegree / params.n;
+    Z = rand(params.n, params.n) > d;
     W(Z) = 0;
-    
-    % Zero out row mean of non-zero elements
-    nonzero_mask = ~Z;
-    row_counts = sum(nonzero_mask, 2);
-    row_sums = sum(W, 2);
-    row_means = zeros(size(row_sums));
-    valid_rows = row_counts > 0;
-    row_means(valid_rows) = row_sums(valid_rows) ./ row_counts(valid_rows);
-    W = W - bsxfun(@times, row_means, nonzero_mask);
+
+    if dale
+        W(:, E_cols) = abs(W(:, E_cols));
+        W(:, I_cols) = -abs(W(:, I_cols));
+    end
+
+    if row_center_W
+        nonzero_mask = ~Z;
+        row_counts = sum(nonzero_mask, 2);
+        row_sums = sum(W, 2);
+        row_means = zeros(size(row_sums));
+        valid_rows = row_counts > 0;
+        row_means(valid_rows) = row_sums(valid_rows) ./ row_counts(valid_rows);
+        W = W - bsxfun(@times, row_means, nonzero_mask);
+    end
+
+    meta = struct();
+    meta.sign_violations_E = sum(W(:, E_cols) < 0, 'all');
+    meta.sign_violations_I = sum(W(:, I_cols) > 0, 'all');
 end
 
+function value = get_param(s, field, default_value)
+    if isfield(s, field)
+        value = s.(field);
+    else
+        value = default_value;
+    end
+end
