@@ -16,8 +16,8 @@ Property (ESP), and we show empirically that increasing adaptation drives the
 largest Lyapunov exponent toward zero, placing the reservoir at the edge of
 chaos. We further show that (i) multi-timescale SFA broadens the memory and
 timescale spectrum, (ii) the network is temporally invariant (shift-equivariant)
-and robust to input time-warping, and (iii) adaptation induces a phase-advance
-(predictive) component in the representation. As a reservoir, only the linear
+and robust to input time-warping, and (iii) adaptation reshapes the feature–
+input response-lag spectrum. As a reservoir, only the linear
 readout is trained ("learning on the edges"), matching the locality of learning
 in biology, yet the MESN matches or exceeds a non-adaptive reservoir on standard
 benchmarks. Finally, we relate the conservative ESP bound to the non-normality
@@ -29,11 +29,11 @@ of the recurrent weight matrix, measured by the Kreiss constant.
 - What adaptation adds to a network: SFA and STD as gain-control / negative
   feedback; delays and E-I structure (Dale's law).
 - Biological motivation: local learning (only the readout / "edges" is trained);
-  multi-timescale processing; predictive (phase-advancing) coding.
+  multi-timescale processing; response-lag structure of adapted features.
 - Contributions:
   1. A sufficient, parameter-explicit condition for the ESP (Proposition 1).
   2. Empirical demonstration that adaptation tunes the Lyapunov exponent to ~0.
-  3. Multi-timescale memory, temporal invariance, and phase advance.
+  3. Multi-timescale memory, temporal invariance, and response lag.
   4. Task performance with local (readout-only) learning.
   5. Non-normality (Kreiss) as the source of conservativeness in the ESP bound.
 
@@ -90,7 +90,7 @@ with adaptation.
   ESP margin (Fig 4). Non-normal reservoirs can show larger transient
   amplification and, empirically, improved memory.
 
-## 5. Multi-timescale representation, temporal invariance, phase advance (Result 3)
+## 5. Multi-timescale representation, temporal invariance, response lag (Result 3)
 
 `scripts/run_timescale_invariance.m`:
 
@@ -102,9 +102,11 @@ with adaptation.
   (`src/algorithms/info/measure_shift_equivariance.m`) and time-warp robustness
   of a trained readout. Claim: the reservoir map is time-invariant and
   degrades gracefully under input dilation.
-- **Phase advance:** `src/algorithms/info/compute_phase_advance.m` shows a shift
-  of the feature-input cross-correlation peak toward negative lag (features lead
-  the input) when adaptation is enabled -- a substrate for prediction. (Fig 5.)
+- **Response lag:** `src/algorithms/info/compute_response_lag.m` reports the peak
+  of `R(k)=corr(feature(t),input(t+k))`. Under this convention `k<0` means the
+  feature lags (associates with past input); `k>0` is apparent future association
+  and, for white-noise drive, is treated as a leakage/alignment warning rather
+  than validated prediction. (Fig 5.)
 
 ## 6. Reduced-model bifurcation (Result 4)
 
@@ -125,7 +127,7 @@ adaptation ON vs OFF. This isolates "what adaptation adds" and instantiates the
 
 - Adaptation as self-organized criticality / automatic gain control for the ESP.
 - Non-normality vs stability trade-off; Kreiss constant as a design knob.
-- Predictive coding via phase advance; multi-timescale memory.
+- Response-lag structure under adaptation; multi-timescale memory.
 - Limitations: conservative bound; reduced-model-only bifurcation; rate coding.
 
 ## 9. Reproducibility
@@ -142,6 +144,6 @@ folder map: `results/README.md`.
 | 2 | ESP phase diagram + analytical boundary | `run_esp_phase_diagram.m` |
 | 3 | LLE vs parameters / non-normality | `run_parameter_grid.m` |
 | 4 | Memory vs non-normality | `run_parameter_grid.m` |
-| 5 | Timescale spectrum, invariance, phase advance | `run_timescale_invariance.m` |
+| 5 | Timescale spectrum, invariance, response lag | `run_timescale_invariance.m` |
 | 6 | Reduced-model bifurcation | `run_meanfield_adaptation_bifurcation.m` |
 | 7 | Benchmarks (adapt ON/OFF) | `run_benchmarks.m` |

@@ -1,5 +1,5 @@
 %% run_timescale_invariance
-% Multi-timescale representation, temporal invariance, and phase-advance
+% Multi-timescale representation, temporal invariance, and response-lag
 % analysis of the MESN reservoir (Result 3 of the paper workplan).
 %
 % Three experiments:
@@ -10,8 +10,9 @@
 %   (B) Temporal (time-shift) invariance and time-warp robustness. Shift
 %       equivariance operationalises "temporal invariance"; time-warp tests
 %       robustness of a trained readout to input dilation.
-%   (C) Phase advance: does adaptation make features lead the input (useful
-%       for prediction)? Compared with adaptation ON vs OFF.
+%   (C) Response lag: peak of R(k)=corr(feature(t),input(t+k)). k<0 means the
+%       feature lags (past input); k>0 is apparent future association (flag
+%       leakage under white noise). Compared with adaptation ON vs OFF.
 %
 % Output: results/timescale_invariance/timescale_<timestamp>.mat + figures.
 
@@ -117,7 +118,7 @@ for wi = 1:numel(warp_factors)
 end
 
 %% =====================================================================
-% (C) Phase advance: adaptation ON vs OFF
+% (C) Response lag: adaptation ON vs OFF
 % =====================================================================
 rng(21);
 U = 0.2 * randn(4000, 1);
@@ -127,7 +128,7 @@ params_on = default_MESN_config(struct('dt', dt));
 esn_on = SRNN_ESN(params_on); esn_on.which_states = 'x';
 esn_on.resetState();
 X_on = esn_on.runReservoir(U);
-pa_on = compute_phase_advance(X_on, U, struct('max_lag', 40, 'washout', 800));
+pa_on = compute_response_lag(X_on, U, struct('max_lag', 40, 'washout', 800, 'dt', dt));
 
 % Adaptation OFF (c_E = c_I = 0, STD off)
 params_off = default_MESN_config(struct('dt', dt, 'c_E', 0, 'c_I', 0, ...
@@ -135,12 +136,16 @@ params_off = default_MESN_config(struct('dt', dt, 'c_E', 0, 'c_I', 0, ...
 esn_off = SRNN_ESN(params_off); esn_off.which_states = 'x';
 esn_off.resetState();
 X_off = esn_off.runReservoir(U);
-pa_off = compute_phase_advance(X_off, U, struct('max_lag', 40, 'washout', 800));
+pa_off = compute_response_lag(X_off, U, struct('max_lag', 40, 'washout', 800, 'dt', dt));
 
-fprintf('\nPhase advance (mean peak lag, samples): ON=%.2f  OFF=%.2f\n', ...
-    pa_on.mean_peak_lag, pa_off.mean_peak_lag);
-fprintf('Fraction of leading (predictive) units: ON=%.2f  OFF=%.2f\n', ...
-    pa_on.frac_leading, pa_off.frac_leading);
+fprintf('\nResponse lag (mean peak lag, samples): ON=%.2f  OFF=%.2f\n', ...
+    pa_on.mean_peak_lag_samples, pa_off.mean_peak_lag_samples);
+fprintf('Fraction negative-lag (memory-like) units: ON=%.2f  OFF=%.2f\n', ...
+    pa_on.frac_negative_lag, pa_off.frac_negative_lag);
+if pa_on.positive_lag_leakage_flag || pa_off.positive_lag_leakage_flag
+    fprintf(['NOTE: significant positive mean peak lag under white noise ', ...
+        'suggests leakage/alignment failure, not prediction.\n']);
+end
 
 %% Save
 save_path = fullfile(out_dir, sprintf('timescale_%s.mat', timestamp));
@@ -168,11 +173,13 @@ xlabel('time-warp factor'); ylabel('readout NRMSE');
 title('Time-warp robustness (trained at 1.0)'); grid on;
 
 subplot(2,2,4); hold on;
-plot(pa_on.lags, pa_on.xcorr_mean, 'r', 'LineWidth', 1.5, 'DisplayName', 'adapt ON');
-plot(pa_off.lags, pa_off.xcorr_mean, 'k', 'LineWidth', 1.5, 'DisplayName', 'adapt OFF');
+plot(pa_on.lags, mean(abs(pa_on.correlation_by_lag), 1), 'r', 'LineWidth', 1.5, ...
+    'DisplayName', 'adapt ON');
+plot(pa_off.lags, mean(abs(pa_off.correlation_by_lag), 1), 'k', 'LineWidth', 1.5, ...
+    'DisplayName', 'adapt OFF');
 xline(0, 'k--');
-xlabel('lag (samples; <0 = feature leads input)'); ylabel('mean |xcorr|');
-title('Phase advance'); legend('show'); grid on;
+xlabel('lag (samples; <0 = feature lags / past input)'); ylabel('mean |xcorr|');
+title('Response lag'); legend('show'); grid on;
 
 fprintf('Saved timescale/invariance results to %s\n', save_path);
 

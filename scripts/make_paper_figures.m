@@ -106,10 +106,17 @@ function make_paper_figures(options)
         plot(S.se.shifts, S.se.nrmse_per_shift, 'ko-', 'LineWidth', 1.5);
         xlabel('shift'); ylabel('equivariance NRMSE'); grid on; title('temporal invariance');
         subplot(1,3,3); hold on;
-        plot(S.pa_on.lags, S.pa_on.xcorr_mean, 'r', 'LineWidth', 1.5, 'DisplayName', 'adapt ON');
-        plot(S.pa_off.lags, S.pa_off.xcorr_mean, 'k', 'LineWidth', 1.5, 'DisplayName', 'adapt OFF');
-        xline(0, 'k--'); xlabel('lag (<0 leads)'); ylabel('mean |xcorr|');
-        legend('show'); grid on; title('phase advance');
+        if isfield(S.pa_on, 'correlation_by_lag')
+            y_on = mean(abs(S.pa_on.correlation_by_lag), 1);
+            y_off = mean(abs(S.pa_off.correlation_by_lag), 1);
+        else
+            y_on = S.pa_on.xcorr_mean;
+            y_off = S.pa_off.xcorr_mean;
+        end
+        plot(S.pa_on.lags, y_on, 'r', 'LineWidth', 1.5, 'DisplayName', 'adapt ON');
+        plot(S.pa_off.lags, y_off, 'k', 'LineWidth', 1.5, 'DisplayName', 'adapt OFF');
+        xline(0, 'k--'); xlabel('lag (<0 = feature lags)'); ylabel('mean |xcorr|');
+        legend('show'); grid on; title('response lag');
         sgtitle('Fig 5: multi-timescale representation and temporal invariance');
         export_fig_local(f, fig_dir, 'fig5_timescale_invariance', fmt, dpi);
     end

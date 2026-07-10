@@ -13,7 +13,7 @@ the paper can be rebuilt and shared.
 | `esp_phase/` | `scripts/run_esp_phase_diagram.m` | ESP phase diagram grid (Result 1) |
 | `parameter_grid/` | `scripts/run_parameter_grid.m` | Multi-parameter Lyapunov/ESP/non-normality grid (Result 2) |
 | `parameter_sweeps/` | `scripts/run_parameter_sweep.m` | Legacy 1D sweeps |
-| `timescale_invariance/` | `scripts/run_timescale_invariance.m` | Memory spectrum, invariance, phase advance (Result 3) |
+| `timescale_invariance/` | `scripts/run_timescale_invariance.m` | Memory spectrum, invariance, response lag (Result 3) |
 | `meanfield_bifurcation/` | `scripts/run_meanfield_adaptation_bifurcation.m`, `scripts/run_bifurcation_meanfield.m` | Reduced-model bifurcation (Result 4) |
 | `benchmarks/` | `scripts/run_benchmarks.m` | Task performance, adaptation ON/OFF (Result 5) |
 | `characterisation/<timestamp>/` | `scripts/run_full_characterisation.m` | Full characterisation bundles |
