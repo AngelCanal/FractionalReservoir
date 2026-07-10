@@ -290,27 +290,54 @@ classdef SRNN_ESN < handle
             end
         end
         
-        function [Y_pred, X_features] = predict(obj, U)
-            % predict: Generate predictions using the trained readout
+        function [Y_pred, X_features, info] = predict(obj, U, options)
+            % predict: Independent prediction with optional known context.
             %
-            % Input:
-            %   U - Input time series (n_timesteps x n_inputs)
+            % [Y_pred, X, info] = predict(obj, U)
+            % [Y_pred, X, info] = predict(obj, U, options)
             %
-            % Output:
-            %   Y_pred - Predicted outputs (n_timesteps x n_outputs)
-            %   X_features - Extracted features (optional, for analysis)
-            
-            if ~obj.is_trained
-                warning('SRNN_ESN:NotTrained', ...
-                      'Readout layer has not been trained. Call trainReadout() first.');
+            % Default options.reset_before = true.
+            % Optional options.context_U supplies preceding input rows that are
+            % simulated then discarded before reporting predictions.
+
+            if nargin < 3 || isempty(options)
+                options = struct();
             end
-            
-            % Run reservoir over input sequence
-            pred_opts = struct('reset_before', true, 'update_internal_state', false);
-            [X_features, ~] = obj.runReservoir(U, pred_opts);
-            
-            % Apply readout
-            Y_pred = X_features * obj.W_out + obj.b_out';
+            reset_before = getFieldOrDefault(options, 'reset_before', true);
+            update_internal_state = getFieldOrDefault(options, 'update_internal_state', false);
+            context_U = getFieldOrDefault(options, 'context_U', zeros(0, obj.n_inputs));
+
+            if ~obj.is_trained || isempty(obj.readout_model)
+                error('SRNN_ESN:NotTrained', ...
+                    'Readout layer has not been trained. Call trainReadout() first.');
+            end
+            if ~isempty(obj.lags) && update_internal_state
+                error('SRNN_ESN:DDEContinuationUnsupported', ...
+                    'update_internal_state is not supported in DDE mode.');
+            end
+            if ~isempty(context_U) && size(context_U, 2) ~= obj.n_inputs
+                error('SRNN_ESN:InvalidContext', ...
+                    'context_U must have n_inputs columns.');
+            end
+
+            n_context = size(context_U, 1);
+            U_run = [context_U; U];
+            run_opts = struct( ...
+                'reset_before', reset_before, ...
+                'update_internal_state', update_internal_state, ...
+                'ode_reltol', getFieldOrDefault(options, 'ode_reltol', 1e-6), ...
+                'ode_abstol', getFieldOrDefault(options, 'ode_abstol', 1e-8), ...
+                'dde_reltol', getFieldOrDefault(options, 'dde_reltol', 1e-6), ...
+                'dde_abstol', getFieldOrDefault(options, 'dde_abstol', 1e-8));
+            [X_all, ~, run_info] = obj.runReservoir(U_run, run_opts);
+            X_features = X_all(n_context+1:end, :);
+            Y_pred = apply_ridge_readout(obj.readout_model, X_features);
+
+            info = struct();
+            info.reset_before = reset_before;
+            info.update_internal_state = update_internal_state;
+            info.n_context = n_context;
+            info.mode = run_info.mode;
         end
         
         function [Y_gen, X_features] = generateAutonomous(obj, initial_data, n_steps, options)
@@ -377,11 +404,11 @@ classdef SRNN_ESN < handle
                 'ode_reltol', ode_reltol, 'ode_abstol', ode_abstol);
             [X_washout, ~] = obj.runReservoir(U_washout, wash_opts);
 
-            current_feedback = X_washout(end, :) * obj.W_out + obj.b_out';
+            current_feedback = apply_ridge_readout(obj.readout_model, X_washout(end, :));
 
             Y_gen = zeros(n_steps, obj.n_outputs);
             if return_features
-                X_features = zeros(n_steps, size(obj.W_out, 1));
+                X_features = zeros(n_steps, obj.readout_model.n_features);
             else
                 X_features = [];
             end
@@ -391,7 +418,7 @@ classdef SRNN_ESN < handle
 
             for t = 1:n_steps
                 [X_t, ~] = obj.runReservoir(current_feedback, step_opts);
-                Y_t = X_t * obj.W_out + obj.b_out';
+                Y_t = apply_ridge_readout(obj.readout_model, X_t);
                 Y_gen(t, :) = Y_t;
                 if return_features
                     X_features(t, :) = X_t;
