@@ -120,7 +120,7 @@ function [params, meta] = default_MESN_config(overrides)
         if cfg.row_center_W
             W0 = W0 - mean(W0, 2);
         end
-        W = scale_W(W0, cfg.level_of_chaos, cfg.W_scale_method);
+        W = scale_recurrent_matrix(W0, cfg.level_of_chaos, cfg.W_scale_method);
     end
 
     if isfield(overrides, 'W_in')
@@ -203,31 +203,5 @@ function s = apply_selected_overrides(s, overrides, fields)
         if isfield(overrides, field)
             s.(field) = overrides.(field);
         end
-    end
-end
-
-function W = scale_W(W0, level_of_chaos, method)
-    W = W0;
-    W_eigs = eig(W);
-    switch lower(method)
-        case 'abscissa'
-            abscissa_0 = max(real(W_eigs));
-            if abscissa_0 == 0
-                gamma = 1;
-            else
-                gamma = 1 / abscissa_0;
-            end
-            W = level_of_chaos * gamma * W;
-        case 'radius'
-            rho0 = max(abs(W_eigs));
-            if rho0 == 0
-                gamma = 1;
-            else
-                gamma = 1 / rho0;
-            end
-            W = level_of_chaos * gamma * W;
-        otherwise
-            error('default_MESN_config:InvalidScaleMethod', ...
-                'Unknown W_scale_method: %s (use ''abscissa'' or ''radius'')', method);
     end
 end
