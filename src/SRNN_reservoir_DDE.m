@@ -1,219 +1,108 @@
-function dS_dt = SRNN_reservoir_DDE(t, S, S_delay, t_ex, u_ex, params)
-% SRNN_RESERVOIR_DDE  DDE version of the SRNN reservoir (same SFA/STD as SRNN_reservoir).
+function dS_dt = SRNN_reservoir_DDE(t, S, Z, u_fun, params)
+% SRNN_reservoir_DDE  DDE reservoir with one scalar inhibitory delay.
 %
-% From any state S (current or delayed), define:
-%   x_eff_i = x_i - c * sum_k(a_i,k)     (c = c_E for E, c_I for I)
-%   r_i     = phi(x_eff_i)               (firing rate; b is NOT inside r)
-%   s_j     = b_j * r_j                  (presynaptic synaptic output)
-%
-% Recurrent input (instantaneous + delayed presynaptic drive):
-%   I_rec_i(t) = sum_j W_components{1}(i,j) * s_j(t)
-%              + sum_k sum_j W_components{k+1}(i,j) * s_j(t - lags(k))
-%
-% Local dynamics at the current state S(t):
-%   tau_d * dx_i/dt = -x_i + I_rec_i(t) + u_i(t)
-%   da_i,k/dt = (-a_i,k + r_i) / tau_k
-%   db_i/dt = (1 - b_i) / tau_rec - (b_i * r_i) / tau_rel
-%
-% State organization: S = [a_E(:); a_I(:); b_E(:); b_I(:); x(:)]
-%
-% Syntax:
-%   dS_dt = SRNN_reservoir_DDE(t, S, S_delay, t_ex, u_ex, params)
-%
-% Inputs:
-%   t         - Current time
-%   S         - Current state vector
-%   S_delay   - Delayed state vectors (column k corresponds to params.lags(k))
-%   t_ex      - External input time vector
-%   u_ex      - External input matrix
-%   params    - Parameter struct
-%
-% params.W_components:
-%   W_components{1}   - instantaneous connectivity (E presynaptic columns in SRNN_ESN)
-%   W_components{k+1} - connectivity delayed by params.lags(k) (I columns in SRNN_ESN)
+% Current b.*r drives SFA/STD; W_components{1} uses current b.*r,
+% W_components{2} uses delayed b.*r.
 
-    persistent u_interpolant t_ex_last u_ex_size_last;
-
-    % Initialize interpolant if needed - also check u_ex dimensions
-    u_ex_size = size(u_ex);
-    needs_rebuild = isempty(u_interpolant) || isempty(t_ex_last) || ...
-       numel(t_ex_last) ~= numel(t_ex) || t_ex_last(1) ~= t_ex(1) || t_ex_last(end) ~= t_ex(end) || ...
-       isempty(u_ex_size_last) || ~isequal(u_ex_size, u_ex_size_last);
-    
-    if needs_rebuild
-        u_interpolant = griddedInterpolant(t_ex, u_ex', 'linear', 'none');
-        t_ex_last = t_ex;
-        u_ex_size_last = u_ex_size;
+    if size(Z, 2) ~= 1
+        error('SRNN_reservoir_DDE:InvalidDelayHistory', ...
+            'Exactly one scalar delay is supported (size(Z,2) must be 1).');
+    end
+    if numel(params.W_components) ~= 2
+        error('SRNN_reservoir_DDE:InvalidConnectivity', ...
+            'Scalar delay mode requires exactly two W_components.');
     end
 
-    %% 1. Interpolate external input
-    u = u_interpolant(t)'; 
+    u = u_fun(t);
+    if ~isequal(size(u), [params.n, 1])
+        error('SRNN_reservoir_DDE:InvalidInputShape', ...
+            'u_fun(t) must return an n x 1 column vector.');
+    end
 
-    %% 2. Compute current firing rates and unpack state
-    [r_current, x_current, a_current, b_current, b_vec_current] = compute_rates_and_unpack(S, params);
+    state = unpack_state(S, params);
+    [~, r_current, b_current] = mesn_q_r_b_from_state(state, params);
 
-    %% 3. Compute recurrent input (Instantaneous + Delayed)
-    
-    % Instantaneous contribution (Lag 0)
+    state_delayed = unpack_state(Z(:, 1), params);
+    [~, r_delayed, b_delayed] = mesn_q_r_b_from_state(state_delayed, params);
+
     W_inst = params.W_components{1};
-    % Apply presynaptic depression (b * r)
-    input_recurrent = W_inst * (b_vec_current .* r_current);
-    
-    % Delayed contributions
-    % params.lags matches columns of Z
-    if isfield(params, 'lags') && ~isempty(params.lags)
-        for k = 1:length(params.lags)
-            S_delayed_k = S_delay(:, k);
-            % We only need r from the delayed state
-            [r_delayed, ~, ~, ~, b_vec_delayed] = compute_rates_and_unpack(S_delayed_k, params);
-            
-            W_delayed = params.W_components{k+1};
-            % Apply presynaptic depression (b * r)
-            input_recurrent = input_recurrent + W_delayed * (b_vec_delayed .* r_delayed);
-        end
-    end
+    W_delayed = params.W_components{2};
+    input_recurrent = W_inst * (b_current .* r_current) + ...
+        W_delayed * (b_delayed .* r_delayed);
 
-    %% 4. Compute Derivatives
-    
-    % Parameters
     tau_d = params.tau_d;
-    n_E = params.n_E; n_I = params.n_I;
-    n_a_E = params.n_a_E; n_a_I = params.n_a_I;
-    n_b_E = params.n_b_E; n_b_I = params.n_b_I;
+    dx_dt = (-state.x + input_recurrent + u) / tau_d;
+
     E_indices = params.E_indices;
     I_indices = params.I_indices;
-    
-    tau_a_E = params.tau_a_E;
-    tau_a_I = params.tau_a_I;
-    tau_b_E_rec = params.tau_b_E_rec; tau_b_E_rel = params.tau_b_E_rel;
-    tau_b_I_rec = params.tau_b_I_rec; tau_b_I_rel = params.tau_b_I_rel;
 
-    % dx/dt = (-x + Input + u) / tau_d
-    dx_dt = (-x_current + input_recurrent + u) / tau_d;
-
-    % Adaptation derivatives (depend on CURRENT firing rate r_current)
-    
-    % da_E/dt
-    da_E_dt = [];
-    if n_E > 0 && n_a_E > 0 && ~isempty(a_current{1})
-        % a_current is returned as cell {a_E, a_I} to handle unpacking logic cleanly
-        % but compute_rates_and_unpack might just return the raw matrices. 
-        % Let's stick to the raw matrix unpacking inside the helper or here.
-        % Re-using logic from SRNN_reservoir
-        
-        % Helper returns a_current as {a_E, a_I}
-        val_a_E = a_current{1};
-        da_E_dt = (r_current(E_indices) - val_a_E) ./ tau_a_E;
+    if params.n_a_E > 0
+        da_E_dt = (r_current(E_indices) - state.a_E) ./ params.tau_a_E;
+    else
+        da_E_dt = zeros(params.n_E, 0);
     end
 
-    % da_I/dt
-    da_I_dt = [];
-    if n_I > 0 && n_a_I > 0 && ~isempty(a_current{2})
-        val_a_I = a_current{2};
-        da_I_dt = (r_current(I_indices) - val_a_I) ./ tau_a_I;
+    if params.n_a_I > 0
+        da_I_dt = (r_current(I_indices) - state.a_I) ./ params.tau_a_I;
+    else
+        da_I_dt = zeros(params.n_I, 0);
     end
 
-    % STD derivatives (depend on CURRENT firing rate)
-    
-    % db_E/dt
-    db_E_dt = [];
-    if n_E > 0 && n_b_E > 0 && ~isempty(b_current{1})
-        val_b_E = b_current{1};
-        db_E_dt = (1 - val_b_E) / tau_b_E_rec - (val_b_E .* r_current(E_indices)) / tau_b_E_rel;
+    if params.n_b_E > 0
+        db_E_dt = (1 - state.b_E) / params.tau_b_E_rec - ...
+            (state.b_E .* r_current(E_indices)) / params.tau_b_E_rel;
+    else
+        db_E_dt = zeros(0, 1);
     end
 
-    % db_I/dt
-    db_I_dt = [];
-    if n_I > 0 && n_b_I > 0 && ~isempty(b_current{2})
-        val_b_I = b_current{2};
-        db_I_dt = (1 - val_b_I) / tau_b_I_rec - (val_b_I .* r_current(I_indices)) / tau_b_I_rel;
+    if params.n_b_I > 0
+        db_I_dt = (1 - state.b_I) / params.tau_b_I_rec - ...
+            (state.b_I .* r_current(I_indices)) / params.tau_b_I_rel;
+    else
+        db_I_dt = zeros(0, 1);
     end
 
-    %% 5. Pack Derivatives
-    dS_dt = [da_E_dt(:); da_I_dt(:); db_E_dt(:); db_I_dt(:); dx_dt];
+    dstate = struct();
+    dstate.a_E = da_E_dt;
+    dstate.a_I = da_I_dt;
+    dstate.b_E = db_E_dt;
+    dstate.b_I = db_I_dt;
+    dstate.x = dx_dt;
 
+    dS_dt = pack_state(dstate, params);
 end
 
-function [r, x, a_cell, b_cell, b] = compute_rates_and_unpack(S, params)
-    % Unpacks state and computes firing rates
-    
+function [q, r, b] = mesn_q_r_b_from_state(state, params)
+    c_E = get_coupling(params, 'c_E');
+    c_I = get_coupling(params, 'c_I');
+
     n = params.n;
-    n_E = params.n_E; n_I = params.n_I;
-    E_indices = params.E_indices; I_indices = params.I_indices;
-    
-    n_a_E = params.n_a_E; n_a_I = params.n_a_I;
-    n_b_E = params.n_b_E; n_b_I = params.n_b_I;
-    
-    c_E = params.c_E; c_I = params.c_I;
-    activation_function = params.activation_function;
-    
-    %% Unpack
-    current_idx = 0;
-    
-    % a_E
-    len_a_E = n_E * n_a_E;
-    if len_a_E > 0
-        a_E = reshape(S(current_idx + (1:len_a_E)), n_E, n_a_E);
-    else
-        a_E = [];
+    E_indices = params.E_indices;
+    I_indices = params.I_indices;
+
+    q = state.x;
+    if params.n_a_E > 0
+        q(E_indices) = q(E_indices) - c_E * sum(state.a_E, 2);
     end
-    current_idx = current_idx + len_a_E;
-    
-    % a_I
-    len_a_I = n_I * n_a_I;
-    if len_a_I > 0
-        a_I = reshape(S(current_idx + (1:len_a_I)), n_I, n_a_I);
-    else
-        a_I = [];
+    if params.n_a_I > 0
+        q(I_indices) = q(I_indices) - c_I * sum(state.a_I, 2);
     end
-    current_idx = current_idx + len_a_I;
-    
-    % b_E
-    len_b_E = n_E * n_b_E;
-    if len_b_E > 0
-        b_E = S(current_idx + (1:len_b_E));
-    else
-        b_E = [];
-    end
-    current_idx = current_idx + len_b_E;
-    
-    % b_I
-    len_b_I = n_I * n_b_I;
-    if len_b_I > 0
-        b_I = S(current_idx + (1:len_b_I));
-    else
-        b_I = [];
-    end
-    current_idx = current_idx + len_b_I;
-    
-    % x
-    x = S(current_idx + (1:n));
-    
-    %% Compute Rates
-    x_eff = x;
-    
-    % Adaptation
-    if ~isempty(a_E)
-        x_eff(E_indices) = x_eff(E_indices) - c_E * sum(a_E, 2);
-    end
-    if ~isempty(a_I)
-        x_eff(I_indices) = x_eff(I_indices) - c_I * sum(a_I, 2);
-    end
-    
-    % STD
+
+    r = params.activation_function(q);
+
     b = ones(n, 1);
-    if ~isempty(b_E)
-        b(E_indices) = b_E;
+    if params.n_b_E > 0
+        b(E_indices) = state.b_E;
     end
-    if ~isempty(b_I)
-        b(I_indices) = b_I;
+    if params.n_b_I > 0
+        b(I_indices) = state.b_I;
     end
-    
-    % Firing rate r = phi(x_eff); presynaptic depression b enters synaptic drive only.
-    r = activation_function(x_eff);
-    
-    % Pack aux outputs for derivative calc
-    a_cell = {a_E, a_I};
-    b_cell = {b_E, b_I};
 end
 
+function c = get_coupling(params, field)
+    if isfield(params, field)
+        c = params.(field);
+    else
+        c = 1.0;
+    end
+end
