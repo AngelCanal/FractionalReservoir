@@ -1,128 +1,160 @@
-%% run_full_characterisation
-% Master orchestration script for MESN reservoir characterisation suite.
+function [result, run_dir] = run_full_characterisation(options)
+% run_full_characterisation  Modular MESN characterisation suite.
 %
-% This script is intentionally modular: toggle flags to run subsets of
-% analyses. Many components can be compute-heavy (Lyapunov, sweeps).
+%   [result, run_dir] = run_full_characterisation()
+%   [result, run_dir] = run_full_characterisation(options)
+%
+% Options:
+%   .flags              subset toggles (stability/esp/memory/...)
+%   .dry_run            create context/manifest only (default false)
+%   .save_results       write under results/revalidated (default true)
+%   .run_dependencies   if true, may call parameter_sweep / meanfield (default false)
+%   .seed, .T, .run_id, .revalidated_root_override
 
-if exist('setup_paths', 'file') == 2
-    setup_paths();
+    if nargin < 1 || isempty(options)
+        options = struct();
+    end
+    if exist('setup_paths', 'file') == 2
+        setup_paths();
+    end
+
+    dry_run = local_get(options, 'dry_run', false);
+    save_results = local_get(options, 'save_results', true);
+    run_dependencies = local_get(options, 'run_dependencies', false);
+    seed = local_get(options, 'seed', 123);
+    T = local_get(options, 'T', 4000);
+
+    flags = local_get(options, 'flags', struct());
+    flags = set_flag(flags, 'stability', true);
+    flags = set_flag(flags, 'esp', true);
+    flags = set_flag(flags, 'memory', true);
+    flags = set_flag(flags, 'kernel_rank', true);
+    flags = set_flag(flags, 'benchmarks', true);
+    flags = set_flag(flags, 'bio', true);
+    flags = set_flag(flags, 'parameter_sweep', false);
+    flags = set_flag(flags, 'meanfield_bifurcation', false);
+
+    [params, meta] = default_MESN_config(struct());
+    params_final = struct('flags', flags, 'params', params, 'seed', seed, 'T', T);
+
+    run_dir = '';
+    if save_results
+        ctx_opts = struct('master_seed', seed);
+        if isfield(options, 'run_id'); ctx_opts.run_id = options.run_id; end
+        if isfield(options, 'revalidated_root_override')
+            ctx_opts.revalidated_root_override = options.revalidated_root_override;
+        end
+        ctx = create_run_context('full_characterisation', ctx_opts);
+        save_run_manifest(ctx, params_final);
+        run_dir = ctx.run_dir;
+    end
+
+    result = struct('flags', flags, 'params', params, 'meta', meta, ...
+        'run_dir', run_dir);
+    if dry_run
+        result.status = 'dry_run';
+        return;
+    end
+
+    dt = params.dt;
+    rng(seed);
+    U = 0.2 * randn(T, 1);
+    t = (0:(T-1))' * dt;
+    esn = SRNN_ESN(params);
+    esn.resetState();
+    [X_feat, S_hist] = esn.runReservoir(U);
+
+    if save_results
+        atomic_save_results(fullfile(run_dir, 'reference_run.mat'), struct( ...
+            'params', params, 'meta', meta, 'U', U, 't', t, ...
+            'X_feat', X_feat, 'S_hist', S_hist));
+    end
+
+    if flags.stability
+        result.spectral_W = compute_spectral_properties(params.W, params);
+    end
+    if flags.esp
+        esp_opts = struct('n_ic', 20, 'washout_steps', 500, 'eps_tol', 1e-3, ...
+            'ic_scale', 0.1, 'feature_mode', 'x');
+        result.esp = verify_echo_state_property(esn, U, esp_opts);
+    end
+    if flags.memory
+        mc_opts = struct('T', 5000, 'K_max', 200, 'washout', 200, ...
+            'lambda', params.lambda, 'feature_mode', 'x');
+        result.memory.MC = compute_memory_capacity(esn, mc_opts);
+        nmc_opts = struct('T', 5000, 'K_max', 100, 'washout', 200, ...
+            'lambda', params.lambda, 'degrees', [2 3], ...
+            'include_cross_terms', false, 'feature_mode', 'x');
+        result.memory.NMC = compute_nonlinear_memory_capacity(esn, nmc_opts);
+        result.memory.Fisher = struct( ...
+            'status', 'quarantined_not_computed', ...
+            'scientifically_valid', false, 'lags', [], 'FI_curve', []);
+        result.memory.Fisher_fit = struct('status', 'quarantined_not_computed');
+        result.memory.MC_fit = fit_memory_decay(result.memory.MC.lags, ...
+            result.memory.MC.MC_spectrum, struct());
+    end
+    if flags.kernel_rank
+        kr_opts = struct('M', 150, 'L', 200, 'washout', 50, ...
+            'input_type', 'binary', 'feature_mode', 'x');
+        result.kernel = compute_kernel_rank(esn, kr_opts);
+    end
+    if flags.benchmarks
+        if run_dependencies
+            [bench, ~] = run_benchmarks(struct( ...
+                'save_results', false, 'make_figures', false, 'seed', seed));
+            result.bench = bench.summary;
+        else
+            result.bench = struct('status', 'skipped_run_dependencies_false');
+        end
+    end
+    if flags.bio
+        result.bio.coding = compute_coding_statistics(esn, S_hist, ...
+            struct('time_stride', 5));
+        result.bio.adapt_std = compute_adaptation_STD_statistics(esn, S_hist, ...
+            struct('time_stride', 5));
+    end
+
+    if flags.parameter_sweep
+        if run_dependencies
+            [sw, ~] = run_parameter_sweep(struct( ...
+                'save_results', false, 'make_figures', false, 'seed', seed, ...
+                'sweep', struct('param_name', 'level_of_chaos', ...
+                'values', linspace(0.7, 2.5, 5))));
+            result.parameter_sweep = sw;
+        else
+            result.parameter_sweep = struct('status', 'skipped_run_dependencies_false');
+        end
+    end
+    if flags.meanfield_bifurcation
+        if run_dependencies
+            result.meanfield = run_bifurcation_meanfield(struct( ...
+                'save_results', false, 'make_figures', false, ...
+                'Iext_vals', linspace(0, 2, 5), 'tspan', [0, 50]));
+        else
+            result.meanfield = struct('status', 'skipped_run_dependencies_false');
+        end
+    end
+
+    result.status = 'ok';
+    result.save_path = '';
+    if save_results
+        save_path = fullfile(run_dir, 'characterisation_results.mat');
+        atomic_save_results(save_path, struct('result', result));
+        result.save_path = save_path;
+        fprintf('Characterisation complete. Results saved under %s\n', run_dir);
+    end
 end
 
-timestamp = datestr(now, 'yyyymmdd_HHMMSS');
-out_dir = fullfile(pwd, 'results', 'characterisation', timestamp);
-if ~exist(out_dir, 'dir')
-    mkdir(out_dir);
+function flags = set_flag(flags, name, default)
+    if ~isfield(flags, name) || isempty(flags.(name))
+        flags.(name) = default;
+    end
 end
 
-% -------------------------
-% Flags
-% -------------------------
-flags = struct();
-flags.stability = true;
-flags.esp = true;
-flags.memory = true;
-flags.kernel_rank = true;
-flags.benchmarks = true;
-flags.bio = true;
-flags.parameter_sweep = false;     % can take long
-flags.meanfield_bifurcation = true; % dynamical regime sweep (dde23; not continuation)
-
-% -------------------------
-% Reference config and representative drive
-% -------------------------
-[params, meta] = default_MESN_config(struct());
-esn = SRNN_ESN(params);
-
-dt = params.dt;
-T = 4000;
-rng(123);
-U = 0.2 * randn(T, 1);
-t = (0:(T-1))' * dt;
-
-esn.resetState();
-[X_feat, S_hist] = esn.runReservoir(U);
-
-save(fullfile(out_dir, 'reference_run.mat'), 'params', 'meta', 'U', 't', 'X_feat', 'S_hist');
-
-results = struct();
-results.flags = flags;
-results.params = params;
-
-% -------------------------
-% Stability / ESP
-% -------------------------
-if flags.stability
-    results.spectral_W = compute_spectral_properties(params.W, params);
+function v = local_get(s, name, default)
+    if isfield(s, name) && ~isempty(s.(name))
+        v = s.(name);
+    else
+        v = default;
+    end
 end
-
-if flags.esp
-    esp_opts = struct('n_ic', 20, 'washout_steps', 500, 'eps_tol', 1e-3, 'ic_scale', 0.1, 'feature_mode', 'x');
-    results.esp = verify_echo_state_property(esn, U, esp_opts);
-end
-
-% -------------------------
-% Memory metrics
-% -------------------------
-if flags.memory
-    mc_opts = struct('T', 5000, 'K_max', 200, 'washout', 200, 'lambda', params.lambda, 'feature_mode', 'x');
-    results.memory.MC = compute_memory_capacity(esn, mc_opts);
-
-    nmc_opts = struct('T', 5000, 'K_max', 100, 'washout', 200, 'lambda', params.lambda, ...
-        'degrees', [2 3], 'include_cross_terms', false, 'feature_mode', 'x');
-    results.memory.NMC = compute_nonlinear_memory_capacity(esn, nmc_opts);
-
-    fisher_opts = struct('K_max', 200, 'washout_steps', 500, 'sample_stride', 10, ...
-        'use_states', 'x', 'dt', dt); %#ok<NASGU>
-    % Quarantined: see docs/validation/FISHER_MEMORY_STATUS.md
-    results.memory.Fisher = struct( ...
-        'status', 'quarantined_not_computed', ...
-        'scientifically_valid', false, ...
-        'lags', [], ...
-        'FI_curve', []);
-    results.memory.Fisher_fit = struct('status', 'quarantined_not_computed');
-    results.memory.MC_fit = fit_memory_decay(results.memory.MC.lags, results.memory.MC.MC_spectrum, struct());
-end
-
-% -------------------------
-% Kernel Rank / Generalisation Rank
-% -------------------------
-if flags.kernel_rank
-    kr_opts = struct('M', 150, 'L', 200, 'washout', 50, 'input_type', 'binary', 'feature_mode', 'x');
-    results.kernel = compute_kernel_rank(esn, kr_opts);
-end
-
-% -------------------------
-% Benchmarks
-% -------------------------
-if flags.benchmarks
-    results.bench.narma10 = narma_benchmark(esn, struct('order', 10));
-    results.bench.narma20 = narma_benchmark(esn, struct('order', 20));
-    results.bench.mg = mackey_glass_benchmark(esn, struct('tau', 17, 'do_rollout', true));
-    results.bench.lorenz = lorenz_benchmark(esn, struct('obs_noise', 0.0));
-    results.bench.counting = stimulus_counting_benchmark(esn, struct());
-    results.bench.freq = frequency_discrimination_benchmark(esn, struct('dt', dt));
-end
-
-% -------------------------
-% Biological coding statistics
-% -------------------------
-if flags.bio
-    results.bio.coding = compute_coding_statistics(esn, S_hist, struct('time_stride', 5));
-    results.bio.adapt_std = compute_adaptation_STD_statistics(esn, S_hist, struct('time_stride', 5));
-end
-
-% -------------------------
-% Optional: parameter sweep and mean-field
-% -------------------------
-if flags.parameter_sweep
-    % Note: run_parameter_sweep.m is a standalone script and may take long.
-    run(fullfile(pwd, 'scripts', 'run_parameter_sweep.m'));
-end
-
-if flags.meanfield_bifurcation
-    run_bifurcation_meanfield();
-end
-
-save(fullfile(out_dir, 'characterisation_results.mat'), 'results');
-fprintf('Characterisation complete. Results saved under %s\n', out_dir);
-
