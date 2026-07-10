@@ -52,7 +52,8 @@ end
 
 function testInvalidCouplingCE(testCase)
     params = valid_params();
-    params.c_E = -0.1;
+    params.c_a_E(1) = -0.1;
+    params.c_total_E = sum(params.c_a_E);
     testCase.verifyError(@() validate_MESN_params(params), 'MESN:InvalidCoupling');
 end
 

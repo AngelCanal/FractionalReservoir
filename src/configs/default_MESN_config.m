@@ -38,9 +38,6 @@ function [params, meta] = default_MESN_config(overrides)
     cfg.dt = 0.1;
     cfg.tau_d = 0.55;
 
-    cfg.c_E = 0.1/7;
-    cfg.c_I = 0.1/4;
-
     cfg.tau_b_E_rec = 0.6;
     cfg.tau_b_E_rel = 0.1;
     cfg.tau_b_I_rec = 0.4;
@@ -93,7 +90,7 @@ function [params, meta] = default_MESN_config(overrides)
     % -------------------------
     % 4. Nonstructural scalar overrides
     % -------------------------
-    nonstructural_fields = {'dt', 'tau_d', 'c_E', 'c_I', ...
+    nonstructural_fields = {'dt', 'tau_d', 'c_E', 'c_I', 'c_a_E', 'c_a_I', ...
         'tau_b_E_rec', 'tau_b_E_rel', 'tau_b_I_rec', 'tau_b_I_rel', ...
         'lags', 'S_a', 'S_c', 'input_scaling', 'input_sparsity', ...
         'level_of_chaos', 'row_center_W', 'dale', 'W_scale_method', ...
@@ -164,8 +161,19 @@ function [params, meta] = default_MESN_config(overrides)
     params.n_a_I = cfg.n_a_I;
     params.tau_a_E = cfg.tau_a_E;
     params.tau_a_I = cfg.tau_a_I;
-    params.c_E = cfg.c_E;
-    params.c_I = cfg.c_I;
+
+    if isfield(cfg, 'c_a_E')
+        params.c_a_E = cfg.c_a_E;
+    end
+    if isfield(cfg, 'c_a_I')
+        params.c_a_I = cfg.c_a_I;
+    end
+    if isfield(cfg, 'c_E')
+        params.c_E = cfg.c_E;
+    end
+    if isfield(cfg, 'c_I')
+        params.c_I = cfg.c_I;
+    end
 
     params.n_b_E = cfg.n_b_E;
     params.n_b_I = cfg.n_b_I;

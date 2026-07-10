@@ -3,7 +3,7 @@ function [dS_dt] = SRNN_reservoir(t, S, u_fun, params)
 %
 % State order: S = [a_E(:); a_I(:); b_E(:); b_I(:); x(:)]
 %
-%   q(E) = x(E) - c_E*sum(a_E,2);  q(I) analogous
+%   q(E) = x(E) - a_E*c_a_E(:);  q(I) analogous
 %   r    = activation_function(q)
 %   dx   = (-x + W*(b.*r) + u) / tau_d
 %   da   = (r - a) ./ tau_a
@@ -16,7 +16,17 @@ function [dS_dt] = SRNN_reservoir(t, S, u_fun, params)
     end
 
     state = unpack_state(S, params);
-    [q, r, b] = compute_q_r_b(state, params);
+    q = compute_effective_q(state, params);
+    r = params.activation_function(q);
+
+    n = params.n;
+    b = ones(n, 1);
+    if params.n_b_E > 0
+        b(params.E_indices) = state.b_E;
+    end
+    if params.n_b_I > 0
+        b(params.I_indices) = state.b_I;
+    end
 
     n_E = params.n_E;
     n_I = params.n_I;
@@ -66,39 +76,4 @@ function [dS_dt] = SRNN_reservoir(t, S, u_fun, params)
     dstate.x = dx_dt;
 
     dS_dt = pack_state(dstate, params);
-end
-
-function [q, r, b] = compute_q_r_b(state, params)
-    c_E = get_coupling(params, 'c_E');
-    c_I = get_coupling(params, 'c_I');
-
-    n = params.n;
-    E_indices = params.E_indices;
-    I_indices = params.I_indices;
-
-    q = state.x;
-    if params.n_a_E > 0
-        q(E_indices) = q(E_indices) - c_E * sum(state.a_E, 2);
-    end
-    if params.n_a_I > 0
-        q(I_indices) = q(I_indices) - c_I * sum(state.a_I, 2);
-    end
-
-    r = params.activation_function(q);
-
-    b = ones(n, 1);
-    if params.n_b_E > 0
-        b(E_indices) = state.b_E;
-    end
-    if params.n_b_I > 0
-        b(I_indices) = state.b_I;
-    end
-end
-
-function c = get_coupling(params, field)
-    if isfield(params, field)
-        c = params.(field);
-    else
-        c = 1.0;
-    end
 end

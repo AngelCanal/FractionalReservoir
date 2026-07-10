@@ -123,33 +123,7 @@ function fisher = compute_fisher_memory_curve(esn_or_params, U, options)
 end
 
 function params = exportParams(esn)
-    % Minimal export from SRNN_ESN object for Jacobian routines
-    params = struct();
-    params.n = esn.n;
-    params.n_E = esn.n_E;
-    params.n_I = esn.n_I;
-    params.E_indices = esn.E_indices;
-    params.I_indices = esn.I_indices;
-    params.W = esn.W;
-    params.W_in = esn.W_in;
-    params.tau_d = esn.tau_d;
-    params.n_a_E = esn.n_a_E;
-    params.n_a_I = esn.n_a_I;
-    params.tau_a_E = esn.tau_a_E;
-    params.tau_a_I = esn.tau_a_I;
-    params.n_b_E = esn.n_b_E;
-    params.n_b_I = esn.n_b_I;
-    params.tau_b_E_rec = esn.tau_b_E_rec;
-    params.tau_b_E_rel = esn.tau_b_E_rel;
-    params.tau_b_I_rec = esn.tau_b_I_rec;
-    params.tau_b_I_rel = esn.tau_b_I_rel;
-    params.c_E = esn.c_E;
-    params.c_I = esn.c_I;
-    params.activation_function = esn.activation_function;
-    if isprop(esn, 'activation_function_derivative')
-        params.activation_function_derivative = esn.activation_function_derivative;
-    end
-    params.dt = esn.dt;
+    params = esn.exportParams();
 end
 
 function value = getFieldOrDefault(s, field, default_value)

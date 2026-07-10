@@ -134,13 +134,7 @@ function g_stat = local_gain_stats(params, S_hist, washout)
         b_I = state.b_I;
         x = state.x;
 
-        x_eff = x;
-        if ~isempty(a_E)
-            x_eff(params.E_indices) = x_eff(params.E_indices) - params.c_E * sum(a_E, 2);
-        end
-        if ~isempty(a_I)
-            x_eff(params.I_indices) = x_eff(params.I_indices) - params.c_I * sum(a_I, 2);
-        end
+        x_eff = compute_effective_q(state, params);
 
         b = ones(n, 1);
         if ~isempty(b_E); b(params.E_indices) = b_E; end

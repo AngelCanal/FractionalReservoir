@@ -45,8 +45,8 @@ classdef SRNN_ESN < handle
         tau_b_E_rel    % STD release time constant for E neurons
         tau_b_I_rec    % STD recovery time constant for I neurons
         tau_b_I_rel    % STD release time constant for I neurons
-        c_E            % Adaptation scaling for E neurons
-        c_I            % Adaptation scaling for I neurons
+        c_a_E          % Per-timescale adaptation coupling for E neurons
+        c_a_I          % Per-timescale adaptation coupling for I neurons
         activation_function  % Nonlinearity (function handle)
         activation_function_derivative % Derivative of nonlinearity (function handle)
         
@@ -97,7 +97,7 @@ classdef SRNN_ESN < handle
             %       tau_a_E, tau_a_I - adaptation time constants
             %       n_b_E, n_b_I - STD flags (default: 0)
             %       tau_b_E_rec, tau_b_E_rel, tau_b_I_rec, tau_b_I_rel
-            %       c_E, c_I - adaptation scaling (default: 1.0)
+            %       c_a_E, c_a_I - per-timescale adaptation coupling vectors
             %       which_states - 'x' (default), 'r', or 'all'
             %       include_input - true/false (default: false)
             %       lambda - regularization (default: 1e-6)
@@ -139,8 +139,8 @@ classdef SRNN_ESN < handle
             obj.tau_b_I_rel = getFieldOrDefault(params, 'tau_b_I_rel', inf);
             
             % Adaptation scaling
-            obj.c_E = getFieldOrDefault(params, 'c_E', 1.0);
-            obj.c_I = getFieldOrDefault(params, 'c_I', 1.0);
+            obj.c_a_E = params.c_a_E;
+            obj.c_a_I = params.c_a_I;
             
             % Configuration
             obj.which_states = getFieldOrDefault(params, 'which_states', 'x');
@@ -585,17 +585,7 @@ classdef SRNN_ESN < handle
         
         function [r, x_eff] = computeRates(obj, S)
             state = unpack_state(S, obj.params);
-            c_E = obj.params.c_E;
-            c_I = obj.params.c_I;
-
-            x_eff = state.x;
-            if obj.n_a_E > 0
-                x_eff(obj.E_indices) = x_eff(obj.E_indices) - c_E * sum(state.a_E, 2);
-            end
-            if obj.n_a_I > 0
-                x_eff(obj.I_indices) = x_eff(obj.I_indices) - c_I * sum(state.a_I, 2);
-            end
-
+            x_eff = compute_effective_q(state, obj.params);
             r = obj.activation_function(x_eff);
         end
         

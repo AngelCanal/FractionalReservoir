@@ -6,8 +6,9 @@ function testHandComputedDerivatives(testCase)
     params = make_test_params(struct( ...
         'n_a_E', 2, 'n_a_I', 0, 'n_b_E', 0, 'n_b_I', 0, 'lags', []));
     params.W = zeros(params.n);
-    params.c_E = 0.2;
-    params.c_I = 0.1;
+    params.c_a_E = [0.2, 0.15];
+    params.c_total_E = sum(params.c_a_E);
+    params = validate_MESN_params(params);
 
     state = struct();
     state.a_E = [0.1 0.2; 0.3 0.4; 0.5 0.6];
@@ -23,9 +24,9 @@ function testHandComputedDerivatives(testCase)
     dS = SRNN_reservoir(0, S, u_fun, params);
     dstate = unpack_state(dS, params);
 
-    sum_a_E = sum(state.a_E, 2);
+    sum_a_E = state.a_E * params.c_a_E(:);
     q = state.x;
-    q(params.E_indices) = q(params.E_indices) - params.c_E * sum_a_E;
+    q(params.E_indices) = q(params.E_indices) - sum_a_E;
     r = params.activation_function(q);
 
     expected_dx = (-state.x + u_const) / params.tau_d;

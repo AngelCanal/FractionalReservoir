@@ -6,6 +6,7 @@ function params = validate_MESN_params(params)
     end
 
     params = fill_missing_indices(params);
+    params = resolve_adaptation_coupling(params);
 
     assert_positive_integer(params, 'n');
     assert_nonnegative_integer(params, 'n_E');
@@ -31,22 +32,14 @@ function params = validate_MESN_params(params)
     assert_positive_scalar(params, 'tau_d');
     assert_positive_scalar(params, 'dt');
 
-    validate_adaptation(params, 'E');
-    validate_adaptation(params, 'I');
+    validate_adaptation_coupling(params, 'E');
+    validate_adaptation_coupling(params, 'I');
     validate_std(params, 'E');
     validate_std(params, 'I');
 
-    if isfield(params, 'c_E') && ~isfinite(params.c_E)
-        error('MESN:InvalidCoupling', 'c_E must be finite.');
-    end
-    if isfield(params, 'c_I') && ~isfinite(params.c_I)
-        error('MESN:InvalidCoupling', 'c_I must be finite.');
-    end
-    if isfield(params, 'c_E') && params.c_E < 0
-        error('MESN:InvalidCoupling', 'c_E must be nonnegative.');
-    end
-    if isfield(params, 'c_I') && params.c_I < 0
-        error('MESN:InvalidCoupling', 'c_I must be nonnegative.');
+    if isfield(params, 'c_E') || isfield(params, 'c_I')
+        error('MESN:AmbiguousAdaptationCoupling', ...
+            'Scalar c_E/c_I must be resolved through resolve_adaptation_coupling before validation.');
     end
 
     validate_lags(params);
@@ -81,7 +74,35 @@ function params = fill_missing_indices(params)
     end
 end
 
-function validate_adaptation(params, pop)
+function validate_adaptation_coupling(params, pop)
+    validate_adaptation_tau(params, pop);
+
+    n_field = sprintf('n_a_%s', pop);
+    c_a_field = sprintf('c_a_%s', pop);
+    total_field = sprintf('c_total_%s', pop);
+    n_a = params.(n_field);
+
+    if n_a == 0
+        return;
+    end
+
+    if ~isfield(params, c_a_field)
+        error('MESN:InvalidCoupling', 'Missing field %s.', c_a_field);
+    end
+
+    c_a = params.(c_a_field);
+    if ~isvector(c_a) || numel(c_a) ~= n_a || size(c_a, 1) ~= 1
+        error('MESN:InvalidCoupling', '%s must be a 1 x n_a row vector.', c_a_field);
+    end
+    if any(~isfinite(c_a)) || any(c_a < 0)
+        error('MESN:InvalidCoupling', '%s must contain finite nonnegative values.', c_a_field);
+    end
+    if ~isfield(params, total_field) || abs(params.(total_field) - sum(c_a)) > 0
+        error('MESN:InvalidCoupling', '%s must equal sum(%s).', total_field, c_a_field);
+    end
+end
+
+function validate_adaptation_tau(params, pop)
     n_field = sprintf('n_a_%s', pop);
     tau_field = sprintf('tau_a_%s', pop);
     n_pop = params.(sprintf('n_%s', pop));

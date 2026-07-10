@@ -41,11 +41,10 @@ function testComputeRatesMatchesDirect(testCase)
     [r_obj, ~] = esn.computeRates(esn.S);
 
     state = unpack_state(esn.S, esn.params);
-    sum_a = sum(state.a_E, 2);
     q = state.x;
-    q(params.E_indices) = q(params.E_indices) - esn.params.c_E * sum_a;
+    q(params.E_indices) = q(params.E_indices) - state.a_E * esn.params.c_a_E(:);
     if params.n_a_I > 0
-        q(params.I_indices) = q(params.I_indices) - esn.params.c_I * sum(state.a_I, 2);
+        q(params.I_indices) = q(params.I_indices) - state.a_I * esn.params.c_a_I(:);
     end
     r_direct = params.activation_function(q);
 

@@ -73,36 +73,15 @@ function dS_dt = SRNN_reservoir_DDE(t, S, Z, u_fun, params)
 end
 
 function [q, r, b] = mesn_q_r_b_from_state(state, params)
-    c_E = get_coupling(params, 'c_E');
-    c_I = get_coupling(params, 'c_I');
-
     n = params.n;
-    E_indices = params.E_indices;
-    I_indices = params.I_indices;
-
-    q = state.x;
-    if params.n_a_E > 0
-        q(E_indices) = q(E_indices) - c_E * sum(state.a_E, 2);
-    end
-    if params.n_a_I > 0
-        q(I_indices) = q(I_indices) - c_I * sum(state.a_I, 2);
-    end
-
+    q = compute_effective_q(state, params);
     r = params.activation_function(q);
 
     b = ones(n, 1);
     if params.n_b_E > 0
-        b(E_indices) = state.b_E;
+        b(params.E_indices) = state.b_E;
     end
     if params.n_b_I > 0
-        b(I_indices) = state.b_I;
-    end
-end
-
-function c = get_coupling(params, field)
-    if isfield(params, field)
-        c = params.(field);
-    else
-        c = 1.0;
+        b(params.I_indices) = state.b_I;
     end
 end
