@@ -77,7 +77,8 @@ parfor ii = 1:n_vals
         % External input as used by SRNN_reservoir: u_ex = W_in * U'
         t_ex = t_out;
         u_ex = params.W_in * U';
-        rhs_func = @(t, S) SRNN_reservoir(t, S, t_ex, u_ex, params);
+        u_fun = make_input_interpolant(t_ex, u_ex);
+        rhs_func = @(t, S) SRNN_reservoir(t, S, u_fun, params);
 
         lya_results = compute_lyapunov_exponents(lya_method, S_hist, t_out, dt, fs, ...
             T_interval, params, ode_opts, @ode23s, rhs_func, t_ex, u_ex);

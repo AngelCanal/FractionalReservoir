@@ -55,10 +55,9 @@ n_samples = numel(sample_idx);
 % Finite-difference settings: use a fixed time and a constant external input
 % so the SRNN_reservoir right-hand side depends only on the state S.
 t0 = 0.0;
-t_ex = [0, dt];
-u_const = 0.2 * randn(params.n, 1);   % arbitrary but fixed drive
-u_ex = [u_const, u_const];
-rhs = @(S) SRNN_reservoir(t0, S, t_ex, u_ex, params);
+u_const = 0.2 * randn(params.n, 1);
+u_fun = @(t) u_const;
+rhs = @(S) SRNN_reservoir(t0, S, u_fun, params);
 
 h = 1e-6;   % central-difference step
 
