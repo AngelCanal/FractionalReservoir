@@ -1,0 +1,39 @@
+function params = make_test_params(overrides)
+% make_test_params  Deterministic small-network parameters for unit tests.
+%
+% Default configuration: n=6, fraction_E=0.5, n_a_E=2, n_a_I=1,
+% n_b_E=1, n_b_I=1, lags=[], n_inputs=1, row_center_W=false,
+% weight_rng_seed=1729, input_rng_seed=1730.
+
+    if nargin < 1
+        overrides = struct();
+    end
+
+    base = struct( ...
+        'n', 6, ...
+        'fraction_E', 0.5, ...
+        'n_a_E', 2, ...
+        'n_a_I', 1, ...
+        'n_b_E', 1, ...
+        'n_b_I', 1, ...
+        'lags', [], ...
+        'n_inputs', 1, ...
+        'row_center_W', false, ...
+        'weight_rng_seed', 1729, ...
+        'input_rng_seed', 1730 ...
+    );
+
+    base = merge_struct(base, overrides);
+    params = default_MESN_config(base);
+end
+
+function s = merge_struct(base, overrides)
+    s = base;
+    if isempty(overrides)
+        return;
+    end
+    f = fieldnames(overrides);
+    for i = 1:numel(f)
+        s.(f{i}) = overrides.(f{i});
+    end
+end
