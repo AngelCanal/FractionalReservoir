@@ -35,6 +35,11 @@ function lya_results = compute_lyapunov_exponents(Lya_method, S_out, t_out, dt, 
 %       dt, fs, [3, 150], params, opts, @ode45, @SRNN_reservoir, t_ex, u_ex);
 
     lya_results = struct();
+
+    if isfield(params, 'lags') && ~isempty(params.lags)
+        error('MESN:DelayedLyapunovUnsupported', ...
+            'Lyapunov analysis is ODE-only; nonempty delays are unsupported.');
+    end
     
     if strcmpi(Lya_method, 'none')
         return;

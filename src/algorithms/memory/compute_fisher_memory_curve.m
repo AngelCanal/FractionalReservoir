@@ -47,6 +47,12 @@ function fisher = compute_fisher_memory_curve(esn_or_params, U, options)
         esn = SRNN_ESN(params);
     end
 
+    if isfield(params, 'lags') && ~isempty(params.lags)
+        error('MESN:DelayedSensitivityUnsupported', ...
+            ['Fisher/sensitivity memory is not defined for delayed MESN; ' ...
+            'refusing to substitute an ODE Jacobian analysis.']);
+    end
+
     K_max = getFieldOrDefault(options, 'K_max', 200);
     washout_steps = getFieldOrDefault(options, 'washout_steps', 500);
     sample_stride = getFieldOrDefault(options, 'sample_stride', 5);

@@ -22,6 +22,11 @@ function J_array = compute_Jacobian_at_indices(S_out, J_times, params)
 %   % Access Jacobian at first time index:
 %   J_at_t1 = J_array(:,:,1);
 
+    if isfield(params, 'lags') && ~isempty(params.lags)
+        error('MESN:DelayedJacobianUnsupported', ...
+            'Finite-dimensional Jacobian is not defined for delayed MESN dynamics.');
+    end
+
     % Get dimensions
     N_sys_eqs = size(S_out, 2);
     n_times = length(J_times);

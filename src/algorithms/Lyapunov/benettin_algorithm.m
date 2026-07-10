@@ -3,6 +3,10 @@ function [LLE, local_lya, finite_lya, t_lya] = benettin_algorithm(X, t, dt, fs, 
     % reshoots small segments to compute the divergence rate along the system trajectory in X
 
     % Input Validations
+    if isfield(params, 'lags') && ~isempty(params.lags)
+        error('MESN:DelayedLyapunovUnsupported', ...
+            'Benettin Lyapunov analysis is ODE-only; nonempty delays are unsupported.');
+    end
     if ~isscalar(lya_dt) || ~isnumeric(lya_dt) || lya_dt <= 0
         error('benettin_algorithm:InvalidLyaDt', 'lya_dt must be a positive scalar.');
     end

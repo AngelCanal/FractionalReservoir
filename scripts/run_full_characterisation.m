@@ -74,9 +74,17 @@ if flags.memory
     results.memory.NMC = compute_nonlinear_memory_capacity(esn, nmc_opts);
 
     fisher_opts = struct('K_max', 200, 'washout_steps', 500, 'sample_stride', 10, 'use_states', 'x', 'dt', dt);
-    results.memory.Fisher = compute_fisher_memory_curve(esn, U, fisher_opts);
-
-    results.memory.Fisher_fit = fit_memory_decay(results.memory.Fisher.lags, results.memory.Fisher.FI_curve, struct());
+    if ~isempty(params.lags)
+        results.memory.Fisher = struct( ...
+            'FI_curve', nan, ...
+            'lags', [], ...
+            'status', 'unsupported_not_computed', ...
+            'scientifically_valid', false);
+        results.memory.Fisher_fit = struct('status', 'unsupported_not_computed');
+    else
+        results.memory.Fisher = compute_fisher_memory_curve(esn, U, fisher_opts);
+        results.memory.Fisher_fit = fit_memory_decay(results.memory.Fisher.lags, results.memory.Fisher.FI_curve, struct());
+    end
     results.memory.MC_fit = fit_memory_decay(results.memory.MC.lags, results.memory.MC.MC_spectrum, struct());
 end
 

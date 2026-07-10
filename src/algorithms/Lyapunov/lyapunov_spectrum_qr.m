@@ -19,6 +19,11 @@ function [LE_spectrum, local_LE_spectrum_t, finite_LE_spectrum_t, t_lya_vec] = l
     %   finite_LE_spectrum_t  : Matrix of finite-time LEs over time (N_timesteps_lya x N_states_sys)
     %   t_lya_vec             : Time vector for Lyapunov exponent estimates
 
+    if isfield(params, 'lags') && ~isempty(params.lags)
+        error('MESN:DelayedLyapunovUnsupported', ...
+            'QR Lyapunov spectrum is ODE-only; nonempty delays are unsupported.');
+    end
+
     % Create an interpolant for the fiducial trajectory for use in ODE solver
     fiducial_interpolants = cell(N_states_sys, 1);
     for i = 1:N_states_sys

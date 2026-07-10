@@ -69,24 +69,32 @@ parfor ii = 1:n_vals
     % LLE (optional)
     LLE = nan;
     lya_results = struct();
+    lya_status = 'not_requested';
     if do_lyapunov
-        t_out = (0:(T_total-1))' * dt;
-        fs = 1 / dt;
-        T_interval = [t_out(T_washout+1), t_out(end)];
+        if ~isempty(params.lags)
+            LLE = nan;
+            lya_results = struct('status', 'unsupported_not_computed', 'LLE', nan);
+            lya_status = 'unsupported_not_computed';
+        else
+            t_out = (0:(T_total-1))' * dt;
+            fs = 1 / dt;
+            T_interval = [t_out(T_washout+1), t_out(end)];
 
-        % External input as used by SRNN_reservoir: u_ex = W_in * U'
-        t_ex = t_out;
-        u_ex = params.W_in * U';
-        u_fun = make_input_interpolant(t_ex, u_ex);
-        rhs_func = @(t, S) SRNN_reservoir(t, S, u_fun, params);
+            % External input as used by SRNN_reservoir: u_ex = W_in * U'
+            t_ex = t_out;
+            u_ex = params.W_in * U';
+            u_fun = make_input_interpolant(t_ex, u_ex);
+            rhs_func = @(t, S) SRNN_reservoir(t, S, u_fun, params);
 
-        lya_results = compute_lyapunov_exponents(lya_method, S_hist, t_out, dt, fs, ...
-            T_interval, params, ode_opts, @ode23s, rhs_func, t_ex, u_ex);
+            lya_results = compute_lyapunov_exponents(lya_method, S_hist, t_out, dt, fs, ...
+                T_interval, params, ode_opts, @ode23s, rhs_func, t_ex, u_ex);
+            lya_status = 'computed';
 
-        if isfield(lya_results, 'LLE')
-            LLE = lya_results.LLE;
-        elseif isfield(lya_results, 'LE_spectrum') && ~isempty(lya_results.LE_spectrum)
-            LLE = lya_results.LE_spectrum(1);
+            if isfield(lya_results, 'LLE')
+                LLE = lya_results.LLE;
+            elseif isfield(lya_results, 'LE_spectrum') && ~isempty(lya_results.LE_spectrum)
+                LLE = lya_results.LE_spectrum(1);
+            end
         end
     end
 
@@ -102,6 +110,7 @@ parfor ii = 1:n_vals
     r.regime = regime;
     r.regime_diag = diag;
     r.LLE = LLE;
+    r.lya_status = lya_status;
     r.specW = specW;
     r.meta = meta; %#ok<PFOUS> % meta contains W0/cfg, helpful for provenance
     results_cell{ii} = r;

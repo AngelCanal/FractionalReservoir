@@ -49,11 +49,19 @@ for ii = 1:numel(n_a_list)
 
     rng(123);
     U = 0.2 * randn(6000, 1);
-    fisher = compute_fisher_memory_curve(esn, U, struct('K_max', 200, ...
-        'washout_steps', 500, 'sample_stride', 10, 'use_states', 'x', 'dt', dt));
+    if ~isempty(params.lags)
+        fisher = struct('FI_curve', nan(200, 1), 'lags', (1:200)', ...
+            'status', 'unsupported_not_computed');
+        fi_fit = struct('status', 'unsupported_not_computed');
+        fisher_tau = nan;
+    else
+        fisher = compute_fisher_memory_curve(esn, U, struct('K_max', 200, ...
+            'washout_steps', 500, 'sample_stride', 10, 'use_states', 'x', 'dt', dt));
+        fi_fit = fit_memory_decay(fisher.lags, fisher.FI_curve, struct());
+        fisher_tau = extract_tau(fi_fit);
+    end
 
     mc_fit = fit_memory_decay(mc.lags, mc.MC_spectrum, struct());
-    fi_fit = fit_memory_decay(fisher.lags, fisher.FI_curve, struct());
 
     specA(ii).MC_total = mc.MC_total;
     specA(ii).MC_spectrum = mc.MC_spectrum;
@@ -61,7 +69,7 @@ for ii = 1:numel(n_a_list)
     specA(ii).Fisher_curve = fisher.FI_curve;
     specA(ii).Fisher_lags = fisher.lags;
     specA(ii).MC_tau = extract_tau(mc_fit);
-    specA(ii).Fisher_tau = extract_tau(fi_fit);
+    specA(ii).Fisher_tau = fisher_tau;
 
     fprintf('n_a_E=%d: MC_total=%.2f  MC_tau=%.1f  Fisher_tau=%.1f\n', ...
         na, mc.MC_total, specA(ii).MC_tau, specA(ii).Fisher_tau);

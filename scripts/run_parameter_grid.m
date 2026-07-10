@@ -107,24 +107,32 @@ parfor lin = 1:n_cells
     [X_feat, S_hist] = esn.runReservoir(U);
     x_post = X_feat((T_washout+1):end, :);
 
-    % ---- Lyapunov ----
+    % ---- Lyapunov (ODE-only) ----
     LLE = nan;
     LE_spectrum = [];
+    lya_status = 'not_requested';
     if do_lyapunov
-        t_out = (0:(T_total-1))' * dt;
-        fs = 1 / dt;
-        T_interval = [t_out(T_washout+1), t_out(end)];
-        t_ex = t_out;
-        u_ex = params.W_in * U';
-        u_fun = make_input_interpolant(t_ex, u_ex);
-        rhs_func = @(t, S) SRNN_reservoir(t, S, u_fun, params);
-        lr = compute_lyapunov_exponents(lya_method, S_hist, t_out, dt, fs, ...
-            T_interval, params, ode_opts, @ode23s, rhs_func, t_ex, u_ex);
-        if isfield(lr, 'LLE')
-            LLE = lr.LLE;
-        elseif isfield(lr, 'LE_spectrum') && ~isempty(lr.LE_spectrum)
-            LE_spectrum = lr.LE_spectrum;
-            LLE = lr.LE_spectrum(1);
+        if ~isempty(params.lags)
+            LLE = nan;
+            LE_spectrum = [];
+            lya_status = 'unsupported_not_computed';
+        else
+            t_out = (0:(T_total-1))' * dt;
+            fs = 1 / dt;
+            T_interval = [t_out(T_washout+1), t_out(end)];
+            t_ex = t_out;
+            u_ex = params.W_in * U';
+            u_fun = make_input_interpolant(t_ex, u_ex);
+            rhs_func = @(t, S) SRNN_reservoir(t, S, u_fun, params);
+            lr = compute_lyapunov_exponents(lya_method, S_hist, t_out, dt, fs, ...
+                T_interval, params, ode_opts, @ode23s, rhs_func, t_ex, u_ex);
+            lya_status = 'computed';
+            if isfield(lr, 'LLE')
+                LLE = lr.LLE;
+            elseif isfield(lr, 'LE_spectrum') && ~isempty(lr.LE_spectrum)
+                LE_spectrum = lr.LE_spectrum;
+                LLE = lr.LE_spectrum(1);
+            end
         end
     end
 
@@ -163,6 +171,7 @@ parfor lin = 1:n_cells
     r = struct();
     r.param_values = pv;
     r.LLE = LLE;
+    r.lya_status = lya_status;
     r.LE_spectrum = LE_spectrum;
     r.regime = regime;
     r.regime_diag = regime_diag;
