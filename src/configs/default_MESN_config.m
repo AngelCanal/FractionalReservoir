@@ -71,6 +71,21 @@ function [params, meta] = default_MESN_config(overrides)
     % Allow overrides at the cfg level (before building W/W_in)
     cfg = apply_overrides(cfg, overrides);
 
+    if ~isfield(overrides, 'tau_a_E')
+        if cfg.n_a_E == 0
+            cfg.tau_a_E = zeros(1, 0);
+        else
+            cfg.tau_a_E = logspace(log10(0.25), log10(25), cfg.n_a_E);
+        end
+    end
+    if ~isfield(overrides, 'tau_a_I')
+        if cfg.n_a_I == 0
+            cfg.tau_a_I = zeros(1, 0);
+        else
+            cfg.tau_a_I = logspace(log10(0.25), log10(25), cfg.n_a_I);
+        end
+    end
+
     % Derived sizes
     n = cfg.n;
     n_E = round(n * cfg.fraction_E);
@@ -145,9 +160,24 @@ function [params, meta] = default_MESN_config(overrides)
     params.include_input = cfg.include_input;
     params.lambda = cfg.lambda;
 
-    % Final field-level overrides (after packing), so callers can directly
-    % override any SRNN_ESN params including W/W_in if desired.
     params = apply_overrides(params, overrides);
+
+    if ~isfield(overrides, 'tau_a_E')
+        if params.n_a_E == 0
+            params.tau_a_E = zeros(1, 0);
+        elseif numel(params.tau_a_E) ~= params.n_a_E
+            params.tau_a_E = logspace(log10(0.25), log10(25), params.n_a_E);
+        end
+    end
+    if ~isfield(overrides, 'tau_a_I')
+        if params.n_a_I == 0
+            params.tau_a_I = zeros(1, 0);
+        elseif numel(params.tau_a_I) ~= params.n_a_I
+            params.tau_a_I = logspace(log10(0.25), log10(25), params.n_a_I);
+        end
+    end
+
+    params = validate_MESN_params(params);
 
     meta = struct();
     meta.cfg = cfg;
