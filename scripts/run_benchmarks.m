@@ -12,7 +12,7 @@
 %
 % Output: results/benchmarks/benchmarks_<timestamp>.mat + comparison figure.
 
-clear; clc;
+%clear; clc;
 
 if exist('setup_paths', 'file') == 2
     setup_paths();
