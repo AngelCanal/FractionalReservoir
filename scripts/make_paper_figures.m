@@ -46,7 +46,7 @@ function make_paper_figures(options)
         run(fullfile(root, 'scripts', 'run_esp_phase_diagram.m'));
         run(fullfile(root, 'scripts', 'run_parameter_grid.m'));
         run(fullfile(root, 'scripts', 'run_timescale_invariance.m'));
-        run(fullfile(root, 'scripts', 'run_meanfield_adaptation_bifurcation.m'));
+        run_meanfield_adaptation_bifurcation();
         run(fullfile(root, 'scripts', 'run_benchmarks.m'));
     end
 

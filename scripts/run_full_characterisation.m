@@ -120,7 +120,7 @@ if flags.parameter_sweep
 end
 
 if flags.meanfield_bifurcation
-    run(fullfile(pwd, 'scripts', 'run_bifurcation_meanfield.m'));
+    run_bifurcation_meanfield();
 end
 
 save(fullfile(out_dir, 'characterisation_results.mat'), 'results');
