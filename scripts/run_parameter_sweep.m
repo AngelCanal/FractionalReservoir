@@ -3,8 +3,6 @@
 %
 % Outputs are saved under results/parameter_sweeps/.
 
-clear; clc;
-
 if exist('setup_paths', 'file') == 2
     setup_paths();
 end

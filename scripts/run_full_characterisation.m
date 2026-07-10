@@ -4,8 +4,6 @@
 % This script is intentionally modular: toggle flags to run subsets of
 % analyses. Many components can be compute-heavy (Lyapunov, sweeps).
 
-clear; clc;
-
 if exist('setup_paths', 'file') == 2
     setup_paths();
 end

@@ -19,8 +19,6 @@
 %
 % Output: results/parameter_grid/grid_<timestamp>.mat plus summary figures.
 
-clear; clc;
-
 if exist('setup_paths', 'file') == 2
     setup_paths();
 end

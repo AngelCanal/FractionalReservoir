@@ -15,8 +15,6 @@
 %
 % Output: results/timescale_invariance/timescale_<timestamp>.mat + figures.
 
-clear; clc;
-
 if exist('setup_paths', 'file') == 2
     setup_paths();
 end

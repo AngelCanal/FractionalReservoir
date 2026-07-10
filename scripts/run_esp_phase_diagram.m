@@ -17,8 +17,6 @@
 %
 % Output: results/esp_phase/esp_phase_<timestamp>.mat and a figure.
 
-clear; clc;
-
 if exist('setup_paths', 'file') == 2
     setup_paths();
 end

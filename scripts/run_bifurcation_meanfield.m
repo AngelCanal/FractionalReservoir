@@ -7,8 +7,6 @@
 %   2) If not available, it runs a "bifurcation-like" sweep using dde23 and
 %      saves diagnostics (variance, dominant frequency) vs parameter.
 
-clear; clc;
-
 if exist('setup_paths', 'file') == 2
     setup_paths();
 end

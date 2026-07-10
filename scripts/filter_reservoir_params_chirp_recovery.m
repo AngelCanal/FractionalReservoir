@@ -586,7 +586,6 @@ function result = run_single_config_ode(cfg, u_full, tu, dt, shared, defaults)
                     'metrics', struct(), 'quality_score', 0, ...
                     'config', cfg);
     try
-        clear_SRNN_persistent();
         esn = SRNN_ESN(params);
         esn.resetState();
         U = u_full(:);
