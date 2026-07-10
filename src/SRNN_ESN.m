@@ -294,108 +294,90 @@ classdef SRNN_ESN < handle
         end
         
         function [Y_gen, X_features] = generateAutonomous(obj, initial_data, n_steps, options)
-            % generateAutonomous: Generate predictions in closed-loop (generative mode)
-            %
-            % This method tests if the reservoir has truly learned the dynamics
-            % by autonomously generating predictions where each predicted output
-            % is fed back as the next input.
+            % generateAutonomous: ODE closed-loop generation with state-consistent feedback
             %
             % Inputs:
-            %   initial_data - Initial input sequence for washout (n_washout x n_inputs)
-            %                  OR struct with field 'input' containing the sequence
-            %   n_steps - Number of steps to generate autonomously
-            %   options - struct with optional fields:
-            %     horizon - prediction horizon (default: 1 for true closed-loop)
-            %     washout_steps - initial steps from initial_data to use (default: all)
-            %     return_features - whether to return reservoir features (default: false)
+            %   initial_data - Teacher-forcing prefix (n_washout x n_inputs) or struct.input
+            %   n_steps      - Number of autonomous steps (>= 1)
+            %   options      - horizon (must be 1), washout_steps, return_features,
+            %                  ode_reltol, ode_abstol
             %
             % Outputs:
-            %   Y_gen - Generated output sequence (n_steps x n_outputs)
-            %   X_features - Reservoir features during generation (optional)
-            
+            %   Y_gen        - Generated outputs (n_steps x n_outputs)
+            %   X_features   - Reservoir features during generation (optional)
+
             if ~obj.is_trained
                 error('SRNN_ESN:NotTrained', ...
-                      'Readout layer has not been trained. Call trainReadout() first.');
+                    'Readout layer has not been trained. Call trainReadout() first.');
             end
-            
-            % Parse options
-            if nargin < 4
+            if ~isempty(obj.lags)
+                error('SRNN_ESN:DDEAutonomousUnsupported', ...
+                    'Autonomous generation is unsupported in DDE mode.');
+            end
+            if n_steps < 1
+                error('SRNN_ESN:InvalidAutonomousSteps', ...
+                    'n_steps must be >= 1.');
+            end
+            if obj.n_inputs ~= obj.n_outputs
+                error('SRNN_ESN:AutonomousDimensionMismatch', ...
+                    'Autonomous closed-loop requires n_inputs == n_outputs (got %d and %d).', ...
+                    obj.n_inputs, obj.n_outputs);
+            end
+
+            if nargin < 4 || isempty(options)
                 options = struct();
             end
             horizon = getFieldOrDefault(options, 'horizon', 1);
+            if horizon ~= 1
+                error('SRNN_ESN:UnsupportedAutonomousHorizon', ...
+                    'Only horizon=1 autonomous rollout is supported.');
+            end
+
+            if isstruct(initial_data) && isfield(initial_data, 'input')
+                initial_data = initial_data.input;
+            end
+            if isempty(initial_data) || ndims(initial_data) ~= 2 || any(~isfinite(initial_data(:)))
+                error('SRNN_ESN:InvalidInput', ...
+                    'initial_data must be a finite 2-D array.');
+            end
+            if size(initial_data, 2) ~= obj.n_inputs
+                error('SRNN_ESN:InvalidInput', ...
+                    'initial_data must have %d input columns.', obj.n_inputs);
+            end
+
             washout_steps = getFieldOrDefault(options, 'washout_steps', size(initial_data, 1));
             return_features = getFieldOrDefault(options, 'return_features', false);
-            
-            % Validate inputs
-            if washout_steps > size(initial_data, 1)
-                warning('SRNN_ESN:WashoutTooLarge', ...
-                        'washout_steps (%d) exceeds initial_data length (%d). Using all data.', ...
-                        washout_steps, size(initial_data, 1));
-                washout_steps = size(initial_data, 1);
-            end
-            
-            fprintf('Generating autonomous predictions...\n');
-            fprintf('  Washout steps: %d\n', washout_steps);
-            fprintf('  Generation steps: %d\n', n_steps);
-            fprintf('  Prediction horizon: %d\n', horizon);
-            
-            % Phase 1: Washout with initial data
+            ode_reltol = getFieldOrDefault(options, 'ode_reltol', 1e-6);
+            ode_abstol = getFieldOrDefault(options, 'ode_abstol', 1e-8);
+
+            washout_steps = min(washout_steps, size(initial_data, 1));
             U_washout = initial_data(1:washout_steps, :);
-            wash_opts = struct('reset_before', true, 'update_internal_state', true);
+
+            wash_opts = struct('reset_before', true, 'update_internal_state', true, ...
+                'ode_reltol', ode_reltol, 'ode_abstol', ode_abstol);
             [X_washout, ~] = obj.runReservoir(U_washout, wash_opts);
-            
-            % Phase 2: Autonomous generation
+
+            current_feedback = X_washout(end, :) * obj.W_out + obj.b_out';
+
             Y_gen = zeros(n_steps, obj.n_outputs);
             if return_features
-                % Pre-allocate based on feature dimension
-                n_features = size(obj.W_out, 1);
-                X_features = zeros(n_steps, n_features);
+                X_features = zeros(n_steps, size(obj.W_out, 1));
             else
                 X_features = [];
             end
-            
-            % Get initial prediction from last washout step
-            current_input = X_washout(end, :) * obj.W_out + obj.b_out';
-            
-            for t = 1:n_steps
-                % Create input for this time step (reshape to column vector)
-                u_t = (obj.W_in * current_input')';  % (1 x n)
-                
-                % Integrate reservoir for one time step
-                % Need at least 2 time points for ODE solver
-                t_span = [0, obj.dt];
-                
-                u_fun = make_input_interpolant(t_span, repmat(u_t, 1, 2));
-                params = obj.params;
 
-                if isempty(obj.lags)
-                    odefun = @(time, S) SRNN_reservoir(time, S, u_fun, params);
-                    options_ode = odeset('RelTol', 1e-6, 'AbsTol', 1e-8);
-                    [~, S_history] = ode23s(odefun, t_span, obj.S, options_ode);
-                else
-                    error('SRNN_ESN:DDEAutonomousUnsupported', ...
-                        'Autonomous generation is unsupported in DDE mode.');
-                end
-                
-                % Update state
-                obj.S = S_history(end, :)';
-                
-                % Extract features from final state
-                X_t = obj.extractFeatures(S_history(end, :), current_input);
-                
-                % Generate prediction
+            step_opts = struct('reset_before', false, 'update_internal_state', true, ...
+                'ode_reltol', ode_reltol, 'ode_abstol', ode_abstol);
+
+            for t = 1:n_steps
+                [X_t, ~] = obj.runReservoir(current_feedback, step_opts);
                 Y_t = X_t * obj.W_out + obj.b_out';
                 Y_gen(t, :) = Y_t;
-                
                 if return_features
                     X_features(t, :) = X_t;
                 end
-                
-                % Feedback: use prediction as next input
-                current_input = Y_t;
+                current_feedback = Y_t;
             end
-            
-            fprintf('  Autonomous generation complete!\n');
         end
         
         function params_out = exportParams(obj)
@@ -508,6 +490,10 @@ classdef SRNN_ESN < handle
             end
 
             neural_drive = obj.W_in * U';
+            if n_timesteps == 1
+                % Constant input over [0, dt] requires two interpolant knots.
+                neural_drive = repmat(neural_drive, 1, numel(t_grid));
+            end
             u_fun = make_input_interpolant(t_grid, neural_drive);
             params = obj.params;
 

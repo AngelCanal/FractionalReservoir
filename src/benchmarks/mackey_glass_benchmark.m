@@ -100,9 +100,13 @@ function bench = mackey_glass_benchmark(esn_or_params, options)
     bench.Wout = Wout;
     bench.bout = bout;
 
-    % Optional autonomous rollout (closed-loop)
-    if do_rollout
-        % Use SRNN_ESN machinery by setting trained weights into object
+    % Optional autonomous rollout (ODE-only, after teacher-forced checks pass)
+    teacher_forced_ok = isempty(esn.lags) ...
+        && esn.n_inputs == 1 ...
+        && size(Wout, 2) == 1 ...
+        && isfinite(metrics_test.nrmse) ...
+        && isfinite(metrics_test.rmse);
+    if do_rollout && teacher_forced_ok
         esn.W_out = Wout;
         esn.b_out = bout(:);
         esn.is_trained = true;
@@ -112,11 +116,16 @@ function bench = mackey_glass_benchmark(esn_or_params, options)
         init_data = u_test(1:init_len);
         [y_roll, ~] = esn.generateAutonomous(init_data, rollout_steps);
         bench.rollout = struct();
+        bench.rollout.status = 'computed';
         bench.rollout.init_len = init_len;
         bench.rollout.y_roll = y_roll;
         bench.rollout.y_true = y_test((init_len+1):(init_len+rollout_steps));
         bench.rollout.y_true = bench.rollout.y_true(:);
         bench.rollout.metrics = compute_metrics(y_roll, bench.rollout.y_true);
+    elseif do_rollout
+        bench.rollout = struct( ...
+            'status', 'skipped', ...
+            'reason', 'Autonomous rollout requires ODE mode, scalar I/O, and finite one-step test metrics.');
     end
 end
 
