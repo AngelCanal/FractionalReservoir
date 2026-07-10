@@ -72,6 +72,10 @@ classdef SRNN_ESN < handle
         n_inputs       % Number of input dimensions
         n_outputs      % Number of output dimensions
         is_trained     % Flag indicating if readout has been trained
+
+        % Canonical validated parameters and reproducible state seed
+        params         % Full validated parameter struct
+        state_rng_seed % Local RNG seed for resetState (default 42)
     end
     
     methods
@@ -100,6 +104,10 @@ classdef SRNN_ESN < handle
             %       dt - time step for ODE integration in seconds (default: 1.0)
             
             % Required parameters
+            params = validate_MESN_params(params);
+            obj.params = params;
+            obj.state_rng_seed = getFieldOrDefault(params, 'state_rng_seed', 42);
+
             obj.n = params.n;
             obj.n_E = params.n_E;
             obj.n_I = params.n_I;
@@ -107,7 +115,7 @@ classdef SRNN_ESN < handle
             obj.W_in = params.W_in;
             obj.tau_d = params.tau_d;
             obj.activation_function = params.activation_function;
-            obj.activation_function_derivative = getFieldOrDefault(params, 'activation_function_derivative', []);
+            obj.activation_function_derivative = params.activation_function_derivative;
             
             % Compute indices
             obj.E_indices = 1:obj.n_E;
@@ -143,7 +151,7 @@ classdef SRNN_ESN < handle
             % Synaptic delay configuration (DDE mode)
             % E connections are instant, I connections are delayed
             obj.lags = getFieldOrDefault(params, 'lags', []);
-            if ~isempty(obj.lags) && obj.lags(1) > 0
+            if ~isempty(obj.lags) && isscalar(obj.lags) && obj.lags > 0
                 % Build W_components: {W_instant, W_delayed}
                 % W_instant: only E columns (I columns zeroed)
                 W_inst = zeros(obj.n);
@@ -217,7 +225,8 @@ classdef SRNN_ESN < handle
             
             % Reset reservoir and run over training data
             obj.resetState();
-            [X_train, ~] = obj.runReservoir(U_train);
+            opts = struct('reset_before', true, 'update_internal_state', false);
+            [X_train, ~] = obj.runReservoir(U_train, opts);
             
             % Apply washout: remove first washout_steps samples
             if washout_steps >= n_train
@@ -243,7 +252,7 @@ classdef SRNN_ESN < handle
             
             % Evaluate on validation set
             obj.resetState();
-            [X_val, ~] = obj.runReservoir(U_val);
+            [X_val, ~] = obj.runReservoir(U_val, opts);
             Y_val_pred = X_val * obj.W_out + obj.b_out';
             val_metrics = compute_metrics(Y_val_pred, Y_val);
             
@@ -277,7 +286,8 @@ classdef SRNN_ESN < handle
             end
             
             % Run reservoir over input sequence
-            [X_features, ~] = obj.runReservoir(U);
+            pred_opts = struct('reset_before', true, 'update_internal_state', false);
+            [X_features, ~] = obj.runReservoir(U, pred_opts);
             
             % Apply readout
             Y_pred = X_features * obj.W_out + obj.b_out';
@@ -331,7 +341,8 @@ classdef SRNN_ESN < handle
             
             % Phase 1: Washout with initial data
             U_washout = initial_data(1:washout_steps, :);
-            [X_washout, ~] = obj.runReservoir(U_washout);
+            wash_opts = struct('reset_before', true, 'update_internal_state', true);
+            [X_washout, ~] = obj.runReservoir(U_washout, wash_opts);
             
             % Phase 2: Autonomous generation
             Y_gen = zeros(n_steps, obj.n_outputs);
@@ -354,50 +365,16 @@ classdef SRNN_ESN < handle
                 % Need at least 2 time points for ODE solver
                 t_span = [0, obj.dt];
                 
-                % Create interpolation function for constant input over this step
-                t_ex = [0, obj.dt];
-                u_ex = [u_t; u_t]';  % (n x 2) - constant input over time step
-                
-                % Pack parameters for SRNN_reservoir
-                params = struct();
-                params.n = obj.n;
-                params.n_E = obj.n_E;
-                params.n_I = obj.n_I;
-                params.E_indices = obj.E_indices;
-                params.I_indices = obj.I_indices;
-                params.n_a_E = obj.n_a_E;
-                params.n_a_I = obj.n_a_I;
-                params.n_b_E = obj.n_b_E;
-                params.n_b_I = obj.n_b_I;
-                params.W = obj.W;
-                params.tau_d = obj.tau_d;
-                params.tau_a_E = obj.tau_a_E;
-                params.tau_a_I = obj.tau_a_I;
-                params.tau_b_E_rec = obj.tau_b_E_rec;
-                params.tau_b_E_rel = obj.tau_b_E_rel;
-                params.tau_b_I_rec = obj.tau_b_I_rec;
-                params.tau_b_I_rel = obj.tau_b_I_rel;
-                params.c_E = obj.c_E;
-                params.c_I = obj.c_I;
-                params.activation_function = obj.activation_function;
-                
-                % Choose solver based on delay configuration
+                u_fun = make_input_interpolant(t_span, repmat(u_t, 1, 2));
+                params = obj.params;
+
                 if isempty(obj.lags)
-                    % No delay: use ODE solver
-                    odefun = @(time, S) SRNN_reservoir(time, S, t_ex, u_ex, params);
+                    odefun = @(time, S) SRNN_reservoir(time, S, u_fun, params);
                     options_ode = odeset('RelTol', 1e-6, 'AbsTol', 1e-8);
                     [~, S_history] = ode23s(odefun, t_span, obj.S, options_ode);
                 else
-                    % With delay: use DDE solver
-                    params.lags = obj.lags;
-                    params.W_components = obj.W_components;
-                    
-                    history = obj.S;
-                    options_dde = ddeset('RelTol', 1e-5, 'AbsTol', 1e-5);
-                    
-                    sol = dde23(@(time, y, Z) SRNN_reservoir_DDE(time, y, Z, t_ex, u_ex, params), ...
-                                obj.lags, history, t_span, options_dde);
-                    S_history = deval(sol, t_span)';
+                    error('SRNN_ESN:DDEAutonomousUnsupported', ...
+                        'Autonomous generation is unsupported in DDE mode.');
                 end
                 
                 % Update state
@@ -421,32 +398,30 @@ classdef SRNN_ESN < handle
             fprintf('  Autonomous generation complete!\n');
         end
         
+        function params_out = exportParams(obj)
+            params_out = obj.params;
+        end
+
         function resetState(obj)
-            % resetState: Reset reservoir to initial conditions
-            
-            % Compute total state dimension
-            len_a_E = obj.n_E * obj.n_a_E;
-            len_a_I = obj.n_I * obj.n_a_I;
-            len_b_E = obj.n_E * obj.n_b_E;
-            len_b_I = obj.n_I * obj.n_b_I;
-            len_x = obj.n;
-            
-            % Initialize state to zeros (or small random values)
-            rng(42)
-            obj.S0 = 0 + 0.1*rand(len_a_E + len_a_I + len_b_E + len_b_I + len_x, 1);
-            
-            % Initialize b states to 1 (no depression initially)
+            stream = RandStream('mt19937ar', 'Seed', obj.state_rng_seed);
+
+            state = struct();
+            state.a_E = 0.1 * rand(stream, obj.n_E, obj.n_a_E);
+            state.a_I = 0.1 * rand(stream, obj.n_I, obj.n_a_I);
+
             if obj.n_b_E > 0
-                idx_start = len_a_E + len_a_I + 1;
-                idx_end = idx_start + len_b_E - 1;
-                obj.S0(idx_start:idx_end) = 1;
+                state.b_E = ones(obj.n_E * obj.n_b_E, 1);
+            else
+                state.b_E = zeros(0, 1);
             end
             if obj.n_b_I > 0
-                idx_start = len_a_E + len_a_I + len_b_E + 1;
-                idx_end = idx_start + len_b_I - 1;
-                obj.S0(idx_start:idx_end) = 1;
+                state.b_I = ones(obj.n_I * obj.n_b_I, 1);
+            else
+                state.b_I = zeros(0, 1);
             end
-            
+            state.x = 0.1 * rand(stream, obj.n, 1);
+
+            obj.S0 = pack_state(state, obj.params);
             obj.S = obj.S0;
         end
         
@@ -456,8 +431,15 @@ classdef SRNN_ESN < handle
         end
         
         function setState(obj, S)
-            % setState: Set reservoir state
-            obj.S = S;
+            layout = state_layout(obj.params);
+            if numel(S) ~= layout.n_total
+                error('MESN:InvalidStateLength', ...
+                    'State length %d does not match expected %d.', numel(S), layout.n_total);
+            end
+            if any(~isfinite(S))
+                error('MESN:InvalidStateShape', 'State vector contains non-finite values.');
+            end
+            obj.S = S(:);
         end
         
         function setHyperparams(obj, hyperparams)
@@ -488,97 +470,86 @@ classdef SRNN_ESN < handle
     
     methods (Access = public)
         
-        function [X_features, S_history] = runReservoir(obj, U)
-            % runReservoir: Simulate reservoir dynamics over input sequence
-            %
-            % Input:
-            %   U - Input time series (n_timesteps x n_inputs)
-            %
-            % Output:
-            %   X_features - Extracted features (n_timesteps x n_features)
-            %   S_history - Full state history (for analysis)
-            
+        function [X_features, S_history, info] = runReservoir(obj, U, options)
+            % runReservoir  Simulate reservoir dynamics over input sequence U.
+            if nargin < 3 || isempty(options)
+                options = struct();
+            end
+            reset_before = getFieldOrDefault(options, 'reset_before', true);
+            update_internal_state = getFieldOrDefault(options, 'update_internal_state', false);
+            ode_reltol = getFieldOrDefault(options, 'ode_reltol', 1e-6);
+            ode_abstol = getFieldOrDefault(options, 'ode_abstol', 1e-8);
+            dde_reltol = getFieldOrDefault(options, 'dde_reltol', 1e-6);
+            dde_abstol = getFieldOrDefault(options, 'dde_abstol', 1e-8);
+
+            if isempty(U) || ndims(U) ~= 2 || any(~isfinite(U(:)))
+                error('SRNN_ESN:InvalidInput', 'U must be a finite nonempty 2-D array.');
+            end
+            if size(U, 2) ~= obj.n_inputs
+                error('SRNN_ESN:InvalidInput', ...
+                    'U must have %d input columns.', obj.n_inputs);
+            end
+
             n_timesteps = size(U, 1);
-            
-            % Time vectors for ODE solver
-            % Ensure t_span has at least 2 elements for ODE solver
+            S_start = obj.S;
+            if reset_before
+                S_start = obj.S0;
+            elseif ~isempty(obj.lags)
+                error('SRNN_ESN:DDEContinuationUnsupported', ...
+                    'DDE continuation between separate runReservoir calls is unsupported.');
+            end
+
             if n_timesteps == 1
                 t_span = [0, obj.dt];
-                t_ex = [0, obj.dt];
+                t_grid = t_span;
             else
-                t_span = 0:obj.dt:(n_timesteps-1)*obj.dt;
-                t_ex = t_span; % Time points for input interpolation
+                t_span = 0:obj.dt:(n_timesteps - 1) * obj.dt;
+                t_grid = t_span;
             end
-            
-            % Prepare external input: u_ex = W_in * U'
-            % u_ex should be (n x n_timesteps) for interpolation in SRNN_reservoir
-            u_ex = obj.W_in * U'; % (n x n_timesteps)
-            
-            % For single timestep, replicate input to match t_ex length
-            if n_timesteps == 1
-                u_ex = [u_ex, u_ex]; % Replicate to (n x 2)
-            end
-            
-            % Pack parameters for SRNN_reservoir
-            params = struct();
-            params.n = obj.n;
-            params.n_E = obj.n_E;
-            params.n_I = obj.n_I;
-            params.E_indices = obj.E_indices;
-            params.I_indices = obj.I_indices;
-            params.n_a_E = obj.n_a_E;
-            params.n_a_I = obj.n_a_I;
-            params.n_b_E = obj.n_b_E;
-            params.n_b_I = obj.n_b_I;
-            params.W = obj.W;
-            params.tau_d = obj.tau_d;
-            params.tau_a_E = obj.tau_a_E;
-            params.tau_a_I = obj.tau_a_I;
-            params.tau_b_E_rec = obj.tau_b_E_rec;
-            params.tau_b_E_rel = obj.tau_b_E_rel;
-            params.tau_b_I_rec = obj.tau_b_I_rec;
-            params.tau_b_I_rel = obj.tau_b_I_rel;
-            params.c_E = obj.c_E;
-            params.c_I = obj.c_I;
-            params.activation_function = obj.activation_function;
-            
-            % Choose solver based on delay configuration
+
+            neural_drive = obj.W_in * U';
+            u_fun = make_input_interpolant(t_grid, neural_drive);
+            params = obj.params;
+
             if isempty(obj.lags)
-                % No delay: use ODE solver with SRNN_reservoir
-                odefun = @(t, S) SRNN_reservoir(t, S, t_ex, u_ex, params);
-                
-                % Use ode23s (stiff solver) for fractional dynamics
-                options_ode = odeset('RelTol', 1e-6, 'AbsTol', 1e-8);
-                [~, S_history] = ode23s(odefun, t_span, obj.S, options_ode);
+                odefun = @(t, S) SRNN_reservoir(t, S, u_fun, params);
+                options_ode = odeset('RelTol', ode_reltol, 'AbsTol', ode_abstol);
+                [~, S_history] = ode23s(odefun, t_span, S_start, options_ode);
+                mode = 'ODE';
+                reltol_used = ode_reltol;
+                abstol_used = ode_abstol;
             else
-                % With delay: use DDE solver with SRNN_reservoir_DDE
                 params.lags = obj.lags;
                 params.W_components = obj.W_components;
-                
-                % History function: constant initial state for t < 0
-                history = obj.S;
-                
-                % DDE solver options
-                options_dde = ddeset('RelTol', 1e-5, 'AbsTol', 1e-5);
-                
-                % Solve DDE
-                sol = dde23(@(t, y, Z) SRNN_reservoir_DDE(t, y, Z, t_ex, u_ex, params), ...
-                            obj.lags, history, [t_span(1), t_span(end)], options_dde);
-                
-                % Evaluate solution at requested time points
-                S_history = deval(sol, t_span)';
+                options_dde = ddeset('RelTol', dde_reltol, 'AbsTol', dde_abstol);
+                sol = dde23(@(t, y, Z) SRNN_reservoir_DDE(t, y, Z, u_fun, params), ...
+                    obj.lags, S_start, [t_span(1), t_span(end)], options_dde);
+                S_history = deval(sol, t_grid)';
+                mode = 'DDE';
+                reltol_used = dde_reltol;
+                abstol_used = dde_abstol;
             end
-            
-            % Update current state
-            obj.S = S_history(end, :)';
-            
-            % For single timestep input, only extract final state
+
+            S_end = S_history(end, :)';
+            if update_internal_state
+                obj.S = S_end;
+            end
+
             if n_timesteps == 1
-                S_history = S_history(end, :); % Only keep final state
+                S_history = S_history(end, :);
             end
-            
-            % Extract features from state history
+
             X_features = obj.extractFeatures(S_history, U);
+
+            info = struct();
+            info.mode = mode;
+            info.reltol = reltol_used;
+            info.abstol = abstol_used;
+            info.S_start = S_start;
+            info.S_end = S_end;
+            info.t = t_grid;
+            info.reset_before = reset_before;
+            info.update_internal_state = update_internal_state;
         end
         
         function X = extractFeatures(obj, S_history, U)
@@ -593,18 +564,9 @@ classdef SRNN_ESN < handle
             
             n_timesteps = size(S_history, 1);
             
-            % Compute state dimensions
-            len_a_E = obj.n_E * obj.n_a_E;
-            len_a_I = obj.n_I * obj.n_a_I;
-            len_b_E = obj.n_E * obj.n_b_E;
-            len_b_I = obj.n_I * obj.n_b_I;
-            
-            % Extract dendritic states x
-            x_start_idx = len_a_E + len_a_I + len_b_E + len_b_I + 1;
-            x_end_idx = x_start_idx + obj.n - 1;
-            x_history = S_history(:, x_start_idx:x_end_idx); % (n_timesteps x n)
-            
-            % Extract features based on configuration
+            layout = state_layout(obj.params);
+            x_history = S_history(:, layout.idx_x);
+
             switch obj.which_states
                 case 'x'
                     % Use dendritic states only (default)
@@ -635,65 +597,18 @@ classdef SRNN_ESN < handle
         end
         
         function [r, x_eff] = computeRates(obj, S)
-            % computeRates: Compute firing rates from state vector
-            % (Helper function to extract r when needed)
-            
-            % Unpack state variables (following SRNN_reservoir.m structure)
-            current_idx = 0;
-            
-            len_a_E = obj.n_E * obj.n_a_E;
-            if len_a_E > 0
-                a_E = reshape(S(current_idx + (1:len_a_E)), obj.n_E, obj.n_a_E);
-            else
-                a_E = [];
+            state = unpack_state(S, obj.params);
+            c_E = obj.params.c_E;
+            c_I = obj.params.c_I;
+
+            x_eff = state.x;
+            if obj.n_a_E > 0
+                x_eff(obj.E_indices) = x_eff(obj.E_indices) - c_E * sum(state.a_E, 2);
             end
-            current_idx = current_idx + len_a_E;
-            
-            len_a_I = obj.n_I * obj.n_a_I;
-            if len_a_I > 0
-                a_I = reshape(S(current_idx + (1:len_a_I)), obj.n_I, obj.n_a_I);
-            else
-                a_I = [];
+            if obj.n_a_I > 0
+                x_eff(obj.I_indices) = x_eff(obj.I_indices) - c_I * sum(state.a_I, 2);
             end
-            current_idx = current_idx + len_a_I;
-            
-            len_b_E = obj.n_E * obj.n_b_E;
-            if len_b_E > 0
-                b_E = S(current_idx + (1:len_b_E));
-            else
-                b_E = [];
-            end
-            current_idx = current_idx + len_b_E;
-            
-            len_b_I = obj.n_I * obj.n_b_I;
-            if len_b_I > 0
-                b_I = S(current_idx + (1:len_b_I));
-            else
-                b_I = [];
-            end
-            current_idx = current_idx + len_b_I;
-            
-            x = S(current_idx + (1:obj.n));
-            
-            % Compute effective x with adaptation
-            x_eff = x;
-            if obj.n_E > 0 && obj.n_a_E > 0 && ~isempty(a_E)
-                x_eff(obj.E_indices) = x_eff(obj.E_indices) - obj.c_E * sum(a_E, 2);
-            end
-            if obj.n_I > 0 && obj.n_a_I > 0 && ~isempty(a_I)
-                x_eff(obj.I_indices) = x_eff(obj.I_indices) - obj.c_I * sum(a_I, 2);
-            end
-            
-            % Apply STD
-            b = ones(obj.n, 1);
-            if obj.n_b_E > 0 && ~isempty(b_E)
-                b(obj.E_indices) = b_E;
-            end
-            if obj.n_b_I > 0 && ~isempty(b_I)
-                b(obj.I_indices) = b_I;
-            end
-            
-            % Firing rate r = phi(x_eff); presynaptic depression b enters dx/dt only.
+
             r = obj.activation_function(x_eff);
         end
         
