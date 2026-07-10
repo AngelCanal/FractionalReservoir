@@ -1,228 +1,147 @@
 function J = compute_Jacobian_fast(S, params)
-% COMPUTE_JACOBIAN_FAST Sparse/vectorized Jacobian assembly for the SRNN system.
+% COMPUTE_JACOBIAN_FAST  Vectorized ODE Jacobian matching compute_Jacobian.
 %
 %   J = compute_Jacobian_fast(S, params)
 %
-% This version mirrors compute_Jacobian but assembles the matrix using sparse
-% block operations (kron, spdiags) for improved scalability in Lyapunov
-% calculations and other workflows that require frequent Jacobian evaluations.
-%
-% Dynamics (presynaptic STD; see SRNN_reservoir.m):
-%   r_i = phi(x_eff_i),  s_j = b_j * r_j
-%
-% Assumptions:
-%   - At most one short-term depression state per neuron (n_b_E, n_b_I in {0,1}),
-%     matching the current SRNN_reservoir dynamics.
+% Same mathematical blocks as the dense Jacobian, assembled with layout maps
+% and sparse/vectorized assignments. Does not call compute_Jacobian.
+% Delayed systems raise MESN:DelayedJacobianUnsupported.
 
-    %% Load parameters
-    n = params.n;
-    n_E = params.n_E;
-    n_I = params.n_I;
-    E_indices = params.E_indices;
-    I_indices = params.I_indices;
-    
-    n_a_E = params.n_a_E;
-    n_a_I = params.n_a_I;
-    n_b_E = params.n_b_E;
-    n_b_I = params.n_b_I;
-    
-    if n_b_E > 1 || n_b_I > 1
-        error('compute_Jacobian_fast:UnsupportedSTDStates', ...
-              'Fast Jacobian currently supports at most one STD state per neuron.');
+    params = validate_MESN_params(params);
+    if ~isempty(params.lags)
+        error('MESN:DelayedJacobianUnsupported', ...
+            'Finite-dimensional Jacobian is not defined for delayed MESN dynamics.');
     end
-    
-    W = params.W;
-    tau_d = params.tau_d;
-    tau_a_E = params.tau_a_E;
-    tau_a_I = params.tau_a_I;
-    tau_b_E_rec = params.tau_b_E_rec;
-    tau_b_E_rel = params.tau_b_E_rel;
-    tau_b_I_rec = params.tau_b_I_rec;
-    tau_b_I_rel = params.tau_b_I_rel;
-    
-    c_E = safe_get(params, 'c_E', 1.0);
-    c_I = safe_get(params, 'c_I', 1.0);
-    
+
+    if params.n_b_E > 1 || params.n_b_I > 1
+        error('MESN:MultipleSTDUnsupported', ...
+            'Fast Jacobian supports at most one STD resource per population.');
+    end
+
     if ~isfield(params, 'activation_function_derivative') || ...
-       ~isa(params.activation_function_derivative, 'function_handle')
+            ~isa(params.activation_function_derivative, 'function_handle')
         error('compute_Jacobian_fast:MissingActivationFunctionDerivative', ...
-              'params.activation_function_derivative must be provided as a function handle');
+            'params.activation_function_derivative must be a function handle.');
     end
-    phi_prime = params.activation_function_derivative;
-    
     if ~isfield(params, 'activation_function') || ...
-       ~isa(params.activation_function, 'function_handle')
+            ~isa(params.activation_function, 'function_handle')
         error('compute_Jacobian_fast:MissingActivationFunction', ...
-              'params.activation_function must be provided as a function handle');
+            'params.activation_function must be a function handle.');
     end
-    phi_fun = params.activation_function;
-    
-    %% Unpack state variables
-    current_idx = 0;
-    len_a_E = n_E * n_a_E;
-    len_a_I = n_I * n_a_I;
-    len_b_E = n_E * n_b_E;
-    len_b_I = n_I * n_b_I;
-    
-    if len_a_E > 0
-        a_E = reshape(S(current_idx + (1:len_a_E)), n_E, n_a_E);
-    else
-        a_E = [];
-    end
-    current_idx = current_idx + len_a_E;
-    
-    if len_a_I > 0
-        a_I = reshape(S(current_idx + (1:len_a_I)), n_I, n_a_I);
-    else
-        a_I = [];
-    end
-    current_idx = current_idx + len_a_I;
-    
-    if len_b_E > 0
-        b_E = S(current_idx + (1:len_b_E));
-    else
-        b_E = [];
-    end
-    current_idx = current_idx + len_b_E;
-    
-    if len_b_I > 0
-        b_I = S(current_idx + (1:len_b_I));
-    else
-        b_I = [];
-    end
-    current_idx = current_idx + len_b_I;
-    
-    x = S(current_idx + (1:n));
-    
-    %% Effective potentials and rates
-    x_eff = x;
-    if len_a_E > 0
-        x_eff(E_indices) = x_eff(E_indices) - c_E * sum(a_E, 2);
-    end
-    if len_a_I > 0
-        x_eff(I_indices) = x_eff(I_indices) - c_I * sum(a_I, 2);
-    end
-    
+
+    layout = state_layout(params);
+    state = unpack_state(S, params);
+
+    n = params.n;
+    E = params.E_indices(:);
+    I = params.I_indices(:);
+    W = sparse(params.W);
+    tau_d = params.tau_d;
+
+    q = compute_effective_q(state, params);
+    r = params.activation_function(q);
+    g = params.activation_function_derivative(q);
+
     b = ones(n, 1);
-    if len_b_E > 0
-        b(E_indices) = b_E;
+    if params.n_b_E > 0
+        b(E) = state.b_E;
     end
-    if len_b_I > 0
-        b(I_indices) = b_I;
+    if params.n_b_I > 0
+        b(I) = state.b_I;
     end
-    
-    phi_x_eff = phi_fun(x_eff);
-    phi_prime_x_eff = phi_prime(x_eff);
-    r_vec = phi_x_eff;
-    
-    %% Dimensions and indexing
-    N_sys_eqs = len_a_E + len_a_I + len_b_E + len_b_I + n;
-    
-    row_a_E = 1:len_a_E;
-    row_a_I = len_a_E + (1:len_a_I);
-    row_b_E = len_a_E + len_a_I + (1:len_b_E);
-    row_b_I = len_a_E + len_a_I + len_b_E + (1:len_b_I);
-    row_x   = len_a_E + len_a_I + len_b_E + len_b_I + (1:n);
-    
-    col_a_E = row_a_E;
-    col_a_I = row_a_I;
-    col_b_E = row_b_E;
-    col_b_I = row_b_I;
-    col_x   = row_x;
-    
-    W_sparse = sparse(W);
-    J = sparse(N_sys_eqs, N_sys_eqs);
-    
-    %% Helper Kronecker scaffolds
-    if len_a_E > 0
-        tau_inv_E = 1 ./ tau_a_E(:);
-        diag_block_E = kron(speye(n_E), spdiags(-tau_inv_E, 0, n_a_E, n_a_E));
-        gamma_E = c_E * phi_prime_x_eff(E_indices);
-        row_template_E = sparse(tau_inv_E * ones(1, n_a_E));
-        coupling_block_E = kron(spdiags(-gamma_E, 0, n_E, n_E), row_template_E);
-        J(row_a_E, col_a_E) = diag_block_E + coupling_block_E;
-        
-        beta_E = phi_prime_x_eff(E_indices);
-        vals = kron(beta_E, tau_inv_E);
-        rows = (1:len_a_E)';
-        cols = repelem(E_indices(:), n_a_E);
-        J(row_a_E, col_x) = sparse(rows, cols, vals, len_a_E, n);
+
+    J = sparse(layout.n_total, layout.n_total);
+
+    % --- dx/dt blocks ---
+    % J_xx = (-I + W*diag(b.*g)) / tau_d
+    J(layout.idx_x, layout.idx_x) = spdiags(-ones(n, 1) / tau_d, 0, n, n) + ...
+        (W * spdiags(b .* g, 0, n, n)) / tau_d;
+
+    % d(dx)/d(a_pop(:,k)) via layout maps (column-major timescale blocks)
+    J = assign_dx_da_blocks(J, layout, params, 'E', E, W, b, g, tau_d);
+    J = assign_dx_da_blocks(J, layout, params, 'I', I, W, b, g, tau_d);
+
+    if params.n_b_E > 0
+        J(layout.idx_x, layout.idx_b_E) = (W(:, E) * spdiags(r(E), 0, params.n_E, params.n_E)) / tau_d;
     end
-    
-    if len_a_I > 0
-        tau_inv_I = 1 ./ tau_a_I(:);
-        diag_block_I = kron(speye(n_I), spdiags(-tau_inv_I, 0, n_a_I, n_a_I));
-        gamma_I = c_I * phi_prime_x_eff(I_indices);
-        row_template_I = sparse(tau_inv_I * ones(1, n_a_I));
-        coupling_block_I = kron(spdiags(-gamma_I, 0, n_I, n_I), row_template_I);
-        J(row_a_I, col_a_I) = diag_block_I + coupling_block_I;
-        
-        beta_I = phi_prime_x_eff(I_indices);
-        vals = kron(beta_I, tau_inv_I);
-        rows = (1:len_a_I)';
-        cols = repelem(I_indices(:), n_a_I);
-        J(row_a_I, col_x) = sparse(rows, cols, vals, len_a_I, n);
+    if params.n_b_I > 0
+        J(layout.idx_x, layout.idx_b_I) = (W(:, I) * spdiags(r(I), 0, params.n_I, params.n_I)) / tau_d;
     end
-    
-    %% STD blocks (E)
-    if len_b_E > 0
-        phi_prime_E = phi_prime_x_eff(E_indices);
-        coeff_a_E = b(E_indices) * c_E .* phi_prime_E / tau_b_E_rel;
-        if len_a_E > 0
-            J(row_b_E, col_a_E) = kron(spdiags(coeff_a_E, 0, n_E, n_E), sparse(ones(1, n_a_E)));
-        end
-        diag_vals_b_E = -1/tau_b_E_rec - r_vec(E_indices) / tau_b_E_rel;
-        J(row_b_E, col_b_E) = spdiags(diag_vals_b_E, 0, len_b_E, len_b_E);
-        J(row_b_E, col_x) = sparse(1:n_E, E_indices, - b(E_indices) .* phi_prime_E / tau_b_E_rel, n_E, n);
-    end
-    
-    %% STD blocks (I)
-    if len_b_I > 0
-        phi_prime_I = phi_prime_x_eff(I_indices);
-        coeff_a_I = b(I_indices) * c_I .* phi_prime_I / tau_b_I_rel;
-        if len_a_I > 0
-            J(row_b_I, col_a_I) = kron(spdiags(coeff_a_I, 0, n_I, n_I), sparse(ones(1, n_a_I)));
-        end
-        diag_vals_b_I = -1/tau_b_I_rec - r_vec(I_indices) / tau_b_I_rel;
-        J(row_b_I, col_b_I) = spdiags(diag_vals_b_I, 0, len_b_I, len_b_I);
-        J(row_b_I, col_x) = sparse(1:n_I, I_indices, - b(I_indices) .* phi_prime_I / tau_b_I_rel, n_I, n);
-    end
-    
-    %% dx/dt blocks
-    if len_a_E > 0
-        replicate_a_E = kron(speye(n_E), ones(1, n_a_E));
-        block = -c_E * W_sparse(:, E_indices) * spdiags(b(E_indices) .* phi_prime_x_eff(E_indices), 0, n_E, n_E);
-        J(row_x, col_a_E) = (block * replicate_a_E) / tau_d;
-    end
-    
-    if len_a_I > 0
-        replicate_a_I = kron(speye(n_I), ones(1, n_a_I));
-        block = -c_I * W_sparse(:, I_indices) * spdiags(b(I_indices) .* phi_prime_x_eff(I_indices), 0, n_I, n_I);
-        J(row_x, col_a_I) = (block * replicate_a_I) / tau_d;
-    end
-    
-    if len_b_E > 0
-        replicate_b_E = kron(speye(n_E), ones(1, max(1, n_b_E)));
-        block = W_sparse(:, E_indices) * spdiags(phi_x_eff(E_indices), 0, n_E, n_E);
-        J(row_x, col_b_E) = (block * replicate_b_E) / tau_d;
-    end
-    
-    if len_b_I > 0
-        replicate_b_I = kron(speye(n_I), ones(1, max(1, n_b_I)));
-        block = W_sparse(:, I_indices) * spdiags(phi_x_eff(I_indices), 0, n_I, n_I);
-        J(row_x, col_b_I) = (block * replicate_b_I) / tau_d;
-    end
-    
-    diag_term = spdiags(-ones(n,1)/tau_d, 0, n, n);
-    gain_diag = spdiags(b .* phi_prime_x_eff, 0, n, n);
-    J(row_x, col_x) = diag_term + (W_sparse * gain_diag) / tau_d;
+
+    % --- adaptation and resource blocks ---
+    J = assign_adaptation_blocks(J, layout, params, 'E', E, g);
+    J = assign_adaptation_blocks(J, layout, params, 'I', I, g);
+    J = assign_resource_blocks(J, layout, params, 'E', E, b, r, g);
+    J = assign_resource_blocks(J, layout, params, 'I', I, b, r, g);
 end
 
-function value = safe_get(params, field, default_value)
-    if isfield(params, field)
-        value = params.(field);
-    else
-        value = default_value;
+function J = assign_dx_da_blocks(J, layout, params, pop, pop_indices, W, b, g, tau_d)
+    n_a = params.(sprintf('n_a_%s', pop));
+    if n_a == 0
+        return;
     end
+
+    n_pop = numel(pop_indices);
+    map_a = layout.(sprintf('map_a_%s', pop));
+    c_a = params.(sprintf('c_a_%s', pop));
+    G = W(:, pop_indices) * spdiags(b(pop_indices) .* g(pop_indices), 0, n_pop, n_pop);
+
+    % Column-major: contiguous timescale blocks map_a(:,k)
+    % J(idx_x, map_a(:,k)) = G * (-c_a(k)/tau_d)
+    scale = -c_a(:)' / tau_d;  % 1 x n_a
+    J(layout.idx_x, map_a(:)) = kron(scale, G);
 end
 
+function J = assign_adaptation_blocks(J, layout, params, pop, pop_indices, g)
+    n_a = params.(sprintf('n_a_%s', pop));
+    if n_a == 0
+        return;
+    end
+
+    n_pop = numel(pop_indices);
+    map_a = layout.(sprintf('map_a_%s', pop));
+    tau_a = params.(sprintf('tau_a_%s', pop));
+    c_a = params.(sprintf('c_a_%s', pop));
+    g_pop = g(pop_indices);
+    Dg = spdiags(g_pop, 0, n_pop, n_pop);
+
+    % Column-major packing: leak = kron(diag(-1./tau_a), I_n_pop)
+    leak = kron(spdiags(-1 ./ tau_a(:), 0, n_a, n_a), speye(n_pop));
+
+    % Coupling block (k,l) = (-c_a(l)/tau_a(k)) * diag(g)
+    Alpha = (-1 ./ tau_a(:)) * c_a;  % n_a x n_a
+    coupling = kron(sparse(Alpha), Dg);
+
+    J(map_a(:), map_a(:)) = leak + coupling;
+
+    % d(da_k)/dx on population columns: stacked diag(g)/tau_a(k)
+    J(map_a(:), layout.idx_x(pop_indices)) = kron(1 ./ tau_a(:), Dg);
+end
+
+function J = assign_resource_blocks(J, layout, params, pop, pop_indices, b, r, g)
+    n_b = params.(sprintf('n_b_%s', pop));
+    if n_b == 0
+        return;
+    end
+
+    n_pop = numel(pop_indices);
+    rows = layout.(sprintf('idx_b_%s', pop));
+    tau_rec = params.(sprintf('tau_b_%s_rec', pop));
+    tau_rel = params.(sprintf('tau_b_%s_rel', pop));
+    b_pop = b(pop_indices);
+    r_pop = r(pop_indices);
+    g_pop = g(pop_indices);
+
+    J(rows, layout.idx_x(pop_indices)) = spdiags(-b_pop .* g_pop / tau_rel, 0, n_pop, n_pop);
+    J(rows, rows) = spdiags(-1 / tau_rec - r_pop / tau_rel, 0, n_pop, n_pop);
+
+    n_a = params.(sprintf('n_a_%s', pop));
+    if n_a > 0
+        map_a = layout.(sprintf('map_a_%s', pop));
+        c_a = params.(sprintf('c_a_%s', pop));
+        % J(rows, map_a(:,l)) = diag(b.*g*c_a(l)/tau_rel)
+        scale = c_a(:)' / tau_rel;  % 1 x n_a
+        base = spdiags(b_pop .* g_pop, 0, n_pop, n_pop);
+        J(rows, map_a(:)) = kron(scale, base);
+    end
+end
