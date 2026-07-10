@@ -55,8 +55,9 @@ classdef SRNN_ESN < handle
         S0             % Initial state (for reset)
         
         % Readout layer
-        W_out          % Readout weight matrix
-        b_out          % Readout bias vector
+        W_out          % Readout weight matrix (deprecated mirror of readout_model)
+        b_out          % Readout bias vector (deprecated mirror)
+        readout_model  % Fitted standardized ridge model from fit_ridge_readout
         
         % Configuration
         which_states   % Which states to use as features ('x', 'r', 'all')
@@ -173,102 +174,120 @@ classdef SRNN_ESN < handle
             obj.is_trained = false;
             obj.W_out = [];
             obj.b_out = [];
+            obj.readout_model = [];
             obj.n_outputs = 0;
         end
         
         function metrics = trainReadout(obj, U, Y, options)
-            % trainReadout: Train the linear readout layer using ridge regression
+            % trainReadout: Train readout on one continuous driven trajectory.
             %
-            % Inputs:
-            %   U - Input time series (n_timesteps x n_inputs)
-            %   Y - Target time series (n_timesteps x n_outputs)
-            %   options - struct with fields:
-            %     train_ratio - fraction for training (default: 0.6)
-            %     val_ratio - fraction for validation (default: 0.2)
-            %     washout_steps - number of initial steps to ignore (default: 100)
-            %     lambda - ridge regularization parameter (default: obj.lambda)
-            %
-            % Output:
-            %   metrics - struct with train_mse, val_mse, train_nrmse, val_nrmse
+            % Simulates inputs 1:val_end once (no reset at train/val boundary).
+            % Selects lambda on train/val, then refits on train+val.
+            % Never simulates test input or reads test targets.
             
-            % Parse options
             if nargin < 4
                 options = struct();
             end
-            train_ratio = getFieldOrDefault(options, 'train_ratio', 0.6);
-            val_ratio = getFieldOrDefault(options, 'val_ratio', 0.2);
-            washout_steps = getFieldOrDefault(options, 'washout_steps', 100);
-            lambda = getFieldOrDefault(options, 'lambda', obj.lambda);
-            
-            % Update lambda
-            obj.lambda = lambda;
-            
-            % Get dimensions
+            if ~isfield(options, 'train_ratio') || ~isfield(options, 'val_ratio') || ...
+                    ~isfield(options, 'washout_steps')
+                error('SRNN_ESN:MissingTrainOptions', ...
+                    'options must include train_ratio, val_ratio, and washout_steps.');
+            end
+            train_ratio = options.train_ratio;
+            val_ratio = options.val_ratio;
+            washout_steps = options.washout_steps;
+            if isfield(options, 'lambda_grid')
+                lambda_grid = options.lambda_grid;
+            else
+                lambda_grid = [];
+            end
+
+            if any(~isfinite(U(:))) || any(~isfinite(Y(:)))
+                error('SRNN_ESN:NonFiniteTrainData', 'U and Y must be finite.');
+            end
+            if size(U, 1) ~= size(Y, 1)
+                error('SRNN_ESN:RowMismatch', 'U and Y must have the same number of rows.');
+            end
+
             n_timesteps = size(U, 1);
-            obj.n_outputs = size(Y, 2);
-            
-            % Compute split indices (temporal order preserved)
             n_train = floor(n_timesteps * train_ratio);
             n_val = floor(n_timesteps * val_ratio);
-            
-            % Split data temporally
-            U_train = U(1:n_train, :);
-            Y_train = Y(1:n_train, :);
-            U_val = U(n_train+1:n_train+n_val, :);
-            Y_val = Y(n_train+1:n_train+n_val, :);
-            
-            fprintf('Training readout layer...\n');
-            fprintf('  Total samples: %d\n', n_timesteps);
-            fprintf('  Training samples: %d (after washout: %d)\n', n_train, n_train - washout_steps);
-            fprintf('  Validation samples: %d\n', n_val);
-            fprintf('  Washout steps: %d\n', washout_steps);
-            fprintf('  Lambda (regularization): %.2e\n', lambda);
-            
-            % Reset reservoir and run over training data
-            obj.resetState();
-            opts = struct('reset_before', true, 'update_internal_state', false);
-            [X_train, ~] = obj.runReservoir(U_train, opts);
-            
-            % Apply washout: remove first washout_steps samples
-            if washout_steps >= n_train
-                error('Washout steps (%d) must be less than training samples (%d)', ...
-                      washout_steps, n_train);
+            n_test = n_timesteps - n_train - n_val;
+            if n_test < 1
+                error('SRNN_ESN:EmptyTestBlock', ...
+                    'Test block must have at least one sample.');
             end
-            X_train = X_train(washout_steps+1:end, :);
-            Y_train_use = Y_train(washout_steps+1:end, :);
-            
-            % Train readout using ridge regression
-            % W_out = (X'*X + lambda*I) \ (X'*Y)
-            n_features = size(X_train, 2);
-            W_ridge = X_train' * X_train + lambda * eye(n_features);
-            obj.W_out = W_ridge \ (X_train' * Y_train_use);
-            
-            % Compute bias as mean of residuals
-            Y_train_pred = X_train * obj.W_out;
-            obj.b_out = mean(Y_train_use - Y_train_pred, 1)';
-            
-            % Evaluate on training set (after washout)
-            Y_train_pred = Y_train_pred + obj.b_out';
-            train_metrics = compute_metrics(Y_train_pred, Y_train_use);
-            
-            % Evaluate on validation set
-            obj.resetState();
-            [X_val, ~] = obj.runReservoir(U_val, opts);
-            Y_val_pred = X_val * obj.W_out + obj.b_out';
-            val_metrics = compute_metrics(Y_val_pred, Y_val);
-            
-            % Mark as trained
-            obj.is_trained = true;
-            
-            % Compile metrics
-            metrics = struct();
-            metrics.train_mse = train_metrics.mse;
-            metrics.train_nrmse = train_metrics.nrmse;
-            metrics.val_mse = val_metrics.mse;
-            metrics.val_nrmse = val_metrics.nrmse;
-            
-            fprintf('  Training MSE: %.6f, NRMSE: %.4f\n', metrics.train_mse, metrics.train_nrmse);
-            fprintf('  Validation MSE: %.6f, NRMSE: %.4f\n', metrics.val_mse, metrics.val_nrmse);
+            if washout_steps >= n_train
+                error('SRNN_ESN:InvalidWashout', ...
+                    'washout_steps (%d) must be less than n_train (%d).', ...
+                    washout_steps, n_train);
+            end
+
+            train_idx = 1:n_train;
+            val_idx = (n_train + 1):(n_train + n_val);
+            test_idx = (n_train + n_val + 1):n_timesteps;
+            val_end = n_train + n_val;
+
+            % Fit into locals first so failures leave the previous model intact.
+            prev_model = obj.readout_model;
+            prev_W = obj.W_out;
+            prev_b = obj.b_out;
+            prev_lambda = obj.lambda;
+            prev_trained = obj.is_trained;
+            prev_n_outputs = obj.n_outputs;
+
+            try
+                run_opts = struct('reset_before', true, 'update_internal_state', false, ...
+                    'ode_reltol', 1e-8, 'ode_abstol', 1e-10, ...
+                    'dde_reltol', 1e-7, 'dde_abstol', 1e-9);
+                [X_driven, ~] = obj.runReservoir(U(1:val_end, :), run_opts);
+
+                X_train = X_driven(washout_steps+1:n_train, :);
+                Y_train = Y(washout_steps+1:n_train, :);
+                X_val = X_driven(val_idx, :);
+                Y_val = Y(val_idx, :);
+
+                selection = select_ridge_lambda(X_train, Y_train, X_val, Y_val, lambda_grid);
+                selected_lambda = selection.selected_lambda;
+
+                X_tv = X_driven(washout_steps+1:val_end, :);
+                Y_tv = Y(washout_steps+1:val_end, :);
+                final_model = fit_ridge_readout(X_tv, Y_tv, selected_lambda);
+
+                Y_train_pred = apply_ridge_readout(final_model, X_train);
+                Y_val_pred = apply_ridge_readout(final_model, X_val);
+                train_metrics = compute_metrics(Y_train_pred, Y_train);
+                val_metrics = compute_metrics(Y_val_pred, Y_val);
+
+                % Assign only after successful fit
+                obj.readout_model = final_model;
+                obj.lambda = selected_lambda;
+                obj.n_outputs = size(Y, 2);
+                % Deprecated mirrors in original (unstandardized) feature coordinates
+                obj.W_out = final_model.coefficients ./ final_model.sigma(:);
+                obj.b_out = final_model.intercept(:) - obj.W_out' * final_model.mu(:);
+                obj.is_trained = true;
+
+                metrics = struct();
+                metrics.train_mse = train_metrics.mse;
+                metrics.train_nrmse = train_metrics.nrmse;
+                metrics.val_mse = val_metrics.mse;
+                metrics.val_nrmse = val_metrics.nrmse;
+                metrics.selected_lambda = selected_lambda;
+                metrics.lambda_table = selection.table;
+                metrics.train_idx = train_idx;
+                metrics.val_idx = val_idx;
+                metrics.test_idx = test_idx;
+                metrics.washout_steps = washout_steps;
+            catch ME
+                obj.readout_model = prev_model;
+                obj.W_out = prev_W;
+                obj.b_out = prev_b;
+                obj.lambda = prev_lambda;
+                obj.is_trained = prev_trained;
+                obj.n_outputs = prev_n_outputs;
+                rethrow(ME);
+            end
         end
         
         function [Y_pred, X_features] = predict(obj, U)
