@@ -1,0 +1,4 @@
+# Revalidated results live here.
+
+Generated run directories under this folder are git-ignored.
+Keep this `.gitkeep` so the empty scaffold remains tracked.

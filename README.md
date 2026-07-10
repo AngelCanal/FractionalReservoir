@@ -13,6 +13,27 @@ This branch is a minimal, publication-ready codebase for hyperparameter tuning a
 
 ---
 
+## License
+
+**No license is declared.** Reuse, redistribution, and modification permissions
+are undefined until the repository owner chooses a license. This project does
+not currently include a `LICENSE` file.
+
+## Citation
+
+Author/title metadata for a formal `CITATION.cff` is not yet unambiguous in-repo.
+See [`docs/validation/CITATION_TODO.md`](docs/validation/CITATION_TODO.md).
+Until then, cite the repository URL and exact git commit SHA.
+
+## Results and reproducibility
+
+New scientific outputs are written under `results/revalidated/<run_id>/` with
+provenance manifests. Generated revalidated contents are git-ignored; see
+[`results/README.md`](results/README.md) for promotion of paper artifacts and
+example commands with explicit seeds and manifest paths.
+
+---
+
 ## Quick Start
 
 Open MATLAB, navigate to this repository, then:

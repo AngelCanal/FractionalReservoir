@@ -1,37 +1,81 @@
 # Results and provenance
 
-This directory holds all generated data and figures for the MESN paper. Heavy
-artifacts (`*.mat`, most `*.png`/`*.pdf`) are git-ignored; the folder scaffold
-and the final publication figures under `results/figures/paper/` are tracked so
-the paper can be rebuilt and shared.
+This directory holds generated data and figures for the MESN paper.
 
 ## Layout
 
 | Subfolder | Produced by | Contents |
 |---|---|---|
-| `jacobian_checks/` | `scripts/verifyJacobianConsistency.m` | Jacobian consistency diagnostics |
-| `esp_phase/` | `scripts/run_esp_phase_diagram.m` | ESP phase diagram grid (Result 1) |
-| `parameter_grid/` | `scripts/run_parameter_grid.m` | Multi-parameter Lyapunov/ESP/non-normality grid (Result 2) |
-| `parameter_sweeps/` | `scripts/run_parameter_sweep.m` | Legacy 1D sweeps |
-| `timescale_invariance/` | `scripts/run_timescale_invariance.m` | Memory spectrum, invariance, response lag (Result 3) |
-| `meanfield_bifurcation/` | `scripts/run_meanfield_adaptation_bifurcation.m`, `scripts/run_bifurcation_meanfield.m` | Reduced-model dynamical regime sweep (Result 4; not a bifurcation diagram) |
-| `benchmarks/` | `scripts/run_benchmarks.m` | Task performance, adaptation ON/OFF (Result 5) |
-| `characterisation/<timestamp>/` | `scripts/run_full_characterisation.m` | Full characterisation bundles |
-| `figures/paper/` | `scripts/make_paper_figures.m` | Final publication figures (tracked) |
+| `revalidated/<run_id>/` | experiment entry points via `create_run_context` | **New** immutable scientific runs + `manifest.mat` / `manifest.json` |
+| `jacobian_checks/` | legacy | Historical Jacobian diagnostics (do not overwrite) |
+| `esp_phase/` | legacy | Historical ESP phase grids (do not overwrite) |
+| `parameter_grid/` | legacy | Historical parameter grids (do not overwrite) |
+| `parameter_sweeps/` | legacy | Legacy 1D sweeps (do not overwrite) |
+| `timescale_invariance/` | legacy | Historical timescale runs (do not overwrite) |
+| `meanfield_bifurcation/` | legacy | Historical mean-field regime sweeps (do not overwrite) |
+| `benchmarks/` | legacy | Historical benchmarks (do not overwrite) |
+| `characterisation/<timestamp>/` | legacy | Historical characterisation bundles |
+| `figures/paper/` | promoted publication figures | Versioned paper figures (tracked intentionally) |
 
-## Provenance convention
+Legacy committed artifacts listed in `docs/validation/BASELINE.md` are immutable
+evidence of the pre-repair implementation. **Do not overwrite, delete, or mix
+them with new revalidated outputs.**
 
-- Every analysis script saves a timestamped `*.mat` named `<analysis>_<yyyymmdd_HHMMSS>.mat`
-  containing both the results and the configuration used to produce them
-  (grids, inputs, options), so a result file is self-describing.
-- `make_paper_figures.m` consumes the most recent `*.mat` in each subfolder and
-  writes canonical figures to `figures/paper/`. It never re-runs a simulation
-  unless invoked with `regenerate = true`.
+## New runs (`results/revalidated/`)
 
-## One-command rebuild
+- Every new experiment should call `create_run_context` then `save_run_manifest`
+  after parameters are finalized.
+- Generated contents under `results/revalidated/**` are **git-ignored**.
+- The folder scaffold is retained via `results/revalidated/.gitkeep`.
+
+### Reproducible command pattern
 
 ```matlab
 setup_paths();
-make_paper_figures();                                  % figures from latest saved results
-make_paper_figures(struct('regenerate', true));        % re-run all analyses first (slow)
+opts = struct( ...
+    'seed', 1729, ...
+    'dry_run', false, ...
+    'save_results', true, ...
+    'run_dependencies', false);   % default: do not chain expensive experiments
+[result, run_dir] = run_benchmarks(opts);
+% Manifest path (always written when save_results=true):
+%   fullfile(run_dir, 'manifest.mat')
+%   fullfile(run_dir, 'manifest.json')
 ```
+
+Paper figures require **explicit** result paths (no “latest file” search):
+
+```matlab
+paths = struct( ...
+    'esp_phase',              '<absolute>/esp_phase.mat', ...
+    'parameter_grid',         '<absolute>/grid.mat', ...
+    'timescale_invariance',   '<absolute>/timescale.mat', ...
+    'meanfield',              '<absolute>/adaptation_....mat', ...
+    'benchmarks',             '<absolute>/benchmarks.mat');
+[fig_result, fig_run_dir] = make_paper_figures(struct( ...
+    'result_paths', paths, ...
+    'seed', 1729, ...
+    'save_results', true));
+```
+
+Or pass `manifest_path` pointing to a `.mat` that contains `result_paths`.
+
+## Promoting a paper artifact
+
+Ignored run output is not a publication archive by itself. To promote a final
+figure or table into the versioned tree:
+
+1. Identify the immutable `results/revalidated/<run_id>/` directory and its
+   `manifest.json` (record seed, git SHA, MATLAB version).
+2. Copy only the reviewed artifact into `results/figures/paper/` (or a release
+   archive outside this repo), using a **new** filename if a tracked file
+   already exists — never overwrite legacy committed results.
+3. Commit the promoted artifact in a dedicated docs/results commit with the
+   source `run_id` and manifest path cited in the commit message.
+4. Optionally tag a release / deposit a DOI that pins the commit SHA.
+
+## License
+
+There is **no declared license** in this repository. Reuse permissions are
+undefined until the owner chooses and adds a license file. Do not assume
+open-source reuse rights.

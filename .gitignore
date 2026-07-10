@@ -56,6 +56,11 @@ Thumbs.db
 !results/**/
 !**/.gitkeep
 
+# New revalidated scientific runs (immutable per-run directories)
+results/revalidated/**
+!results/revalidated/
+!results/revalidated/.gitkeep
+
 # Exception: publication figures are committed for reproducibility/sharing
 !results/figures/paper/
 !results/figures/paper/*.png
