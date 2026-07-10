@@ -50,12 +50,6 @@ Thumbs.db
 *.swp
 *.swo
 
-# Figure and data files
-*.fig
-*.mat
-*.svg
-*.png
-*.pdf
 
 # Keep the results/ directory scaffold tracked (but not its heavy contents)
 !results/
