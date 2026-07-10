@@ -1,161 +1,195 @@
-%% verifyJacobianConsistency
-% Validate the analytical Jacobians of the MESN reservoir that underpin the
-% Lyapunov-spectrum and Echo-State-Property analyses.
+function result = verifyJacobianConsistency(options)
+% verifyJacobianConsistency  Validate analytical MESN ODE Jacobians.
 %
-% Three cross-checks are performed at several realistic states drawn from a
-% driven reservoir trajectory:
+%   result = verifyJacobianConsistency()
+%   result = verifyJacobianConsistency(options)
 %
-%   (1) compute_Jacobian (dense loop assembly) vs compute_Jacobian_fast
-%       (sparse/vectorised assembly). These must agree to machine precision.
+% Cross-checks dense vs fast analytical Jacobians and both against a central
+% finite-difference Jacobian of SRNN_reservoir, across mechanism combinations.
 %
-%   (2) compute_Jacobian (analytical) vs a central finite-difference Jacobian
-%       of SRNN_reservoir. These must agree to O(h^2) finite-difference error.
-%
-%   (3) compute_J_eff (effective dx/dt Jacobian w.r.t. x, with a and b frozen)
-%       vs the corresponding dx/dt-by-x block of the full analytical Jacobian.
-%       These must agree to machine precision because J_eff is, by definition,
-%       that diagonal block:
-%           J_eff = (1/tau_d) * (-I + W * diag(b .* phi'(x_eff)))
-%
-% Outputs a PASS/FAIL summary and (optionally) saves the diagnostics.
+% Options (all optional):
+%   .seed              RNG seed (default 1729)
+%   .n_states          states per mechanism config (default 3)
+%   .save_results      if true, write under results/revalidated/... (default false)
+%   .rel_fro_tol       relative Frobenius tolerance (default 1e-5)
+%   .max_abs_tol       maximum absolute error tolerance (default 1e-4)
+%   .breakpoint_margin minimum |q - breakpoint| (default 1e-4)
+%   .fd_options        options passed to finite_difference_jacobian
 
-clear; clc;
-
-if exist('setup_paths', 'file') == 2
-    setup_paths();
-end
-
-%% Configuration
-[params, ~] = default_MESN_config(struct());
-
-% Total number of system equations (used by several downstream tools).
-layout = state_layout(params);
-params.N_sys_eqs = layout.n_total;
-
-%% Generate realistic states from a short driven run
-dt = params.dt;
-T = 1500;
-T_washout = 500;
-rng(7);
-U = 0.2 * randn(T, 1);
-
-esn = SRNN_ESN(params);
-esn.which_states = 'all';   % keep full state to sample from
-esn.resetState();
-[~, S_hist] = esn.runReservoir(U);
-
-% Sample a handful of post-transient states
-sample_idx = round(linspace(T_washout + 1, T, 6));
-n_samples = numel(sample_idx);
-
-% Finite-difference settings: use a fixed time and a constant external input
-% so the SRNN_reservoir right-hand side depends only on the state S.
-t0 = 0.0;
-u_const = 0.2 * randn(params.n, 1);
-u_fun = @(t) u_const;
-rhs = @(S) SRNN_reservoir(t0, S, u_fun, params);
-
-h = 1e-6;   % central-difference step
-
-%% Preallocate diagnostics
-diag_results = struct( ...
-    'idx', num2cell(sample_idx), ...
-    'err_fast_vs_full', [], ...
-    'rel_fast_vs_full', [], ...
-    'err_fd_vs_full', [], ...
-    'rel_fd_vs_full', [], ...
-    'err_Jeff_vs_block', [], ...
-    'rel_Jeff_vs_block', []);
-
-% Index range of the dx/dt-by-x block within the full Jacobian.
-row_x = (N_sys_eqs - params.n + 1):N_sys_eqs;
-col_x = row_x;
-
-fprintf('Verifying Jacobian consistency at %d states (N_sys_eqs = %d)\n', ...
-    n_samples, N_sys_eqs);
-
-for s = 1:n_samples
-    S = S_hist(sample_idx(s), :)';
-
-    % --- Analytical Jacobians ---
-    J_full = compute_Jacobian(S, params);
-    J_fast = full(compute_Jacobian_fast(S, params));
-
-    % --- Finite-difference Jacobian of SRNN_reservoir ---
-    J_fd = zeros(N_sys_eqs, N_sys_eqs);
-    for k = 1:N_sys_eqs
-        Sp = S; Sp(k) = Sp(k) + h;
-        Sm = S; Sm(k) = Sm(k) - h;
-        J_fd(:, k) = (rhs(Sp) - rhs(Sm)) / (2 * h);
+    if nargin < 1
+        options = struct();
     end
 
-    % --- Effective Jacobian vs full dx/dx block ---
-    J_eff = full(compute_J_eff(S, params));
-    J_block = J_full(row_x, col_x);
+    seed = get_opt(options, 'seed', 1729);
+    n_states = get_opt(options, 'n_states', 3);
+    save_results = get_opt(options, 'save_results', false);
+    rel_fro_tol = get_opt(options, 'rel_fro_tol', 1e-5);
+    max_abs_tol = get_opt(options, 'max_abs_tol', 1e-4);
+    breakpoint_margin = get_opt(options, 'breakpoint_margin', 1e-4);
+    fd_options = get_opt(options, 'fd_options', struct());
 
-    % --- Errors (max absolute + relative Frobenius) ---
-    e_ff = max(abs(J_fast(:) - J_full(:)));
-    r_ff = norm(J_fast - J_full, 'fro') / max(norm(J_full, 'fro'), eps);
+    mechanism_sets = { ...
+        struct('n_a_E', 0, 'n_a_I', 0, 'n_b_E', 0, 'n_b_I', 0, 'label', 'no_SFA_no_STD'), ...
+        struct('n_a_E', 1, 'n_a_I', 1, 'n_b_E', 0, 'n_b_I', 0, 'label', 'one_SFA_no_STD'), ...
+        struct('n_a_E', 3, 'n_a_I', 2, 'n_b_E', 0, 'n_b_I', 0, 'label', 'multi_SFA_no_STD'), ...
+        struct('n_a_E', 0, 'n_a_I', 0, 'n_b_E', 1, 'n_b_I', 1, 'label', 'no_SFA_STD'), ...
+        struct('n_a_E', 2, 'n_a_I', 1, 'n_b_E', 1, 'n_b_I', 1, 'label', 'multi_SFA_STD') ...
+        };
 
-    e_fd = max(abs(J_fd(:) - J_full(:)));
-    r_fd = norm(J_fd - J_full, 'fro') / max(norm(J_full, 'fro'), eps);
+    rng(seed);
+    cases = struct('label', {}, 'state_index', {}, ...
+        'rel_fro_dense_fd', {}, 'max_abs_dense_fd', {}, ...
+        'rel_fro_fast_fd', {}, 'max_abs_fast_fd', {}, ...
+        'rel_fro_dense_fast', {}, 'max_abs_dense_fast', {}, ...
+        'pass_dense_fd', {}, 'pass_fast_fd', {});
 
-    e_je = max(abs(J_eff(:) - J_block(:)));
-    r_je = norm(J_eff - J_block, 'fro') / max(norm(J_block, 'fro'), eps);
+    case_idx = 0;
+    for m = 1:numel(mechanism_sets)
+        ov = mechanism_sets{m};
+        label = ov.label;
+        ov = rmfield(ov, 'label');
+        ov.n = 6;
+        ov.fraction_E = 0.5;
+        ov.lags = [];
+        ov.n_inputs = 1;
+        ov.row_center_W = false;
+        ov.weight_rng_seed = 1729 + m;
+        ov.input_rng_seed = 1730 + m;
+        [params, meta] = default_MESN_config(ov);
+        params = validate_MESN_params(params);
+        layout = state_layout(params);
+        S_a = meta.cfg.S_a;
+        S_c = meta.cfg.S_c;
+        breakpoints = piecewise_sigmoid_breakpoints(S_a, S_c);
 
-    diag_results(s).err_fast_vs_full = e_ff;
-    diag_results(s).rel_fast_vs_full = r_ff;
-    diag_results(s).err_fd_vs_full = e_fd;
-    diag_results(s).rel_fd_vs_full = r_fd;
-    diag_results(s).err_Jeff_vs_block = e_je;
-    diag_results(s).rel_Jeff_vs_block = r_je;
+        t0 = 0.0;
+        u_const = 0.1 * randn(params.n, 1);
+        u_fun = @(t) u_const; %#ok<NASGU>
+        rhs = @(S) SRNN_reservoir(t0, S, @(t) u_const, params);
 
-    fprintf(['  state %d (t-index %4d): |fast-full|=%.2e  |fd-full|=%.2e  ' ...
-             '|Jeff-block|=%.2e\n'], s, sample_idx(s), e_ff, e_fd, e_je);
+        for s = 1:n_states
+            S = sample_state_away_from_breakpoints(params, layout, ...
+                breakpoints, breakpoint_margin);
+
+            J_dense = compute_Jacobian(S, params);
+            J_fast = full(compute_Jacobian_fast(S, params));
+            J_fd = finite_difference_jacobian(rhs, S, fd_options);
+
+            [rel_df, abs_df] = jacobian_errors(J_dense, J_fd);
+            [rel_ff, abs_ff] = jacobian_errors(J_fast, J_fd);
+            [rel_dfast, abs_dfast] = jacobian_errors(J_dense, J_fast);
+
+            case_idx = case_idx + 1;
+            cases(case_idx).label = label;
+            cases(case_idx).state_index = s;
+            cases(case_idx).rel_fro_dense_fd = rel_df;
+            cases(case_idx).max_abs_dense_fd = abs_df;
+            cases(case_idx).rel_fro_fast_fd = rel_ff;
+            cases(case_idx).max_abs_fast_fd = abs_ff;
+            cases(case_idx).rel_fro_dense_fast = rel_dfast;
+            cases(case_idx).max_abs_dense_fast = abs_dfast;
+            cases(case_idx).pass_dense_fd = (rel_df < rel_fro_tol) && (abs_df < max_abs_tol);
+            cases(case_idx).pass_fast_fd = (rel_ff < rel_fro_tol) && (abs_ff < max_abs_tol);
+        end
+    end
+
+    all_pass = all([cases.pass_dense_fd]) && all([cases.pass_fast_fd]);
+
+    result = struct();
+    result.cases = cases;
+    result.all_pass = all_pass;
+    result.rel_fro_tol = rel_fro_tol;
+    result.max_abs_tol = max_abs_tol;
+    result.seed = seed;
+    result.n_states = n_states;
+    result.n_cases = numel(cases);
+    result.max_rel_fro_dense_fd = max([cases.rel_fro_dense_fd]);
+    result.max_abs_dense_fd = max([cases.max_abs_dense_fd]);
+    result.max_rel_fro_fast_fd = max([cases.rel_fro_fast_fd]);
+    result.max_abs_fast_fd = max([cases.max_abs_fast_fd]);
+
+    if save_results
+        ctx = create_run_context('jacobian_finite_difference', ...
+            struct('master_seed', seed));
+        save(fullfile(ctx.run_dir, 'jacobian_fd_diagnostics.mat'), 'result');
+        save_run_manifest(ctx, struct('seed', seed, 'n_states', n_states), ...
+            struct('all_pass', all_pass, ...
+            'max_rel_fro_dense_fd', result.max_rel_fro_dense_fd, ...
+            'max_abs_dense_fd', result.max_abs_dense_fd));
+        result.run_dir = ctx.run_dir;
+    end
 end
 
-%% Aggregate and PASS/FAIL
-max_ff = max([diag_results.err_fast_vs_full]);
-max_fd = max([diag_results.err_fd_vs_full]);
-max_je = max([diag_results.err_Jeff_vs_block]);
-
-tol_exact = 1e-9;   % assembly should match to ~machine precision
-tol_fd    = 1e-4;   % central FD limited by O(h^2) and phi' curvature
-
-pass_ff = max_ff <= tol_exact;
-pass_fd = max_fd <= tol_fd;
-pass_je = max_je <= tol_exact;
-
-fprintf('\n================ Jacobian consistency summary ================\n');
-fprintf('  fast vs full  : max abs err = %.3e   [tol %.1e]  -> %s\n', ...
-    max_ff, tol_exact, ternary(pass_ff, 'PASS', 'FAIL'));
-fprintf('  FD  vs full   : max abs err = %.3e   [tol %.1e]  -> %s\n', ...
-    max_fd, tol_fd, ternary(pass_fd, 'PASS', 'FAIL'));
-fprintf('  J_eff vs block: max abs err = %.3e   [tol %.1e]  -> %s\n', ...
-    max_je, tol_exact, ternary(pass_je, 'PASS', 'FAIL'));
-fprintf('==============================================================\n');
-
-all_pass = pass_ff && pass_fd && pass_je;
-if ~all_pass
-    warning('verifyJacobianConsistency:Mismatch', ...
-        'One or more Jacobian consistency checks exceeded tolerance.');
-else
-    fprintf('All Jacobian consistency checks PASSED.\n');
+function v = get_opt(options, name, default)
+    if isfield(options, name) && ~isempty(options.(name))
+        v = options.(name);
+    else
+        v = default;
+    end
 end
 
-%% Optional: persist diagnostics for provenance
-try
-    out_dir = fullfile(pwd, 'results', 'jacobian_checks');
-    if ~exist(out_dir, 'dir'); mkdir(out_dir); end
-    save_path = fullfile(out_dir, sprintf('jacobian_consistency_%s.mat', ...
-        datestr(now, 'yyyymmdd_HHMMSS')));
-    save(save_path, 'diag_results', 'params', 'tol_exact', 'tol_fd', 'all_pass');
-    fprintf('Saved diagnostics to %s\n', save_path);
-catch ME
-    warning('verifyJacobianConsistency:SaveFailed', '%s', ME.message);
+function [rel_fro, max_abs] = jacobian_errors(J_a, J_b)
+    diff = J_a - J_b;
+    max_abs = max(abs(diff), [], 'all');
+    denom = norm(J_a, 'fro');
+    if denom < eps
+        rel_fro = norm(diff, 'fro');
+    else
+        rel_fro = norm(diff, 'fro') / denom;
+    end
 end
 
-% -------------------------------------------------------------------------
-function out = ternary(cond, a, b)
-    if cond, out = a; else, out = b; end
+function bps = piecewise_sigmoid_breakpoints(S_a, S_c)
+    a = S_a / 2;
+    c = S_c;
+    if a == 0.5
+        bps = [c - 0.5, c + 0.5];
+    else
+        bps = [c + a - 1, c - a, c + a, c + 1 - a];
+    end
+end
+
+function S = sample_state_away_from_breakpoints(params, layout, breakpoints, margin)
+    max_tries = 200;
+    for attempt = 1:max_tries
+        state = random_valid_state(params);
+        S = pack_state(state, params);
+        q = compute_effective_q(state, params);
+        if min_distance_to_breakpoints(q, breakpoints) >= margin
+            return;
+        end
+    end
+    error('verifyJacobianConsistency:BreakpointResampleFailed', ...
+        'Could not sample a state at least %.1e from activation breakpoints.', margin);
+end
+
+function d = min_distance_to_breakpoints(q, breakpoints)
+    q = q(:);
+    breakpoints = breakpoints(:).';
+    d = min(min(abs(q - breakpoints), [], 2));
+end
+
+function state = random_valid_state(params)
+    state = struct();
+    if params.n_a_E > 0
+        state.a_E = 0.1 + 0.5 * rand(params.n_E, params.n_a_E);
+    else
+        state.a_E = zeros(params.n_E, 0);
+    end
+    if params.n_a_I > 0
+        state.a_I = 0.1 + 0.5 * rand(params.n_I, params.n_a_I);
+    else
+        state.a_I = zeros(params.n_I, 0);
+    end
+    if params.n_b_E > 0
+        state.b_E = 0.3 + 0.5 * rand(params.n_E, 1);
+    else
+        state.b_E = zeros(0, 1);
+    end
+    if params.n_b_I > 0
+        state.b_I = 0.3 + 0.5 * rand(params.n_I, 1);
+    else
+        state.b_I = zeros(0, 1);
+    end
+    state.x = randn(params.n, 1);
 end
