@@ -7,97 +7,91 @@ function [params, meta] = default_MESN_config(overrides)
 %   [params, meta] = default_MESN_config();                 % defaults
 %   [params, meta] = default_MESN_config(struct('n',300));  % override fields
 %
-% Notes:
-% - Defaults are aligned to the "full-biology" preset in test_reservoir_dynamics.m
-%   (multi-timescale adaptation, STD enabled, inhibitory delay enabled).
-% - Weight scaling uses the spectral abscissa convention:
-%       gamma = 1 / max(real(eig(W0)))
-%       W = level_of_chaos * gamma * W0
+% Construction order:
+%   1. scalar base defaults
+%   2. structural overrides (population counts, n_inputs, RNG seeds)
+%   3. derived sizes, default tau_a arrays, generated W/W_in
+%   4. nonstructural scalar overrides
+%   5. explicit tau_a_*, W, and W_in overrides
+%   6. validate_MESN_params
 
     if nargin < 1 || isempty(overrides)
         overrides = struct();
     end
 
     % -------------------------
-    % Base scalar defaults
+    % 1. Scalar base defaults
     % -------------------------
     cfg = struct();
     cfg.n = 100;
     cfg.fraction_E = 0.5;
+    cfg.n_inputs = 1;
+
+    cfg.n_a_E = 3;
+    cfg.n_a_I = 1;
+    cfg.n_b_E = 1;
+    cfg.n_b_I = 1;
+
+    cfg.weight_rng_seed = 42;
+    cfg.input_rng_seed = 43;
 
     cfg.dt = 0.1;
     cfg.tau_d = 0.55;
 
-    % Adaptation (SFA)
-    cfg.n_a_E = 3;
-    cfg.n_a_I = 1;
-    cfg.tau_a_E = logspace(log10(0.25), log10(25), cfg.n_a_E);
-    cfg.tau_a_I = logspace(log10(0.25), log10(25), cfg.n_a_I);
     cfg.c_E = 0.1/7;
     cfg.c_I = 0.1/4;
 
-    % STD
-    cfg.n_b_E = 1;
-    cfg.n_b_I = 1;
     cfg.tau_b_E_rec = 0.6;
     cfg.tau_b_E_rel = 0.1;
     cfg.tau_b_I_rec = 0.4;
     cfg.tau_b_I_rel = 0.5;
 
-    % Inhibitory delay (DDE mode) - scalar or vector of lags in seconds
     cfg.lags = 0.03;
 
-    % Nonlinearity
     cfg.S_a = 0.85;
     cfg.S_c = 0.4;
 
-    % Input weights
     cfg.input_scaling = 0.75;
-    cfg.input_sparsity = 0.8; % fraction of rows set to zero (rand > 0.2 in test script)
+    cfg.input_sparsity = 0.8;
 
-    % Recurrent weights
     cfg.level_of_chaos = 1.7;
-    cfg.weight_rng_seed = 42;
-    cfg.input_rng_seed = 43; % by convention: weight_rng_seed + 1
     cfg.row_center_W = true;
     cfg.dale = true;
-    cfg.W_scale_method = 'abscissa'; % 'abscissa' or 'radius'
+    cfg.W_scale_method = 'abscissa';
 
-    % ESN config
     cfg.which_states = 'x';
     cfg.include_input = false;
     cfg.lambda = 1e-6;
 
-    % Allow overrides at the cfg level (before building W/W_in)
-    cfg = apply_overrides(cfg, overrides);
+    % -------------------------
+    % 2. Structural overrides
+    % -------------------------
+    structural_fields = {'n', 'fraction_E', 'n_a_E', 'n_a_I', 'n_b_E', 'n_b_I', ...
+        'n_inputs', 'weight_rng_seed', 'input_rng_seed'};
+    cfg = apply_selected_overrides(cfg, overrides, structural_fields);
 
-    if ~isfield(overrides, 'tau_a_E')
-        if cfg.n_a_E == 0
-            cfg.tau_a_E = zeros(1, 0);
-        else
-            cfg.tau_a_E = logspace(log10(0.25), log10(25), cfg.n_a_E);
-        end
-    end
-    if ~isfield(overrides, 'tau_a_I')
-        if cfg.n_a_I == 0
-            cfg.tau_a_I = zeros(1, 0);
-        else
-            cfg.tau_a_I = logspace(log10(0.25), log10(25), cfg.n_a_I);
-        end
-    end
-
-    % Derived sizes
+    % -------------------------
+    % 3. Derived sizes and default tau arrays
+    % -------------------------
     n = cfg.n;
     n_E = round(n * cfg.fraction_E);
     n_I = n - n_E;
     E_indices = 1:n_E;
     I_indices = (n_E+1):n;
 
-    % -------------------------
-    % Build recurrent weights W
-    % -------------------------
-    rng(cfg.weight_rng_seed);
-    W0 = randn(n, n);
+    if cfg.n_a_E == 0
+        cfg.tau_a_E = zeros(1, 0);
+    else
+        cfg.tau_a_E = logspace(log10(0.25), log10(25), cfg.n_a_E);
+    end
+    if cfg.n_a_I == 0
+        cfg.tau_a_I = zeros(1, 0);
+    else
+        cfg.tau_a_I = logspace(log10(0.25), log10(25), cfg.n_a_I);
+    end
+
+    weight_stream = RandStream('mt19937ar', 'Seed', cfg.weight_rng_seed);
+    W0 = randn(weight_stream, n, n);
     if cfg.dale
         W0(:, E_indices) = abs(W0(:, E_indices));
         W0(:, I_indices) = -abs(W0(:, I_indices));
@@ -105,23 +99,41 @@ function [params, meta] = default_MESN_config(overrides)
     if cfg.row_center_W
         W0 = W0 - mean(W0, 2);
     end
-
     W = scale_W(W0, cfg.level_of_chaos, cfg.W_scale_method);
 
-    % -------------------------
-    % Build input weights W_in
-    % -------------------------
-    rng(cfg.input_rng_seed);
-    n_inputs = getFieldOrDefault(overrides, 'n_inputs', 1);
-    W_in = (2 * rand(n, n_inputs) - 1) * cfg.input_scaling;
+    input_stream = RandStream('mt19937ar', 'Seed', cfg.input_rng_seed);
+    W_in = (2 * rand(input_stream, n, cfg.n_inputs) - 1) * cfg.input_scaling;
     if cfg.input_sparsity > 0
-        mask = rand(n, n_inputs) < (1 - cfg.input_sparsity);
+        mask = rand(input_stream, n, cfg.n_inputs) < (1 - cfg.input_sparsity);
         W_in = W_in .* mask;
     end
 
     % -------------------------
-    % Pack SRNN_ESN params
+    % 4. Nonstructural scalar overrides
     % -------------------------
+    nonstructural_fields = {'dt', 'tau_d', 'c_E', 'c_I', ...
+        'tau_b_E_rec', 'tau_b_E_rel', 'tau_b_I_rec', 'tau_b_I_rel', ...
+        'lags', 'S_a', 'S_c', 'input_scaling', 'input_sparsity', ...
+        'level_of_chaos', 'row_center_W', 'dale', 'W_scale_method', ...
+        'which_states', 'include_input', 'lambda'};
+    cfg = apply_selected_overrides(cfg, overrides, nonstructural_fields);
+
+    % -------------------------
+    % 5. Explicit tau_a_*, W, and W_in overrides
+    % -------------------------
+    if isfield(overrides, 'tau_a_E')
+        cfg.tau_a_E = overrides.tau_a_E;
+    end
+    if isfield(overrides, 'tau_a_I')
+        cfg.tau_a_I = overrides.tau_a_I;
+    end
+    if isfield(overrides, 'W')
+        W = overrides.W;
+    end
+    if isfield(overrides, 'W_in')
+        W_in = overrides.W_in;
+    end
+
     activation_function = @(x) piecewiseSigmoid(x, cfg.S_a, cfg.S_c);
     activation_function_derivative = @(x) piecewiseSigmoidDerivative(x, cfg.S_a, cfg.S_c);
 
@@ -160,23 +172,9 @@ function [params, meta] = default_MESN_config(overrides)
     params.include_input = cfg.include_input;
     params.lambda = cfg.lambda;
 
-    params = apply_overrides(params, overrides);
-
-    if ~isfield(overrides, 'tau_a_E')
-        if params.n_a_E == 0
-            params.tau_a_E = zeros(1, 0);
-        elseif numel(params.tau_a_E) ~= params.n_a_E
-            params.tau_a_E = logspace(log10(0.25), log10(25), params.n_a_E);
-        end
-    end
-    if ~isfield(overrides, 'tau_a_I')
-        if params.n_a_I == 0
-            params.tau_a_I = zeros(1, 0);
-        elseif numel(params.tau_a_I) ~= params.n_a_I
-            params.tau_a_I = logspace(log10(0.25), log10(25), params.n_a_I);
-        end
-    end
-
+    % -------------------------
+    % 6. Final validation
+    % -------------------------
     params = validate_MESN_params(params);
 
     meta = struct();
@@ -184,16 +182,12 @@ function [params, meta] = default_MESN_config(overrides)
     meta.W0 = W0;
 end
 
-% -------------------------
-% Local helpers
-% -------------------------
-function s = apply_overrides(s, overrides)
-    if isempty(overrides)
-        return;
-    end
-    f = fieldnames(overrides);
-    for i = 1:numel(f)
-        s.(f{i}) = overrides.(f{i});
+function s = apply_selected_overrides(s, overrides, fields)
+    for i = 1:numel(fields)
+        field = fields{i};
+        if isfield(overrides, field)
+            s.(field) = overrides.(field);
+        end
     end
 end
 
@@ -222,12 +216,3 @@ function W = scale_W(W0, level_of_chaos, method)
                 'Unknown W_scale_method: %s (use ''abscissa'' or ''radius'')', method);
     end
 end
-
-function value = getFieldOrDefault(s, field, default_value)
-    if isfield(s, field)
-        value = s.(field);
-    else
-        value = default_value;
-    end
-end
-
