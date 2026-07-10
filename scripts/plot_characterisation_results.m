@@ -168,14 +168,11 @@ function fig_paths = plot_characterisation_results(run_dir, options)
             end
 
             ax4 = nexttile(tl, 4);
-            if isfield(mem, 'Fisher') && isfield(mem.Fisher, 'FI_curve')
-                plot(ax4, mem.Fisher.lags, mem.Fisher.FI_curve, 'LineWidth', 1.3);
-                grid(ax4, 'on'); xlabel(ax4, 'lag k'); ylabel(ax4, 'FI(k)');
-                title(ax4, 'Fisher memory curve', 'Interpreter', 'none');
-            else
-                axis(ax4, 'off');
-                text(ax4, 0.1, 0.5, 'No Fisher curve saved.', 'Units', 'normalized');
-            end
+            axis(ax4, 'off');
+            text(ax4, 0.1, 0.5, ...
+                {'Fisher memory quarantined', '(not scientifically validated)', ...
+                 'see docs/validation/FISHER_MEMORY_STATUS.md'}, ...
+                'Units', 'normalized', 'Interpreter', 'none');
 
             apply_theme(f, theme);
             fig_paths = [fig_paths; maybe_save(f, fig_dir, 'memory_linear_mc', save_figures, fmt, dpi, theme)]; %#ok<AGROW>
@@ -198,21 +195,7 @@ function fig_paths = plot_characterisation_results(run_dir, options)
         end
 
         if isfield(mem, 'Fisher_fit') && isfield(mem, 'Fisher') && isfield(mem.Fisher, 'FI_curve')
-            f = newfig('Fisher decay fit', visible);
-            ax = axes(f); %#ok<LAXES>
-            fit = mem.Fisher_fit;
-            yy = max(fit.y, 1e-12);
-            loglog(ax, fit.lags, yy, 'k.', 'MarkerSize', 10); hold(ax, 'on');
-            bm = fit.(fit.best_model);
-            loglog(ax, fit.lags, max(bm.yhat, 1e-12), 'r-', 'LineWidth', 1.5);
-            grid(ax, 'on');
-            xlabel(ax, 'lag k'); ylabel(ax, 'FI(k)');
-            title(ax, sprintf('Fisher decay fit (best=%s)', fit.best_model), 'Interpreter', 'none');
-            legend(ax, 'data', 'fit', 'Location', 'best');
-
-            apply_theme(f, theme);
-            fig_paths = [fig_paths; maybe_save(f, fig_dir, 'memory_fisher_fit', save_figures, fmt, dpi, theme)]; %#ok<AGROW>
-            if close_figures, close(f); end
+            % Intentionally skip plotting quarantined Fisher curves.
         end
     end
 

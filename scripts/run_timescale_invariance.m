@@ -5,8 +5,8 @@
 % Three experiments:
 %   (A) Timescale spectrum vs number of SFA timescales (n_a_E). Multi-timescale
 %       adaptation should broaden the memory/timescale spectrum -- more, longer
-%       memory. Measured with linear memory capacity, Fisher memory curve,
-%       MI-lag curve, and decay-time fits.
+%       memory. Measured with linear memory capacity, MI-lag curve, and
+%       decay-time fits (Fisher memory is quarantined).
 %   (B) Temporal (time-shift) invariance and time-warp robustness. Shift
 %       equivariance operationalises "temporal invariance"; time-warp tests
 %       robustness of a trained readout to input dilation.
@@ -46,19 +46,10 @@ for ii = 1:numel(n_a_list)
     mc = compute_memory_capacity(esn, struct('T', 5000, 'K_max', 200, ...
         'washout', 300, 'lambda', params.lambda, 'feature_mode', 'x'));
 
-    rng(123);
-    U = 0.2 * randn(6000, 1);
-    if ~isempty(params.lags)
-        fisher = struct('FI_curve', nan(200, 1), 'lags', (1:200)', ...
-            'status', 'unsupported_not_computed');
-        fi_fit = struct('status', 'unsupported_not_computed');
-        fisher_tau = nan;
-    else
-        fisher = compute_fisher_memory_curve(esn, U, struct('K_max', 200, ...
-            'washout_steps', 500, 'sample_stride', 10, 'use_states', 'x', 'dt', dt));
-        fi_fit = fit_memory_decay(fisher.lags, fisher.FI_curve, struct());
-        fisher_tau = extract_tau(fi_fit);
-    end
+    % Fisher memory is quarantined (docs/validation/FISHER_MEMORY_STATUS.md).
+    fisher = struct('FI_curve', nan(200, 1), 'lags', (1:200)', ...
+        'status', 'quarantined_not_computed', 'scientifically_valid', false);
+    fisher_tau = nan;
 
     mc_fit = fit_memory_decay(mc.lags, mc.MC_spectrum, struct());
 
@@ -70,8 +61,8 @@ for ii = 1:numel(n_a_list)
     specA(ii).MC_tau = extract_tau(mc_fit);
     specA(ii).Fisher_tau = fisher_tau;
 
-    fprintf('n_a_E=%d: MC_total=%.2f  MC_tau=%.1f  Fisher_tau=%.1f\n', ...
-        na, mc.MC_total, specA(ii).MC_tau, specA(ii).Fisher_tau);
+    fprintf('n_a_E=%d: MC_total=%.2f  MC_tau=%.1f  Fisher=quarantined\n', ...
+        na, mc.MC_total, specA(ii).MC_tau);
 end
 
 %% =====================================================================

@@ -94,10 +94,11 @@ with adaptation.
 
 `scripts/run_timescale_invariance.m`:
 
-- **Timescale spectrum:** memory capacity (`compute_memory_capacity`), Fisher
-  memory curve (`compute_fisher_memory_curve`), MI-lag curve
-  (`compute_MI_lag_curve`), and decay fits (`fit_memory_decay`) across the number
-  of SFA timescales `n_a_E`. Claim: more timescales -> broader/longer memory.
+- **Timescale spectrum:** memory capacity (`compute_memory_capacity`), MI-lag
+  curve (`compute_MI_lag_curve`), and decay fits (`fit_memory_decay`) across the
+  number of SFA timescales `n_a_E`. Claim: more timescales -> broader/longer
+  memory. (The historical Fisher-memory routine is quarantined; see
+  `docs/validation/FISHER_MEMORY_STATUS.md`.)
 - **Temporal invariance:** shift-equivariance
   (`src/algorithms/info/measure_shift_equivariance.m`) and time-warp robustness
   of a trained readout. Claim: the reservoir map is time-invariant and

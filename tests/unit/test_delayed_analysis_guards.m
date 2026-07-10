@@ -29,10 +29,18 @@ function testLyapunovGuards(testCase)
         'MESN:DelayedLyapunovUnsupported');
 end
 
-function testFisherSensitivityGuard(testCase)
-    params = make_test_params(struct('lags', 0.05));
+function testFisherQuarantinedByDefault(testCase)
+    params = make_test_params(struct('lags', []));
     U = randn(100, 1);
     testCase.verifyError(@() compute_fisher_memory_curve(params, U, struct('K_max', 5)), ...
+        'MESN:FisherMemoryNotValidated');
+end
+
+function testFisherSensitivityGuardWithLegacyFlag(testCase)
+    params = make_test_params(struct('lags', 0.05));
+    U = randn(100, 1);
+    testCase.verifyError(@() compute_fisher_memory_curve(params, U, struct( ...
+        'K_max', 5, 'allow_legacy_invalid', true)), ...
         'MESN:DelayedSensitivityUnsupported');
 end
 
@@ -48,7 +56,7 @@ function testAutonomousDdeGuard(testCase)
 end
 
 function testGuardErrorsBeforePartialResultFiles(testCase)
-    % Calling delayed Fisher must not create a results file.
+    % Calling quarantined Fisher must not create a results file.
     this_file = mfilename('fullpath');
     repo_root = fileparts(fileparts(fileparts(this_file)));
     out_dir = fullfile(repo_root, 'results', 'revalidated');
@@ -61,9 +69,9 @@ function testGuardErrorsBeforePartialResultFiles(testCase)
     params = make_test_params(struct('lags', 0.02));
     try
         compute_fisher_memory_curve(params, randn(50,1), struct());
-        testCase.verifyFail('Expected DelayedSensitivityUnsupported');
+        testCase.verifyFail('Expected FisherMemoryNotValidated');
     catch ME
-        testCase.verifyEqual(ME.identifier, 'MESN:DelayedSensitivityUnsupported');
+        testCase.verifyEqual(ME.identifier, 'MESN:FisherMemoryNotValidated');
     end
 
     after = {};
@@ -72,4 +80,23 @@ function testGuardErrorsBeforePartialResultFiles(testCase)
         after = {d(~[d.isdir]).name};
     end
     testCase.verifyEqual(numel(after), numel(before));
+end
+
+function testLegacyFisherFieldsPrefixed(testCase)
+    params = make_test_params(struct( ...
+        'lags', [], ...
+        'n', 4, ...
+        'n_a_E', 0, 'n_a_I', 0, ...
+        'n_b_E', 0, 'n_b_I', 0));
+    U = 0.1 * randn(80, 1);
+    fisher = compute_fisher_memory_curve(params, U, struct( ...
+        'K_max', 3, ...
+        'washout_steps', 10, ...
+        'sample_stride', 5, ...
+        'allow_legacy_invalid', true));
+    testCase.verifyFalse(fisher.scientifically_valid);
+    testCase.verifyTrue(isfield(fisher, 'legacy_FI_curve'));
+    testCase.verifyTrue(isfield(fisher, 'legacy_lags'));
+    testCase.verifyFalse(isfield(fisher, 'FI_curve'));
+    testCase.verifyTrue(any(strcmp(fisher.known_defects, 'no DDE support')));
 end
