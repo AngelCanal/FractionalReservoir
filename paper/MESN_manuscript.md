@@ -109,13 +109,17 @@ with adaptation.
   and, for white-noise drive, is treated as a leakage/alignment warning rather
   than validated prediction. (Fig 5.)
 
-## 6. Reduced-model bifurcation (Result 4)
+## 6. Reduced-model dynamical regime sweep (Result 4)
 
 Using only the 4-variable mean-field E-I-STD-DDE model
 (`src/models/meanfield_EI_STD_DDE.m`),
-`scripts/run_meanfield_adaptation_bifurcation.m` shows how adaptation strength
-and inhibitory delay move the system across a Hopf-like boundary into the stable
-fixed-point (useful) regime. No large-network continuation is attempted. (Fig 6.)
+`scripts/run_meanfield_adaptation_bifurcation.m` performs a **dynamical regime
+sweep** by time integration: adaptation strength and inhibitory delay are
+gridded, trajectories are classified (fixed point vs oscillatory), and a regime
+map is reported. This is **not** a bifurcation diagram. A bifurcation diagram
+requires equilibrium/periodic-orbit continuation, branch detection, and
+stability information (see `docs/validation/FUTURE_DDEBIFTOOL_CONTINUATION.md`).
+Variance heatmaps must not be presented as branch diagrams. (Fig 6.)
 
 ## 7. Task performance with local learning (Result 5)
 
@@ -129,7 +133,8 @@ adaptation ON vs OFF. This isolates "what adaptation adds" and instantiates the
 - Adaptation as self-organized criticality / automatic gain control for the ESP.
 - Non-normality vs stability trade-off; Kreiss constant as a design knob.
 - Response-lag structure under adaptation; multi-timescale memory.
-- Limitations: conservative bound; reduced-model-only bifurcation; rate coding.
+- Limitations: conservative bound; reduced-model regime sweep only (no
+  continuation bifurcation analysis yet); rate coding.
 
 ## 9. Reproducibility
 
@@ -146,5 +151,5 @@ folder map: `results/README.md`.
 | 3 | LLE vs parameters / non-normality | `run_parameter_grid.m` |
 | 4 | Memory vs non-normality | `run_parameter_grid.m` |
 | 5 | Timescale spectrum, invariance, response lag | `run_timescale_invariance.m` |
-| 6 | Reduced-model bifurcation | `run_meanfield_adaptation_bifurcation.m` |
+| 6 | Reduced-model dynamical regime sweep | `run_meanfield_adaptation_bifurcation.m` |
 | 7 | Benchmarks (adapt ON/OFF) | `run_benchmarks.m` |

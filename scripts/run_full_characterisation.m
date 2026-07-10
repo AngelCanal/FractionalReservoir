@@ -25,7 +25,7 @@ flags.kernel_rank = true;
 flags.benchmarks = true;
 flags.bio = true;
 flags.parameter_sweep = false;     % can take long
-flags.meanfield_bifurcation = true; % optional (DDE-BIFTOOL or dde23 sweep)
+flags.meanfield_bifurcation = true; % dynamical regime sweep (dde23; not continuation)
 
 % -------------------------
 % Reference config and representative drive

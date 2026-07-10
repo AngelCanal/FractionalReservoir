@@ -21,7 +21,7 @@ function make_paper_figures(options)
 %   Fig 3: LLE vs parameter grid             (results/parameter_grid)
 %   Fig 4: non-normality vs memory           (results/parameter_grid)
 %   Fig 5: timescale spectrum + invariance   (results/timescale_invariance)
-%   Fig 6: reduced-model bifurcation         (results/meanfield_bifurcation)
+%   Fig 6: reduced-model dynamical regime sweep (results/meanfield_bifurcation)
 %   Fig 7: benchmark performance             (results/benchmarks)
 % (Fig 1 is the hand-drawn model schematic and is not generated here.)
 
@@ -121,7 +121,7 @@ function make_paper_figures(options)
         export_fig_local(f, fig_dir, 'fig5_timescale_invariance', fmt, dpi);
     end
 
-    %% Fig 6: reduced-model bifurcation
+    %% Fig 6: reduced-model dynamical regime sweep (not a bifurcation diagram)
     d = latest_mat_prefix(fullfile(res, 'meanfield_bifurcation'), 'adaptation_');
     if ~isempty(d)
         S = load(d);
@@ -129,14 +129,14 @@ function make_paper_figures(options)
         subplot(1,2,1); hold on;
         plot(S.ca_vals, S.Emin, 'b.-'); plot(S.ca_vals, S.Emax, 'r.-');
         xlabel('adaptation strength c_a'); ylabel('E(t) range'); grid on;
-        legend('min E', 'max E'); title('bifurcation vs adaptation');
+        legend('min E', 'max E'); title('regime sweep vs adaptation');
         subplot(1,2,2);
         imagesc(S.delay_grid, S.ca_grid, S.REGIME); set(gca, 'YDir', 'normal');
         colormap(gca, [0.4 0.7 0.9; 0.85 0.4 0.4]);
         cb = colorbar; cb.Ticks = [0.25 0.75]; cb.TickLabels = {'fixed point', 'oscillation'};
-        xlabel('\tau_{delay}'); ylabel('c_a'); title('regime map');
-        sgtitle('Fig 6: reduced mean-field bifurcation');
-        export_fig_local(f, fig_dir, 'fig6_meanfield_bifurcation', fmt, dpi);
+        xlabel('\tau_{delay}'); ylabel('c_a'); title('regime map (time integration)');
+        sgtitle('Fig 6: reduced mean-field dynamical regime sweep');
+        export_fig_local(f, fig_dir, 'fig6_meanfield_regime_sweep', fmt, dpi);
     end
 
     %% Fig 7: benchmarks

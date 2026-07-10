@@ -14,7 +14,7 @@ the paper can be rebuilt and shared.
 | `parameter_grid/` | `scripts/run_parameter_grid.m` | Multi-parameter Lyapunov/ESP/non-normality grid (Result 2) |
 | `parameter_sweeps/` | `scripts/run_parameter_sweep.m` | Legacy 1D sweeps |
 | `timescale_invariance/` | `scripts/run_timescale_invariance.m` | Memory spectrum, invariance, response lag (Result 3) |
-| `meanfield_bifurcation/` | `scripts/run_meanfield_adaptation_bifurcation.m`, `scripts/run_bifurcation_meanfield.m` | Reduced-model bifurcation (Result 4) |
+| `meanfield_bifurcation/` | `scripts/run_meanfield_adaptation_bifurcation.m`, `scripts/run_bifurcation_meanfield.m` | Reduced-model dynamical regime sweep (Result 4; not a bifurcation diagram) |
 | `benchmarks/` | `scripts/run_benchmarks.m` | Task performance, adaptation ON/OFF (Result 5) |
 | `characterisation/<timestamp>/` | `scripts/run_full_characterisation.m` | Full characterisation bundles |
 | `figures/paper/` | `scripts/make_paper_figures.m` | Final publication figures (tracked) |
