@@ -1,0 +1,71 @@
+# MESN deterministic validation gates (unit + small integration/scientific).
+# Excludes full parameter grids and long benchmarks.
+name: MATLAB validation gates
+
+on:
+  push:
+    branches:
+      - fix/mesn-validation-foundation
+      - main
+      - master
+  pull_request:
+
+jobs:
+  mesn-gates:
+    name: Unit + small integration/scientific
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # Required for private repos / batch licensing; optional for public.
+      MLM_LICENSE_TOKEN: ${{ secrets.MLM_LICENSE_TOKEN }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up MATLAB R2026a
+        uses: matlab-actions/setup-matlab@v3
+        with:
+          release: R2026a
+          # Do not cache MATLAB products or anything that could retain
+          # simulation/run state across CI jobs.
+          cache: false
+
+      - name: Run unit and small integration/scientific tests
+        uses: matlab-actions/run-command@v3
+        with:
+          command: >
+            addpath(genpath(fullfile(pwd,'src')));
+            addpath(genpath(fullfile(pwd,'scripts')));
+            addpath(genpath(fullfile(pwd,'tests')));
+            import matlab.unittest.TestSuite;
+            import matlab.unittest.TestRunner;
+            import matlab.unittest.plugins.XMLPlugin;
+            s_unit = TestSuite.fromFolder(fullfile('tests','unit'), 'IncludingSubfolders', false);
+            s_int = TestSuite.fromFolder(fullfile('tests','integration'), 'IncludingSubfolders', false);
+            s_sci = TestSuite.fromFolder(fullfile('tests','scientific'), 'IncludingSubfolders', false);
+            suite = [s_unit(:); s_int(:); s_sci(:)];
+            if isempty(suite)
+            error('ci:NoTests', 'No CI tests discovered under tests/{unit,integration,scientific}.');
+            end
+            if ~isfolder('test-results'); mkdir('test-results'); end
+            designated = {
+            'MESN:DeprecatedPersistentClear';
+            'MESN:DeprecatedPhaseAdvance';
+            'MESN:LegacyAdaptationCoupling'
+            };
+            for k = 1:numel(designated)
+            warning('error', designated{k});
+            end
+            runner = TestRunner.withTextOutput('OutputDetail', matlab.unittest.Verbosity.Detailed);
+            runner.addPlugin(XMLPlugin.producingJUnitFormat(fullfile('test-results','results.xml')));
+            results = runner.run(suite);
+            disp(table(results));
+            assertSuccess(results);
+
+      - name: Upload JUnit diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: matlab-junit-results
+          path: test-results/
+          if-no-files-found: ignore
