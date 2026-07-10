@@ -152,14 +152,15 @@ classdef SRNN_ESN < handle
             % E connections are instant, I connections are delayed
             obj.lags = getFieldOrDefault(params, 'lags', []);
             if ~isempty(obj.lags) && isscalar(obj.lags) && obj.lags > 0
-                % Build W_components: {W_instant, W_delayed}
-                % W_instant: only E columns (I columns zeroed)
                 W_inst = zeros(obj.n);
                 W_inst(:, obj.E_indices) = obj.W(:, obj.E_indices);
-                % W_delayed: only I columns (E columns zeroed)
                 W_delayed = zeros(obj.n);
                 W_delayed(:, obj.I_indices) = obj.W(:, obj.I_indices);
                 obj.W_components = {W_inst, W_delayed};
+
+                assert(isequal(W_inst + W_delayed, obj.W));
+                assert(all(W_inst(:, obj.I_indices) == 0, 'all'));
+                assert(all(W_delayed(:, obj.E_indices) == 0, 'all'));
             else
                 obj.lags = [];
                 obj.W_components = {};

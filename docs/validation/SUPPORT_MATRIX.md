@@ -5,10 +5,10 @@ Status of each model capability in the validation repair program. Updated as gat
 | Capability | Status |
 |---|---|
 | ODE forward model | implemented but not scientifically validated |
-| Scalar inhibitory DDE forward model | implemented but not scientifically validated |
+| Scalar inhibitory DDE forward model | supported and tested |
 | Vector DDE | unsupported; guarded error |
-| No STD | supported and tested (after T10+) |
-| One STD resource per population | implemented but not scientifically validated |
+| No STD | supported and tested |
+| One STD resource per population | supported and tested |
 | Multiple STD resources | unsupported; guarded error |
 | Multi-timescale SFA | implemented but not scientifically validated |
 | ODE Jacobian (dense) | implemented but not scientifically validated |
