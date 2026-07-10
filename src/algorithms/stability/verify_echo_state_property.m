@@ -65,12 +65,9 @@ function esp = verify_echo_state_property(esn_or_params, U, options)
     S0 = S_base;
 
     % Identify b segments to re-initialize to 1 (if STD enabled)
-    len_a_E = esn.n_E * esn.n_a_E;
-    len_a_I = esn.n_I * esn.n_a_I;
-    len_b_E = esn.n_E * esn.n_b_E;
-    len_b_I = esn.n_I * esn.n_b_I;
-    idx_b_E = (len_a_E + len_a_I + 1) : (len_a_E + len_a_I + len_b_E);
-    idx_b_I = (len_a_E + len_a_I + len_b_E + 1) : (len_a_E + len_a_I + len_b_E + len_b_I);
+    layout = state_layout(esn.params);
+    idx_b_E = layout.idx_b_E;
+    idx_b_I = layout.idx_b_I;
 
     T = size(U, 1);
     X_all = [];
@@ -83,10 +80,10 @@ function esp = verify_echo_state_property(esn_or_params, U, options)
         % Randomize IC around the base state; keep depression variables in [0,1] via reinit to 1.
         rng(1000 + k);
         S_k = S0 + ic_scale * randn(size(S0));
-        if len_b_E > 0
+        if ~isempty(idx_b_E)
             S_k(idx_b_E) = 1;
         end
-        if len_b_I > 0
+        if ~isempty(idx_b_I)
             S_k(idx_b_I) = 1;
         end
 

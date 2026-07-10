@@ -37,12 +37,7 @@ function stats = compute_adaptation_STD_statistics(esn_or_params, S_history, opt
     t_idx = 1:time_stride:T;
     nT = numel(t_idx);
 
-    % Dimensions
-    len_a_E = params.n_E * params.n_a_E;
-    len_a_I = params.n_I * params.n_a_I;
-    len_b_E = params.n_E * params.n_b_E;
-    len_b_I = params.n_I * params.n_b_I;
-    n = params.n;
+    % Dimensions handled by canonical unpack_state below.
 
     aE_mean = zeros(nT, 1);
     aI_mean = zeros(nT, 1);
@@ -53,7 +48,11 @@ function stats = compute_adaptation_STD_statistics(esn_or_params, S_history, opt
     % Collect time series of means (and optionally full distributions later)
     for ii = 1:nT
         S = S_history(t_idx(ii), :)';
-        [a_E, a_I, b_E, b_I] = unpack_a_b(S, params, len_a_E, len_a_I, len_b_E, len_b_I, n);
+        state = unpack_state(S, params);
+        a_E = state.a_E;
+        a_I = state.a_I;
+        b_E = state.b_E;
+        b_I = state.b_I;
 
         if ~isempty(a_E)
             aE_mean(ii) = mean(a_E, 'all');
@@ -124,48 +123,7 @@ function stats = compute_adaptation_STD_statistics(esn_or_params, S_history, opt
 end
 
 function params = exportParams(esn)
-    params = struct();
-    params.n = esn.n;
-    params.n_E = esn.n_E;
-    params.n_I = esn.n_I;
-    params.n_a_E = esn.n_a_E;
-    params.n_a_I = esn.n_a_I;
-    params.n_b_E = esn.n_b_E;
-    params.n_b_I = esn.n_b_I;
-end
-
-function [a_E, a_I, b_E, b_I] = unpack_a_b(S, params, len_a_E, len_a_I, len_b_E, len_b_I, n)
-    current_idx = 0;
-    if len_a_E > 0
-        a_E = reshape(S(current_idx + (1:len_a_E)), params.n_E, params.n_a_E);
-    else
-        a_E = [];
-    end
-    current_idx = current_idx + len_a_E;
-
-    if len_a_I > 0
-        a_I = reshape(S(current_idx + (1:len_a_I)), params.n_I, params.n_a_I);
-    else
-        a_I = [];
-    end
-    current_idx = current_idx + len_a_I;
-
-    if len_b_E > 0
-        b_E = S(current_idx + (1:len_b_E));
-    else
-        b_E = [];
-    end
-    current_idx = current_idx + len_b_E;
-
-    if len_b_I > 0
-        b_I = S(current_idx + (1:len_b_I));
-    else
-        b_I = [];
-    end
-    current_idx = current_idx + len_b_I;
-
-    %#ok<NASGU>
-    x = S(current_idx + (1:n)); %#ok<NASGU>
+    params = esn.exportParams();
 end
 
 function ac = autocorr_safe(x, maxLag)

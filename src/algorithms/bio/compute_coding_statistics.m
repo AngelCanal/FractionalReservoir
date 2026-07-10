@@ -116,22 +116,9 @@ function params = exportParams(esn)
 end
 
 function [b_EI, b] = extract_b_from_state(S, params)
-    current_idx = 0;
-    len_a_E = params.n_E * params.n_a_E;
-    len_a_I = params.n_I * params.n_a_I;
-    len_b_E = params.n_E * params.n_b_E;
-    len_b_I = params.n_I * params.n_b_I;
-    current_idx = current_idx + len_a_E + len_a_I;
-
-    b_E = [];
-    b_I = [];
-    if len_b_E > 0
-        b_E = S(current_idx + (1:len_b_E));
-    end
-    current_idx = current_idx + len_b_E;
-    if len_b_I > 0
-        b_I = S(current_idx + (1:len_b_I));
-    end
+    state = unpack_state(S, params);
+    b_E = state.b_E;
+    b_I = state.b_I;
 
     b = ones(params.n, 1);
     if ~isempty(b_E)

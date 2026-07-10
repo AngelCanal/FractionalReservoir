@@ -202,58 +202,14 @@ esn.resetState();
 % Run reservoir and get full state history
 [~, S_history] = esn.runReservoir(U);
 
-% Extract dendritic states x from state history
-len_a_E = n_E * n_a_E;
-len_a_I = n_I * n_a_I;
-len_b_E = n_E * n_b_E;
-len_b_I = n_I * n_b_I;
-x_start_idx = len_a_E + len_a_I + len_b_E + len_b_I + 1;
-x_end_idx = x_start_idx + n - 1;
-states_x = S_history(:, x_start_idx:x_end_idx); % (n_steps x n)
+% Extract dendritic states and firing rates via canonical layout helpers
+layout = state_layout(esn.params);
+states_x = S_history(:, layout.idx_x);
 
-% Compute firing rates r from states
-% r = activation_function(x_eff) where x_eff = x - adaptation + depression
 states_r = zeros(total_steps, n);
-
 for i = 1:total_steps
-    % Extract state components for this timestep
-    current_idx = 1;
-    
-    % Extract adaptation variables a_E
-    if n_a_E > 0
-        len_a_E = n_E * n_a_E;
-        a_E = reshape(S_history(i, current_idx:current_idx+len_a_E-1), n_a_E, n_E)';
-        current_idx = current_idx + len_a_E;
-    else
-        a_E = zeros(n_E, 0);
-    end
-    
-    % Extract adaptation variables a_I
-    if n_a_I > 0
-        len_a_I = n_I * n_a_I;
-        a_I = reshape(S_history(i, current_idx:current_idx+len_a_I-1), n_a_I, n_I)';
-        current_idx = current_idx + len_a_I;
-    else
-        a_I = zeros(n_I, 0);
-    end
-    
-    % Skip depression variables (not needed for rate computation in this model)
-    current_idx = current_idx + len_b_E + len_b_I;
-    
-    % Extract dendritic states x
-    x = S_history(i, current_idx:current_idx+n-1)';
-    
-    % Compute effective input with adaptation
-    x_eff = x;
-    if n_a_E > 0 && n_E > 0
-        x_eff(1:n_E) = x_eff(1:n_E) - c_E * sum(a_E, 2);
-    end
-    if n_a_I > 0 && n_I > 0
-        x_eff(n_E+1:end) = x_eff(n_E+1:end) - c_I * sum(a_I, 2);
-    end
-    
-    % Apply activation function to get firing rates
-    states_r(i, :) = activation_function(x_eff);
+    [r_t, ~] = esn.computeRates(S_history(i, :)');
+    states_r(i, :) = r_t';
 end
 
 fprintf('  Simulation complete: %d time steps\n\n', total_steps);

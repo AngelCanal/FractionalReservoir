@@ -99,11 +99,8 @@ parfor lin = 1:n_cells
     params = default_MESN_config(overrides);
 
     % N_sys_eqs (needed by the QR Lyapunov method)
-    len_a_E = params.n_E * params.n_a_E;
-    len_a_I = params.n_I * params.n_a_I;
-    len_b_E = params.n_E * params.n_b_E;
-    len_b_I = params.n_I * params.n_b_I;
-    params.N_sys_eqs = len_a_E + len_a_I + len_b_E + len_b_I + params.n;
+    layout = state_layout(params);
+    params.N_sys_eqs = layout.n_total;
 
     esn = SRNN_ESN(params);
     esn.resetState();

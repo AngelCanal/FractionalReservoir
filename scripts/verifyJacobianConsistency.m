@@ -29,12 +29,8 @@ end
 [params, ~] = default_MESN_config(struct());
 
 % Total number of system equations (used by several downstream tools).
-len_a_E = params.n_E * params.n_a_E;
-len_a_I = params.n_I * params.n_a_I;
-len_b_E = params.n_E * params.n_b_E;
-len_b_I = params.n_I * params.n_b_I;
-N_sys_eqs = len_a_E + len_a_I + len_b_E + len_b_I + params.n;
-params.N_sys_eqs = N_sys_eqs;
+layout = state_layout(params);
+params.N_sys_eqs = layout.n_total;
 
 %% Generate realistic states from a short driven run
 dt = params.dt;

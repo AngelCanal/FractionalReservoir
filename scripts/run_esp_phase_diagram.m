@@ -120,12 +120,6 @@ function g_stat = local_gain_stats(params, S_hist, washout)
 % Effective gain statistic g_max = high percentile of b_j * phi'(x_eff_j)
 % over the post-transient trajectory. This is the quantity in Eq. (ESP*).
     n = params.n;
-    len_a_E = params.n_E * params.n_a_E;
-    len_a_I = params.n_I * params.n_a_I;
-    len_b_E = params.n_E * params.n_b_E;
-    len_b_I = params.n_I * params.n_b_I;
-
-    idx_x = (len_a_E + len_a_I + len_b_E + len_b_I) + (1:n);
     phi_prime = params.activation_function_derivative;
 
     T = size(S_hist, 1);
@@ -133,33 +127,13 @@ function g_stat = local_gain_stats(params, S_hist, washout)
     g_peak = 0;
     for tt = t0:T
         S = S_hist(tt, :)';
-        % Unpack adaptation and depression
-        ci = 0;
-        if len_a_E > 0
-            a_E = reshape(S(ci + (1:len_a_E)), params.n_E, params.n_a_E);
-        else
-            a_E = [];
-        end
-        ci = ci + len_a_E;
-        if len_a_I > 0
-            a_I = reshape(S(ci + (1:len_a_I)), params.n_I, params.n_a_I);
-        else
-            a_I = [];
-        end
-        ci = ci + len_a_I;
-        if len_b_E > 0
-            b_E = S(ci + (1:len_b_E));
-        else
-            b_E = [];
-        end
-        ci = ci + len_b_E;
-        if len_b_I > 0
-            b_I = S(ci + (1:len_b_I));
-        else
-            b_I = [];
-        end
+        state = unpack_state(S, params);
+        a_E = state.a_E;
+        a_I = state.a_I;
+        b_E = state.b_E;
+        b_I = state.b_I;
+        x = state.x;
 
-        x = S(idx_x);
         x_eff = x;
         if ~isempty(a_E)
             x_eff(params.E_indices) = x_eff(params.E_indices) - params.c_E * sum(a_E, 2);

@@ -68,13 +68,8 @@ function fisher = compute_fisher_memory_curve(esn_or_params, U, options)
     n_state = size(S_history, 2);
     C = speye(n_state);
     if strcmpi(use_states, 'x')
-        len_a_E = params.n_E * params.n_a_E;
-        len_a_I = params.n_I * params.n_a_I;
-        len_b_E = params.n_E * params.n_b_E;
-        len_b_I = params.n_I * params.n_b_I;
-        x_start = len_a_E + len_a_I + len_b_E + len_b_I + 1;
-        x_end = x_start + params.n - 1;
-        idx = x_start:x_end;
+        layout = state_layout(params);
+        idx = layout.idx_x;
         C = sparse(1:numel(idx), idx, 1, numel(idx), n_state);
     elseif ~strcmpi(use_states, 'all')
         error('compute_fisher_memory_curve:InvalidUseStates', ...
