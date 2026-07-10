@@ -5,7 +5,9 @@ A biologically-inspired Echo State Network (ESN) built on a rate-coded spiking r
 - **Spike-frequency adaptation (SFA)** — multi-timescale adaptation currents for E and I populations
 - **Short-term synaptic depression (STD)** — presynaptic depletion dynamics
 - **Dale's law** — strict excitatory/inhibitory separation
-- **Synaptic delays (DDE mode)** — inhibitory connections with configurable delay
+- **Synaptic delay (DDE mode)** — one scalar inhibitory delay (vector delays unsupported)
+
+See [Current mathematical support and validation status](docs/validation/SUPPORT_MATRIX.md) for supported modes and validation gates.
 
 This branch is a minimal, publication-ready codebase for hyperparameter tuning and analysis.
 
