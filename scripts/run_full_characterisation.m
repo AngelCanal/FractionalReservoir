@@ -74,8 +74,8 @@ function [result, run_dir] = run_full_characterisation(options)
         result.spectral_W = compute_spectral_properties(params.W, params);
     end
     if flags.esp
-        esp_opts = struct('n_ic', 20, 'washout_steps', 500, 'eps_tol', 1e-3, ...
-            'ic_scale', 0.1, 'feature_mode', 'x');
+        esp_opts = struct('n_ic', 20, 'washout_steps', 500, ...
+            'ic_scale', 0.1, 'feature_mode', 'x', 'verbose', false);
         result.esp = verify_echo_state_property(esn, U, esp_opts);
     end
     if flags.memory

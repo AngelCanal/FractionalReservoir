@@ -96,12 +96,14 @@ function [result, run_dir] = make_paper_figures(options)
     MC = arrayfun(@(s) s.MC_total, r(:));
     kreiss = arrayfun(@(s) safe_nn(s.specW, 'kreiss_lb'), r(:));
     dep = arrayfun(@(s) safe_nn(s.specW, 'departure_F_norm'), r(:));
-    esp = arrayfun(@(s) double(s.esp_holds), r(:));
+    esp = arrayfun(@(s) double(strcmp(s.esp_classification, ...
+        'empirically_contracting_on_test_set')) - ...
+        double(strcmp(s.esp_classification, 'not_contracting_on_test_set')), r(:));
 
     f = figure('Color', 'w', 'Visible', 'off');
     scatter(kreiss, LLE, 30, esp, 'filled'); yline(0, 'r--');
-    xlabel('Kreiss constant (lower bound) of W'); ylabel('largest Lyapunov exponent');
-    colorbar; title('Fig 3: LLE vs non-normality (color = ESP holds)'); grid on;
+    xlabel('Kreiss constant (lower bound) of J_{eff}'); ylabel('largest Lyapunov exponent');
+    colorbar; title('Fig 3: LLE vs non-normality (color = empirical convergence)'); grid on;
     export_fig_local(f, fig_dir, 'fig3_lle_nonnormality', fmt, dpi);
     close(f);
     exported{end+1} = 'fig3_lle_nonnormality'; %#ok<AGROW>

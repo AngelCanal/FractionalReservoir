@@ -137,13 +137,14 @@ function [result, run_dir] = run_parameter_grid(options)
         end
         specW = compute_spectral_properties(params.W, params, nn_opts);
 
-        esp_holds = NaN; esp_spread = NaN;
+        esp_class = ''; esp_spread = NaN; esp_slope = NaN;
         if do_esp
             esp = verify_echo_state_property(esn, U, struct('n_ic', 10, ...
-                'washout_steps', T_washout, 'eps_tol', 1e-3, 'feature_mode', 'x', ...
+                'washout_steps', T_washout, 'feature_mode', 'x', ...
                 'verbose', false));
-            esp_holds = esp.esp_holds;
+            esp_class = esp.classification;
             esp_spread = esp.final_spread;
+            esp_slope = esp.slope_mean;
         end
 
         MC_total = NaN;
@@ -165,8 +166,9 @@ function [result, run_dir] = run_parameter_grid(options)
         r.regime = regime;
         r.regime_diag = regime_diag;
         r.specW = specW;
-        r.esp_holds = esp_holds;
+        r.esp_classification = esp_class;
         r.esp_spread = esp_spread;
+        r.esp_slope = esp_slope;
         r.MC_total = MC_total;
         results_cell{lin} = r;
     end
@@ -174,7 +176,8 @@ function [result, run_dir] = run_parameter_grid(options)
     results = repmat(struct( ...
         'param_values', struct(), 'LLE', nan, 'LE_spectrum', [], ...
         'regime', '', 'regime_diag', struct(), 'specW', struct(), ...
-        'esp_holds', NaN, 'esp_spread', NaN, 'MC_total', NaN), n_cells, 1);
+        'esp_classification', '', 'esp_spread', NaN, 'esp_slope', NaN, ...
+        'MC_total', NaN), n_cells, 1);
     for i = 1:n_cells
         ri = results_cell{i};
         results(i).param_values = ri.param_values;
@@ -183,8 +186,9 @@ function [result, run_dir] = run_parameter_grid(options)
         results(i).regime = ri.regime;
         results(i).regime_diag = ri.regime_diag;
         results(i).specW = ri.specW;
-        results(i).esp_holds = ri.esp_holds;
+        results(i).esp_classification = ri.esp_classification;
         results(i).esp_spread = ri.esp_spread;
+        results(i).esp_slope = ri.esp_slope;
         results(i).MC_total = ri.MC_total;
     end
 
@@ -210,20 +214,30 @@ function [result, run_dir] = run_parameter_grid(options)
         LLEs = arrayfun(@(s) s.LLE, results(:));
         MCs  = arrayfun(@(s) s.MC_total, results(:));
         kreiss = arrayfun(@(s) getfield_safe(s.specW, 'nonnormality', 'kreiss_lb'), results(:));
-        esp_flags = arrayfun(@(s) double(s.esp_holds), results(:));
+        esp_code = arrayfun(@(s) esp_class_code(s.esp_classification), results(:));
         figure('Color', 'w');
         subplot(1,2,1);
-        scatter(kreiss, LLEs, 30, esp_flags, 'filled');
-        xlabel('Kreiss constant (lower bound) of W');
+        scatter(kreiss, LLEs, 30, esp_code, 'filled');
+        xlabel('Kreiss constant (lower bound) of J_{eff}');
         ylabel('Largest Lyapunov exponent');
         yline(0, 'r--'); grid on; colorbar;
-        title('LLE vs non-normality (color = ESP holds)');
+        title('LLE vs non-normality (color = empirical convergence class)');
         subplot(1,2,2);
         scatter(kreiss, MCs, 30, LLEs, 'filled');
-        xlabel('Kreiss constant (lower bound) of W');
+        xlabel('Kreiss constant (lower bound) of J_{eff}');
         ylabel('Total linear memory capacity');
         grid on; cb = colorbar; ylabel(cb, 'LLE');
         title('Memory vs non-normality');
+    end
+end
+
+function c = esp_class_code(cls)
+    if strcmp(cls, 'empirically_contracting_on_test_set')
+        c = 1;
+    elseif strcmp(cls, 'not_contracting_on_test_set')
+        c = -1;
+    else
+        c = 0;
     end
 end
 

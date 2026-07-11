@@ -121,8 +121,8 @@ function fig_paths = plot_characterisation_results(run_dir, options)
         grid(ax, 'on');
         xlabel(ax, 'time index');
         ylabel(ax, 'max spread (log scale)');
-        ttl = sprintf('ESP: final=%.3e, tol=%.3e, holds=%d', ...
-            results.esp.final_spread, getFieldOrDefault(results.esp.options, 'eps_tol', nan), results.esp.esp_holds);
+        ttl = sprintf('Empirical convergence: final=%.3e, class=%s', ...
+            results.esp.final_spread, results.esp.classification);
         title(ax, ttl, 'Interpreter', 'none');
 
         apply_theme(f, theme);
