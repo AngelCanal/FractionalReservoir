@@ -14,10 +14,11 @@ function spec = compute_spectral_properties(W, params, options)
 %   options - (optional) struct:
 %       .do_plot (default false)
 %       .plot_title (default '')
-%       .do_nonnormality (default false) attach non-normality diagnostics
-%                        (departure from normality, numerical abscissa,
-%                         Kreiss constant, transient growth) via
-%                         compute_nonnormality.
+%       .do_nonnormality (default false) attach continuous-time non-normality
+%                        diagnostics via compute_nonnormality. Requires
+%                        options.A_ct (e.g. J_eff); raw W is not accepted.
+%       .A_ct            continuous-time generator for non-normality (required
+%                        when do_nonnormality is true)
 %
 % Output:
 %   spec - struct with fields:
@@ -30,7 +31,7 @@ function spec = compute_spectral_properties(W, params, options)
 %     and if params provided:
 %       .eigvals_EE, .eigvals_II  (sub-block eigenvalues)
 %     and if options.do_nonnormality:
-%       .nonnormality             struct from compute_nonnormality(W)
+%       .nonnormality             struct from compute_nonnormality(A_ct)
 
     if nargin < 2
         params = struct();
@@ -54,7 +55,7 @@ function spec = compute_spectral_properties(W, params, options)
         spec.spectral_gap_abscissa = nan;
         % Keep field set identical across early/late returns for parfor safety.
         if do_nonnormality
-            spec.nonnormality = compute_nonnormality(W, options);
+            spec.nonnormality = compute_nonnormality(require_A_ct(options), options);
         end
         if isfield(params, 'E_indices') && isfield(params, 'I_indices')
             E = params.E_indices(:);
@@ -79,9 +80,9 @@ function spec = compute_spectral_properties(W, params, options)
         spec.spectral_gap_abscissa = nan;
     end
 
-    % Optional non-normality / transient-growth diagnostics
+    % Optional continuous-time non-normality (requires A_ct, e.g. J_eff)
     if do_nonnormality
-        spec.nonnormality = compute_nonnormality(W, options);
+        spec.nonnormality = compute_nonnormality(require_A_ct(options), options);
     end
 
     % Optional E/I block diagnostics (useful for Dale structured W)
@@ -110,6 +111,15 @@ function spec = compute_spectral_properties(W, params, options)
             title(plot_title);
         end
     end
+end
+
+function A_ct = require_A_ct(options)
+    if ~isfield(options, 'A_ct') || isempty(options.A_ct)
+        error('compute_spectral_properties:MissingContinuousGenerator', ...
+            ['Non-normality requires options.A_ct (a continuous-time ', ...
+             'generator such as J_eff), not the raw recurrent matrix W.']);
+    end
+    A_ct = options.A_ct;
 end
 
 function value = getFieldOrDefault(s, field, default_value)

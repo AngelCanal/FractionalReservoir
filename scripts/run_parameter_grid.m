@@ -125,8 +125,16 @@ function [result, run_dir] = run_parameter_grid(options)
         end
 
         [regime, regime_diag] = classify_dynamical_regime(x_post, dt, LLE);
-        nn_opts = struct('do_nonnormality', do_nonnormality, ...
+        % Non-normality on structurally varying continuous-time generators
+        % (J_eff at a post-washout state). Grid cells differ in tau_d, c_E,
+        % and W scaling, so (-I+WG)/tau_d is not a mere scalar family.
+        nn_opts = struct('do_nonnormality', false, ...
             'do_transient', false, 'n_eta', 12, 'n_omega', 61);
+        if do_nonnormality && isempty(params.lags)
+            S_sample = S_hist(min(T_washout + 1, size(S_hist, 1)), :).';
+            nn_opts.do_nonnormality = true;
+            nn_opts.A_ct = compute_J_eff(S_sample, params);
+        end
         specW = compute_spectral_properties(params.W, params, nn_opts);
 
         esp_holds = NaN; esp_spread = NaN;
