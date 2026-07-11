@@ -8,6 +8,8 @@ A biologically-inspired Echo State Network (ESN) built on a rate-coded spiking r
 - **Synaptic delay (DDE mode)** — one scalar inhibitory delay (vector delays unsupported)
 
 See [Current mathematical support and validation status](docs/validation/SUPPORT_MATRIX.md) for supported modes and validation gates.
+Preregistered experiments: [EXPERIMENT_PREREGISTRATION.md](docs/validation/EXPERIMENT_PREREGISTRATION.md).
+Manuscript claims are gated by [CLAIM_EVIDENCE.md](docs/validation/CLAIM_EVIDENCE.md).
 
 **Stability claims (scope).** ODE Jacobian / Lyapunov tools are ODE-only.
 Empirical state convergence uses three classifications
@@ -18,7 +20,12 @@ a MESN/DDE ESP theorem (`src/algorithms/Jacobian/J_eff_notes.md`). Full
 incremental-stability derivation is an expert-only future task
 (`docs/validation/FUTURE_INCREMENTAL_STABILITY.md`).
 
-This branch is a minimal, publication-ready codebase for hyperparameter tuning and analysis.
+**Mechanism claims.** Pilot ablation runs are tagged
+`pilot_not_for_publication=true` and do not support mechanism-superiority
+wording. Publication claims require the completed ≥30-seed paired table (G7).
+
+This branch is a minimal, publication-oriented codebase for validation and
+revalidated experiments.
 
 ---
 
