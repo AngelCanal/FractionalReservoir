@@ -100,24 +100,41 @@ function lya_results = compute_lyapunov_exponents(Lya_method, S_out, t_out, dt, 
         case 'qr'
             fprintf('Computing full Lyapunov spectrum using QR decomposition method...\n');
             tic
-            [LE_spectrum, local_LE_spectrum_t, finite_LE_spectrum_t, t_lya] = lyapunov_spectrum_qr(S_out, t_out, lya_dt, params, ode_solver, opts, @SRNN_Jacobian_wrapper, T_interval, params.N_sys_eqs, fs);
+            idx0 = find(t_out >= T_interval(1) - 10*eps(T_interval(1)), 1, 'first');
+            if isempty(idx0)
+                error('compute_lyapunov_exponents:StartNotInTrajectory', ...
+                    'No sample at or after T_interval(1)');
+            end
+            qr_opts = struct( ...
+                'odefun', rhs_func, ...
+                'jacobian_fun', @(tt, S) SRNN_Jacobian_wrapper(tt, S, params), ...
+                'x0', S_out(idx0, :).', ...
+                'T_interval', [t_out(idx0), T_interval(2)], ...
+                'lya_dt', lya_dt, ...
+                'ode_solver', ode_solver, ...
+                'ode_options', opts, ...
+                'params', params, ...
+                'compute_benettin', true, ...
+                'd0', 1e-3, ...
+                'seed', 1);
+            qr = lyapunov_spectrum_qr_ode(qr_opts);
             toc
-            fprintf('Lyapunov Dimension: %.2f\n', compute_kaplan_yorke_dimension(LE_spectrum));
-            lya_results.LE_spectrum = LE_spectrum;
-            lya_results.local_LE_spectrum_t = local_LE_spectrum_t;
-            lya_results.finite_LE_spectrum_t = finite_LE_spectrum_t;
-            lya_results.t_lya = t_lya;
+            fprintf('Lyapunov Dimension: %.2f\n', compute_kaplan_yorke_dimension(qr.LE_spectrum));
+            lya_results.LE_spectrum = qr.LE_spectrum;
+            lya_results.local_LE_spectrum_t = qr.local_LE_spectrum_t;
+            lya_results.finite_LE_spectrum_t = qr.finite_LE_spectrum_t;
+            lya_results.t_lya = qr.t_lya;
+            lya_results.segment_durations = qr.segment_durations;
+            lya_results.sort_idx = qr.sort_idx;
             lya_results.params.N_sys_eqs = params.N_sys_eqs;
-            
-            % Sort LE spectra by real component (descending) and keep index map
-            [sorted_LE, sort_idx] = sort(real(lya_results.LE_spectrum), 'descend');
-            lya_results.LE_spectrum = sorted_LE;
-            lya_results.local_LE_spectrum_t = lya_results.local_LE_spectrum_t(:, sort_idx);
-            lya_results.finite_LE_spectrum_t = lya_results.finite_LE_spectrum_t(:, sort_idx);
-            lya_results.sort_idx = sort_idx;
             lya_results.lya_dt = lya_dt;
             lya_results.lya_fs = lya_fs;
-            fprintf('Largest Lyapunov Exponent (sorted): %.4f\n', lya_results.LE_spectrum(1));
+            lya_results.LLE_qr = qr.LLE_qr;
+            lya_results.LLE_benettin = qr.LLE_benettin;
+            lya_results.LLE = qr.LLE_qr;
+            lya_results.status = qr.status;
+            fprintf('Largest Lyapunov Exponent (QR): %.4f  (Benettin): %.4f\n', ...
+                qr.LLE_qr, qr.LLE_benettin);
             
         otherwise
             error('Unknown Lyapunov method: %s. Use ''benettin'', ''qr'', or ''none''.', Lya_method);

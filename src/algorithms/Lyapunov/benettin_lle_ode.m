@@ -130,8 +130,16 @@ function result = benettin_lle_ode(options)
             'No Lyapunov segments inside T_interval=[%g,%g]', T_start, T_end);
     end
 
+    % Cumulative estimator (plan): sum log-growth / sum durations
+    LLE_cumulative = finite_lya(end);
+    % Converged estimator: mean local rate over the last half of segments
+    n_seg = numel(local_lya);
+    i0 = max(1, n_seg - floor(n_seg / 2) + 1);
+    LLE_converged = mean(local_lya(i0:end));
+
     result = struct();
-    result.LLE = finite_lya(end);
+    result.LLE = LLE_converged;
+    result.LLE_cumulative = LLE_cumulative;
     result.local_lya = local_lya;
     result.finite_lya = finite_lya;
     result.t_lya = t_lya;
