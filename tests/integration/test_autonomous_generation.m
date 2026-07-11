@@ -20,9 +20,11 @@ function testChangingFirstPredictionChangesLaterOutput(testCase)
     init_data = 0.15 * ones(8, 1);
     opts = struct('washout_steps', 8, 'ode_reltol', 1e-8, 'ode_abstol', 1e-10);
 
+    esn.readout_model.coefficients = 1.0;
     esn.W_out = 1.0;
     Y_a = esn.generateAutonomous(init_data, 2, opts);
 
+    esn.readout_model.coefficients = 1.4;
     esn.W_out = 1.4;
     Y_b = esn.generateAutonomous(init_data, 2, opts);
 
@@ -85,6 +87,17 @@ function esn = make_linear_autonomous_esn()
         'input_rng_seed', 1730);
     params = default_MESN_config(overrides);
     esn = SRNN_ESN(params);
+    % Identity-scaled ridge model equivalent to Y = 2*X + 0
+    model = struct();
+    model.intercept = 0;
+    model.coefficients = 2;
+    model.mu = 0;
+    model.sigma = 1;
+    model.lambda = 0;
+    model.n_features = 1;
+    model.n_outputs = 1;
+    model.constant_feature = false;
+    esn.readout_model = model;
     esn.W_out = 2;
     esn.b_out = 0;
     esn.is_trained = true;
@@ -99,12 +112,12 @@ function Y = manual_autonomous_reference(esn, init_data, n_steps, washout_steps)
 
     U_washout = init_data(1:washout_steps, :);
     [X_washout, ~] = esn.runReservoir(U_washout, sim_opts);
-    feedback = X_washout(end, :) * esn.W_out + esn.b_out';
+    feedback = apply_ridge_readout(esn.readout_model, X_washout(end, :));
 
     Y = zeros(n_steps, esn.n_outputs);
     for t = 1:n_steps
         [X_t, ~] = esn.runReservoir(feedback, step_opts);
-        Y(t, :) = X_t * esn.W_out + esn.b_out';
+        Y(t, :) = apply_ridge_readout(esn.readout_model, X_t);
         feedback = Y(t, :);
     end
 end
