@@ -117,7 +117,7 @@ function [result, run_dir] = make_paper_figures(options)
     close(f);
     exported{end+1} = 'fig4_memory_nonnormality'; %#ok<AGROW>
 
-    %% Fig 5: timescale spectrum + invariance
+    %% Fig 5: timescale spectrum + held-out warp generalization + response lag
     S = load(paths.timescale_invariance);
     f = figure('Color', 'w', 'Visible', 'off');
     subplot(1,3,1); hold on;
@@ -127,9 +127,27 @@ function [result, run_dir] = make_paper_figures(options)
     end
     xlabel('lag k'); ylabel('MC_k'); legend('show'); grid on;
     title('memory spectrum');
-    subplot(1,3,2);
-    plot(S.se.shifts, S.se.nrmse_per_shift, 'ko-', 'LineWidth', 1.5);
-    xlabel('shift'); ylabel('equivariance NRMSE'); grid on; title('temporal invariance');
+    subplot(1,3,2); hold on;
+    if isfield(S, 'warp') && isfield(S.warp, 'test_warps')
+        plot(S.warp.test_warps, S.warp.nrmse_by_warp, 'bs-', 'LineWidth', 1.5, ...
+            'DisplayName', 'MESN');
+        if isfield(S.warp, 'results')
+            plot(S.warp.test_warps, [S.warp.results.nrmse_persistence], 'k--', ...
+                'DisplayName', 'persistence');
+            plot(S.warp.test_warps, [S.warp.results.nrmse_linear_history], 'g-.', ...
+                'DisplayName', 'lin-hist');
+            if isfield(S.warp.results, 'nrmse_esn') && any(isfinite([S.warp.results.nrmse_esn]))
+                plot(S.warp.test_warps, [S.warp.results.nrmse_esn], 'm:', ...
+                    'DisplayName', 'ESN');
+            end
+        end
+        xlabel('held-out warp factor'); ylabel('NRMSE'); legend('show'); grid on;
+        title('held-out time-warp generalization');
+    else
+        plot(S.se.shifts, S.se.nrmse_per_shift, 'ko-', 'LineWidth', 1.5);
+        xlabel('shift'); ylabel('equivariance NRMSE'); grid on;
+        title('temporal invariance');
+    end
     subplot(1,3,3); hold on;
     if isfield(S.pa_on, 'correlation_by_lag')
         y_on = mean(abs(S.pa_on.correlation_by_lag), 1);
@@ -142,7 +160,7 @@ function [result, run_dir] = make_paper_figures(options)
     plot(S.pa_off.lags, y_off, 'k', 'LineWidth', 1.5, 'DisplayName', 'adapt OFF');
     xline(0, 'k--'); xlabel('lag (<0 = feature lags)'); ylabel('mean |xcorr|');
     legend('show'); grid on; title('response lag');
-    sgtitle('Fig 5: multi-timescale representation and temporal invariance');
+    sgtitle('Fig 5: multi-timescale representation and held-out warp generalization');
     export_fig_local(f, fig_dir, 'fig5_timescale_invariance', fmt, dpi);
     close(f);
     exported{end+1} = 'fig5_timescale_invariance'; %#ok<AGROW>

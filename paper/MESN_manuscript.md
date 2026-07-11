@@ -99,10 +99,12 @@ with adaptation.
   number of SFA timescales `n_a_E`. Claim: more timescales -> broader/longer
   memory. (The historical Fisher-memory routine is quarantined; see
   `docs/validation/FISHER_MEMORY_STATUS.md`.)
-- **Temporal invariance:** shift-equivariance
-  (`src/algorithms/info/measure_shift_equivariance.m`) and time-warp robustness
-  of a trained readout. Claim: the reservoir map is time-invariant and
-  degrades gracefully under input dilation.
+- **Temporal invariance / held-out warp generalization:** shift-equivariance
+  (`src/algorithms/info/measure_shift_equivariance.m`) and held-out time-warp
+  evaluation (`evaluate_time_warp_generalization.m`). Readout is trained only
+  on the unwarped training realization; NRMSE is reported on disjoint inputs
+  and warp factors versus persistence, linear-history, and ordinary-ESN
+  baselines. A score worse than baseline is a negative result, not invariance.
 - **Response lag:** `src/algorithms/info/compute_response_lag.m` reports the peak
   of `R(k)=corr(feature(t),input(t+k))`. Under this convention `k<0` means the
   feature lags (associates with past input); `k>0` is apparent future association
