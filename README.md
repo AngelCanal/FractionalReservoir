@@ -9,6 +9,15 @@ A biologically-inspired Echo State Network (ESN) built on a rate-coded spiking r
 
 See [Current mathematical support and validation status](docs/validation/SUPPORT_MATRIX.md) for supported modes and validation gates.
 
+**Stability claims (scope).** ODE Jacobian / Lyapunov tools are ODE-only.
+Empirical state convergence uses three classifications
+(`empirically_contracting_on_test_set`, `not_contracting_on_test_set`,
+`inconclusive`) — never “ESP proven.” The contour `||W||_2 g_max = 1` is a
+`quasi_static_fast_gain_diagnostic` for frozen `(a,b)` on ODE trajectories, not
+a MESN/DDE ESP theorem (`src/algorithms/Jacobian/J_eff_notes.md`). Full
+incremental-stability derivation is an expert-only future task
+(`docs/validation/FUTURE_INCREMENTAL_STABILITY.md`).
+
 This branch is a minimal, publication-ready codebase for hyperparameter tuning and analysis.
 
 ---

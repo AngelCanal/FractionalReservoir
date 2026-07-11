@@ -73,18 +73,31 @@ function [result, run_dir] = make_paper_figures(options)
 
     exported = {};
 
-    %% Fig 2: ESP phase diagram
+    %% Fig 2: empirical convergence phase diagram
     S = load(paths.esp_phase);
     f = figure('Color', 'w', 'Visible', 'off');
-    imagesc(S.chaos_vals, S.adapt_vals, double(S.ESP')); hold on;
-    set(gca, 'YDir', 'normal');
-    colormap(gca, [0.85 0.4 0.4; 0.4 0.7 0.9]);
-    cb = colorbar; cb.Ticks = [0.25 0.75]; cb.TickLabels = {'ESP fails', 'ESP holds'};
-    if isfield(S, 'BND')
+    if isfield(S, 'classification_numeric')
+        Z = S.classification_numeric';
+        imagesc(S.chaos_vals, S.adapt_vals, Z'); hold on;
+        set(gca, 'YDir', 'normal');
+        colormap(gca, [0.85 0.4 0.4; 0.85 0.85 0.5; 0.4 0.7 0.9]);
+        caxis([-1 1]);
+        cb = colorbar;
+        cb.Ticks = [-1 0 1];
+        cb.TickLabels = {'not contracting', 'inconclusive', 'contracting (empirical)'};
+    else
+        imagesc(S.chaos_vals, S.adapt_vals, double(S.ESP')); hold on;
+        set(gca, 'YDir', 'normal');
+        colormap(gca, [0.85 0.4 0.4; 0.4 0.7 0.9]);
+        cb = colorbar; cb.Ticks = [0.25 0.75];
+        cb.TickLabels = {'not contracting', 'contracting (empirical)'};
+    end
+    if isfield(S, 'BND') && ~(isfield(S, 'use_delay') && S.use_delay)
         contour(S.chaos_vals, S.adapt_vals, S.BND', [1 1], 'k-', 'LineWidth', 2);
     end
     xlabel('level\_of\_chaos'); ylabel('adaptation scale (\times baseline)');
-    title('Fig 2: ESP phase diagram with analytical boundary');
+    title({'Fig 2: empirical state convergence', ...
+        'black contour: quasi-static fast-gain diagnostic (not ESP theorem)'});
     export_fig_local(f, fig_dir, 'fig2_esp_phase', fmt, dpi);
     close(f);
     exported{end+1} = 'fig2_esp_phase'; %#ok<AGROW>
