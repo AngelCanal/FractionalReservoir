@@ -55,10 +55,10 @@ end
 
 function testMakePaperFiguresRequiresExplicitPaths(testCase)
     testCase.verifyError(@() make_paper_figures(struct('dry_run', false, ...
-        'save_results', false)), 'resolve_paper_result_paths:MissingPaths');
+        'save_results', false)), 'make_paper_figures:MissingPaths');
 end
 
-function testMakePaperFiguresRejectsMissingFile(testCase)
+function testMakePaperFiguresRejectsLegacyWithoutFlag(testCase)
     paths = struct( ...
         'esp_phase', fullfile(tempdir, 'missing_esp.mat'), ...
         'parameter_grid', fullfile(tempdir, 'missing_grid.mat'), ...
@@ -67,27 +67,30 @@ function testMakePaperFiguresRejectsMissingFile(testCase)
         'benchmarks', fullfile(tempdir, 'missing_bench.mat'));
     testCase.verifyError(@() make_paper_figures(struct( ...
         'result_paths', paths, 'save_results', false)), ...
+        'make_paper_figures:LegacyPathsBlocked');
+end
+
+function testMakePaperFiguresRejectsMissingAggregateFile(testCase)
+    paths = struct( ...
+        'ablation_aggregate', fullfile(tempdir, 'missing_aggregate.mat'));
+    testCase.verifyError(@() make_paper_figures(struct( ...
+        'result_paths', paths, 'save_results', false)), ...
         'require_explicit_result_path:MissingFile');
 end
 
 function testMakePaperFiguresAcceptsExplicitExistingPaths(testCase)
     root = testCase.TestData.root_override;
-    paths = struct();
-    fields = {'esp_phase', 'parameter_grid', 'timescale_invariance', ...
-        'meanfield', 'benchmarks'};
-    for i = 1:numel(fields)
-        p = fullfile(root, [fields{i} '.mat']);
-        % Minimal stubs with fields referenced by plotting (dry_run skips plot)
-        S = struct('stub', true);
-        save(p, '-struct', 'S');
-        paths.(fields{i}) = p;
-    end
+    p = fullfile(root, 'aggregate_paired.mat');
+    aggregate = struct('raw_rows', struct([]), 'paired', struct([]), ...
+        'seeds', [], 'run_dir', root); %#ok<NASGU>
+    save(p, 'aggregate');
+    paths = struct('ablation_aggregate', p);
 
     [result, run_dir] = make_paper_figures(struct( ...
         'result_paths', paths, 'dry_run', true, 'save_results', false));
     testCase.verifyEqual(result.status, 'dry_run');
     testCase.verifyEqual(run_dir, '');
-    testCase.verifyEqual(result.result_paths.esp_phase, paths.esp_phase);
+    testCase.verifyEqual(result.result_paths.ablation_aggregate, paths.ablation_aggregate);
 end
 
 function testMakePaperFiguresRejectsAmbiguousManifest(testCase)
@@ -97,7 +100,7 @@ function testMakePaperFiguresRejectsAmbiguousManifest(testCase)
     save(mp, 'unrelated');
     testCase.verifyError(@() make_paper_figures(struct( ...
         'manifest_path', mp, 'save_results', false)), ...
-        'resolve_paper_result_paths:AmbiguousManifest');
+        'make_paper_figures:AmbiguousManifest');
 end
 
 function testAtomicSaveRefusesOverwrite(testCase)

@@ -1,19 +1,21 @@
 function [result, run_dir] = make_paper_figures(options)
 % make_paper_figures
-% Export MESN paper figures from explicit immutable result paths.
+% Rebuild MESN publication figures from explicit validated result paths only.
 %
 %   [result, run_dir] = make_paper_figures(options)
 %
-% Required (one of):
-%   .result_paths  struct with fields:
-%       .esp_phase, .parameter_grid, .timescale_invariance, .meanfield, .benchmarks
-%   .manifest_path  .mat containing result_paths (or paths)
+% Required:
+%   .result_paths OR .manifest_path with fields (all explicit absolute paths):
+%       .validation_controls   (Fig 1) optional until packaged
+%       .ablation_aggregate    (Figs 3–4) aggregate_paired.mat from T103
+%       .ablation_run_dir      directory of immutable cell results (preferred)
+%       .meanfield             (optional Fig 5) regime-sweep .mat
 %
-% Options:
-%   .run_dependencies (default false) if true, may re-run experiments first
-%   .dpi, .format, .save_results, .dry_run, .fig_dir, .run_id, ...
+% Legacy fields esp_phase/parameter_grid/... are accepted only when
+% options.allow_legacy_paths=true and are labeled non-publication.
 %
-% Finding the "latest" result file is intentionally unsupported.
+% Plotting performs no simulations. Missing G7 data yields placeholder panels
+% and status 'incomplete_awaiting_g7' rather than inventing evidence.
 
     if nargin < 1 || isempty(options)
         options = struct();
@@ -22,38 +24,26 @@ function [result, run_dir] = make_paper_figures(options)
         setup_paths();
     end
 
-    run_dependencies = local_get(options, 'run_dependencies', false);
     dpi = local_get(options, 'dpi', 200);
     fmt = local_get(options, 'format', 'png');
     save_results = local_get(options, 'save_results', true);
     dry_run = local_get(options, 'dry_run', false);
+    allow_legacy = local_get(options, 'allow_legacy_paths', false);
     fig_dir = local_get(options, 'fig_dir', ...
-        fullfile(pwd, 'results', 'figures', 'paper'));
+        fullfile(pwd, 'results', 'figures', 'paper_revalidated'));
 
     result = struct();
     result.status = 'ok';
     run_dir = '';
 
-    if run_dependencies
-        error('make_paper_figures:DependenciesNotAutoWired', ...
-            ['run_dependencies=true requires callers to supply regenerated ', ...
-             'result_paths after running experiments explicitly. ', ...
-             'Automatic re-run of expensive experiments is disabled by default.']);
-    end
-
     if dry_run
-        % Validate path resolution rules without plotting
-        if isfield(options, 'result_paths') || isfield(options, 'manifest_path')
-            paths = resolve_paper_result_paths(options);
-            result.result_paths = paths;
-        end
+        paths = resolve_validated_figure_paths(options, allow_legacy);
+        result.result_paths = paths;
         result.status = 'dry_run';
-        result.run_dir = '';
-        run_dir = '';
         return;
     end
 
-    paths = resolve_paper_result_paths(options);
+    paths = resolve_validated_figure_paths(options, allow_legacy);
     result.result_paths = paths;
 
     if save_results
@@ -62,7 +52,7 @@ function [result, run_dir] = make_paper_figures(options)
         if isfield(options, 'revalidated_root_override')
             ctx_opts.revalidated_root_override = options.revalidated_root_override;
         end
-        ctx = create_run_context('paper_figures', ctx_opts);
+        ctx = create_run_context('paper_figures_validated', ctx_opts);
         save_run_manifest(ctx, struct('result_paths', paths, 'dpi', dpi, 'format', fmt));
         run_dir = ctx.run_dir;
         fig_dir = fullfile(run_dir, 'figures');
@@ -72,144 +62,308 @@ function [result, run_dir] = make_paper_figures(options)
     end
 
     exported = {};
+    panel_status = struct();
 
-    %% Fig 2: empirical convergence phase diagram
-    S = load(paths.esp_phase);
-    f = figure('Color', 'w', 'Visible', 'off');
-    if isfield(S, 'classification_numeric')
-        Z = S.classification_numeric';
-        imagesc(S.chaos_vals, S.adapt_vals, Z'); hold on;
-        set(gca, 'YDir', 'normal');
-        colormap(gca, [0.85 0.4 0.4; 0.85 0.85 0.5; 0.4 0.7 0.9]);
-        caxis([-1 1]);
-        cb = colorbar;
-        cb.Ticks = [-1 0 1];
-        cb.TickLabels = {'not contracting', 'inconclusive', 'contracting (empirical)'};
+    %% Figure 1 — Model and validation controls
+    [f1, st1] = fig1_validation_controls(paths);
+    export_fig_local(f1, fig_dir, 'fig1_validation_controls', fmt, dpi);
+    close(f1);
+    exported{end+1} = 'fig1_validation_controls'; %#ok<AGROW>
+    panel_status.fig1 = st1;
+
+    %% Figure 2 — Empirical convergence and local dynamics
+    [f2, st2] = fig2_convergence_dynamics(paths);
+    export_fig_local(f2, fig_dir, 'fig2_empirical_convergence', fmt, dpi);
+    close(f2);
+    exported{end+1} = 'fig2_empirical_convergence'; %#ok<AGROW>
+    panel_status.fig2 = st2;
+
+    %% Figure 3 — Paired temporal capacity ablations
+    [f3, st3] = fig3_paired_capacity(paths);
+    export_fig_local(f3, fig_dir, 'fig3_paired_capacity', fmt, dpi);
+    close(f3);
+    exported{end+1} = 'fig3_paired_capacity'; %#ok<AGROW>
+    panel_status.fig3 = st3;
+
+    %% Figure 4 — Learning benchmarks
+    [f4, st4] = fig4_learning_benchmarks(paths);
+    export_fig_local(f4, fig_dir, 'fig4_learning_benchmarks', fmt, dpi);
+    close(f4);
+    exported{end+1} = 'fig4_learning_benchmarks'; %#ok<AGROW>
+    panel_status.fig4 = st4;
+
+    %% Optional Figure 5 — Mean-field regime sweep
+    if isfield(paths, 'meanfield') && ~isempty(paths.meanfield)
+        [f5, st5] = fig5_meanfield_regime(paths);
+        export_fig_local(f5, fig_dir, 'fig5_meanfield_regime_sweep', fmt, dpi);
+        close(f5);
+        exported{end+1} = 'fig5_meanfield_regime_sweep'; %#ok<AGROW>
+        panel_status.fig5 = st5;
     else
-        imagesc(S.chaos_vals, S.adapt_vals, double(S.ESP')); hold on;
-        set(gca, 'YDir', 'normal');
-        colormap(gca, [0.85 0.4 0.4; 0.4 0.7 0.9]);
-        cb = colorbar; cb.Ticks = [0.25 0.75];
-        cb.TickLabels = {'not contracting', 'contracting (empirical)'};
+        panel_status.fig5 = 'skipped_no_path';
     end
-    if isfield(S, 'BND') && ~(isfield(S, 'use_delay') && S.use_delay)
-        contour(S.chaos_vals, S.adapt_vals, S.BND', [1 1], 'k-', 'LineWidth', 2);
+
+    incomplete = any(structfun(@(s) contains(string(s), 'incomplete') || ...
+        contains(string(s), 'unsupported'), panel_status));
+    if incomplete
+        result.status = 'incomplete_awaiting_g7';
     end
-    xlabel('level\_of\_chaos'); ylabel('adaptation scale (\times baseline)');
-    title({'Fig 2: empirical state convergence', ...
-        'black contour: quasi-static fast-gain diagnostic (not ESP theorem)'});
-    export_fig_local(f, fig_dir, 'fig2_esp_phase', fmt, dpi);
-    close(f);
-    exported{end+1} = 'fig2_esp_phase'; %#ok<AGROW>
-
-    %% Figs 3-4: parameter grid
-    S = load(paths.parameter_grid);
-    r = S.results;
-    LLE = arrayfun(@(s) s.LLE, r(:));
-    MC = arrayfun(@(s) s.MC_total, r(:));
-    kreiss = arrayfun(@(s) safe_nn(s.specW, 'kreiss_lb'), r(:));
-    dep = arrayfun(@(s) safe_nn(s.specW, 'departure_F_norm'), r(:));
-    esp = arrayfun(@(s) double(strcmp(s.esp_classification, ...
-        'empirically_contracting_on_test_set')) - ...
-        double(strcmp(s.esp_classification, 'not_contracting_on_test_set')), r(:));
-
-    f = figure('Color', 'w', 'Visible', 'off');
-    scatter(kreiss, LLE, 30, esp, 'filled'); yline(0, 'r--');
-    xlabel('Kreiss constant (lower bound) of J_{eff}'); ylabel('largest Lyapunov exponent');
-    colorbar; title('Fig 3: LLE vs non-normality (color = empirical convergence)'); grid on;
-    export_fig_local(f, fig_dir, 'fig3_lle_nonnormality', fmt, dpi);
-    close(f);
-    exported{end+1} = 'fig3_lle_nonnormality'; %#ok<AGROW>
-
-    f = figure('Color', 'w', 'Visible', 'off');
-    scatter(dep, MC, 30, LLE, 'filled');
-    xlabel('departure from normality (normalised)'); ylabel('total memory capacity');
-    cb = colorbar; ylabel(cb, 'LLE');
-    title('Fig 4: memory vs non-normality'); grid on;
-    export_fig_local(f, fig_dir, 'fig4_memory_nonnormality', fmt, dpi);
-    close(f);
-    exported{end+1} = 'fig4_memory_nonnormality'; %#ok<AGROW>
-
-    %% Fig 5: timescale spectrum + held-out warp generalization + response lag
-    S = load(paths.timescale_invariance);
-    f = figure('Color', 'w', 'Visible', 'off');
-    subplot(1,3,1); hold on;
-    for ii = 1:numel(S.n_a_list)
-        plot(S.specA(ii).MC_lags, S.specA(ii).MC_spectrum, 'LineWidth', 1.3, ...
-            'DisplayName', sprintf('n_a=%d', S.n_a_list(ii)));
-    end
-    xlabel('lag k'); ylabel('MC_k'); legend('show'); grid on;
-    title('memory spectrum');
-    subplot(1,3,2); hold on;
-    if isfield(S, 'warp') && isfield(S.warp, 'test_warps')
-        plot(S.warp.test_warps, S.warp.nrmse_by_warp, 'bs-', 'LineWidth', 1.5, ...
-            'DisplayName', 'MESN');
-        if isfield(S.warp, 'results')
-            plot(S.warp.test_warps, [S.warp.results.nrmse_persistence], 'k--', ...
-                'DisplayName', 'persistence');
-            plot(S.warp.test_warps, [S.warp.results.nrmse_linear_history], 'g-.', ...
-                'DisplayName', 'lin-hist');
-            if isfield(S.warp.results, 'nrmse_esn') && any(isfinite([S.warp.results.nrmse_esn]))
-                plot(S.warp.test_warps, [S.warp.results.nrmse_esn], 'm:', ...
-                    'DisplayName', 'ESN');
-            end
-        end
-        xlabel('held-out warp factor'); ylabel('NRMSE'); legend('show'); grid on;
-        title('held-out time-warp generalization');
-    else
-        plot(S.se.shifts, S.se.nrmse_per_shift, 'ko-', 'LineWidth', 1.5);
-        xlabel('shift'); ylabel('equivariance NRMSE'); grid on;
-        title('temporal invariance');
-    end
-    subplot(1,3,3); hold on;
-    if isfield(S.pa_on, 'correlation_by_lag')
-        y_on = mean(abs(S.pa_on.correlation_by_lag), 1);
-        y_off = mean(abs(S.pa_off.correlation_by_lag), 1);
-    else
-        y_on = S.pa_on.xcorr_mean;
-        y_off = S.pa_off.xcorr_mean;
-    end
-    plot(S.pa_on.lags, y_on, 'r', 'LineWidth', 1.5, 'DisplayName', 'adapt ON');
-    plot(S.pa_off.lags, y_off, 'k', 'LineWidth', 1.5, 'DisplayName', 'adapt OFF');
-    xline(0, 'k--'); xlabel('lag (<0 = feature lags)'); ylabel('mean |xcorr|');
-    legend('show'); grid on; title('response lag');
-    sgtitle('Fig 5: multi-timescale representation and held-out warp generalization');
-    export_fig_local(f, fig_dir, 'fig5_timescale_invariance', fmt, dpi);
-    close(f);
-    exported{end+1} = 'fig5_timescale_invariance'; %#ok<AGROW>
-
-    %% Fig 6: dynamical regime sweep
-    S = load(paths.meanfield);
-    f = figure('Color', 'w', 'Visible', 'off');
-    subplot(1,2,1); hold on;
-    plot(S.ca_vals, S.Emin, 'b.-'); plot(S.ca_vals, S.Emax, 'r.-');
-    xlabel('adaptation strength c_a'); ylabel('E(t) range'); grid on;
-    legend('min E', 'max E'); title('regime sweep vs adaptation');
-    subplot(1,2,2);
-    imagesc(S.delay_grid, S.ca_grid, S.REGIME); set(gca, 'YDir', 'normal');
-    colormap(gca, [0.4 0.7 0.9; 0.85 0.4 0.4]);
-    cb = colorbar; cb.Ticks = [0.25 0.75]; cb.TickLabels = {'fixed point', 'oscillation'};
-    xlabel('\tau_{delay}'); ylabel('c_a'); title('regime map (time integration)');
-    sgtitle('Fig 6: reduced mean-field dynamical regime sweep');
-    export_fig_local(f, fig_dir, 'fig6_meanfield_regime_sweep', fmt, dpi);
-    close(f);
-    exported{end+1} = 'fig6_meanfield_regime_sweep'; %#ok<AGROW>
-
-    %% Fig 7: benchmarks
-    S = load(paths.benchmarks);
-    f = figure('Color', 'w', 'Visible', 'off');
-    bar([S.nrmse_on, S.nrmse_off]);
-    set(gca, 'XTickLabel', S.bench_names);
-    ylabel('test NRMSE'); legend({'adaptation ON', 'adaptation OFF'});
-    title('Fig 7: benchmark performance (ridge readout only)'); grid on;
-    export_fig_local(f, fig_dir, 'fig7_benchmarks', fmt, dpi);
-    close(f);
-    exported{end+1} = 'fig7_benchmarks'; %#ok<AGROW>
 
     result.exported = exported;
+    result.panel_status = panel_status;
     result.fig_dir = fig_dir;
     result.run_dir = run_dir;
-    fprintf('Paper figures written to %s\n', fig_dir);
+    fprintf('Validated paper figures written to %s (status=%s)\n', ...
+        fig_dir, result.status);
+end
+
+function paths = resolve_validated_figure_paths(options, allow_legacy)
+    if isfield(options, 'manifest_path') && ~isempty(options.manifest_path)
+        S = load(options.manifest_path);
+        if isfield(S, 'result_paths')
+            paths = S.result_paths;
+        elseif isfield(S, 'paths')
+            paths = S.paths;
+        else
+            error('make_paper_figures:AmbiguousManifest', ...
+                'Manifest must contain result_paths.');
+        end
+    elseif isfield(options, 'result_paths')
+        paths = options.result_paths;
+    else
+        error('make_paper_figures:MissingPaths', ...
+            'Require options.result_paths or options.manifest_path (no latest-file lookup).');
+    end
+
+    % Prefer new validated keys; legacy only if explicitly allowed
+    has_new = isfield(paths, 'ablation_aggregate') || isfield(paths, 'ablation_run_dir');
+    has_legacy = isfield(paths, 'esp_phase');
+    if ~has_new && has_legacy && ~allow_legacy
+        error('make_paper_figures:LegacyPathsBlocked', ...
+            ['Legacy esp_phase/parameter_grid paths are not publication inputs. ', ...
+             'Pass ablation_aggregate/ablation_run_dir from results/revalidated, ', ...
+             'or set allow_legacy_paths=true for diagnostic-only plots.']);
+    end
+
+    if isfield(paths, 'ablation_aggregate') && ~isempty(paths.ablation_aggregate)
+        paths.ablation_aggregate = require_explicit_result_path( ...
+            paths.ablation_aggregate, 'ablation_aggregate');
+    end
+    if isfield(paths, 'ablation_run_dir') && ~isempty(paths.ablation_run_dir)
+        if ~isfolder(paths.ablation_run_dir)
+            error('make_paper_figures:MissingRunDir', ...
+                'ablation_run_dir not found: %s', paths.ablation_run_dir);
+        end
+    end
+    if isfield(paths, 'validation_controls') && ~isempty(paths.validation_controls)
+        paths.validation_controls = require_explicit_result_path( ...
+            paths.validation_controls, 'validation_controls');
+    end
+    if isfield(paths, 'meanfield') && ~isempty(paths.meanfield)
+        paths.meanfield = require_explicit_result_path(paths.meanfield, 'meanfield');
+    end
+end
+
+function [f, status] = fig1_validation_controls(paths)
+    f = figure('Color', 'w', 'Visible', 'off', 'Position', [100 100 1000 700]);
+    status = 'incomplete_awaiting_packaged_controls';
+    if isfield(paths, 'validation_controls') && ~isempty(paths.validation_controls)
+        S = load(paths.validation_controls);
+        status = 'ok';
+        % Expected optional fields: dale_counts, jac_errors, isolation_pass, lle_controls
+        subplot(2,2,1);
+        if isfield(S, 'dale_sign_counts')
+            bar(S.dale_sign_counts); title('Dale sign counts');
+        else
+            text(0.1, 0.5, 'Dale counts: supply validation_controls.mat');
+            axis off;
+        end
+        subplot(2,2,2);
+        if isfield(S, 'jacobian_fd_errors')
+            histogram(S.jacobian_fd_errors); title('Jacobian FD errors');
+        else
+            text(0.1, 0.5, 'Jacobian FD: supply validation_controls.mat');
+            axis off;
+        end
+        subplot(2,2,3);
+        if isfield(S, 'input_isolation_pass')
+            bar(double(S.input_isolation_pass)); title('Input isolation');
+        else
+            text(0.1, 0.5, 'Input isolation: supply validation_controls.mat');
+            axis off;
+        end
+        subplot(2,2,4);
+        if isfield(S, 'lle_controls')
+            plot(S.lle_controls.true_exponents, S.lle_controls.estimated, 'ko');
+            hold on; plot([-1 1], [-1 1], 'r--');
+            title('ODE LLE controls'); xlabel('true'); ylabel('estimated');
+        else
+            text(0.1, 0.5, 'LLE controls: supply validation_controls.mat');
+            axis off;
+        end
+    else
+        for k = 1:4
+            subplot(2,2,k);
+            text(0.05, 0.5, sprintf(['Fig1 panel %d incomplete:\n', ...
+                'pass result_paths.validation_controls'], k), 'FontSize', 9);
+            axis off;
+        end
+    end
+    sgtitle({'Fig 1: Model and validation controls', ...
+        'Requires explicit validated control artifacts (no simulations here)'});
+end
+
+function [f, status] = fig2_convergence_dynamics(paths)
+    f = figure('Color', 'w', 'Visible', 'off', 'Position', [100 100 1000 700]);
+    agg = try_load_aggregate(paths);
+    if isempty(agg)
+        status = 'incomplete_awaiting_g7';
+        for k = 1:4
+            subplot(2,2,k);
+            text(0.05, 0.5, 'Incomplete: need ablation_aggregate from G7', 'FontSize', 9);
+            axis off;
+        end
+        sgtitle('Fig 2: Empirical convergence and local dynamics (incomplete)');
+        return;
+    end
+    status = 'ok_from_aggregate';
+    rows = agg.raw_rows;
+    ode = rows(strcmp({rows.mode}, 'ODE'));
+    dde = rows(strcmp({rows.mode}, 'DDE'));
+
+    subplot(2,2,1);
+    plot_seed_points([ode.esp_median_slope], 'ODE empirical slope');
+    subtitle_mode('ODE', numel(unique([ode.seed])), agg.run_dir);
+
+    subplot(2,2,2);
+    plot_seed_points([dde.esp_median_slope], 'DDE empirical slope (history IC)');
+    subtitle_mode('DDE', numel(unique([dde.seed])), agg.run_dir);
+
+    subplot(2,2,3);
+    text(0.05, 0.6, {'ODE LLE: attach only from ODE Lyapunov controls', ...
+        'Never plot finite-dimensional DDE LLE'}, 'FontSize', 10);
+    axis off; title('ODE LLE (separate evidence)');
+
+    subplot(2,2,4);
+    text(0.05, 0.6, {'quasi-static J_eff diagnostic is ODE-only', ...
+        'Not an ESP theorem; see J_eff_notes.md'}, 'FontSize', 10);
+    axis off; title('J_{eff} scope reminder');
+
+    sgtitle('Fig 2: Empirical convergence and local dynamics');
+end
+
+function [f, status] = fig3_paired_capacity(paths)
+    f = figure('Color', 'w', 'Visible', 'off', 'Position', [100 100 1100 700]);
+    agg = try_load_aggregate(paths);
+    if isempty(agg) || ~isfield(agg, 'paired') || isempty(agg.paired)
+        status = 'incomplete_awaiting_g7';
+        text(0.1, 0.5, ['Fig 3 incomplete: require aggregate_paired.mat from ', ...
+            '>=30-seed T103 run (G7). Pilot data are not for publication.']);
+        axis off;
+        title('Fig 3: Paired temporal capacity ablations');
+        return;
+    end
+    status = 'ok';
+    P = agg.paired;
+    n = numel(P);
+    med = arrayfun(@(p) p.MC.median, P);
+    lo = arrayfun(@(p) p.MC.ci95_bootstrap_median(1), P);
+    hi = arrayfun(@(p) p.MC.ci95_bootstrap_median(2), P);
+    subplot(1,2,1); hold on;
+    errorbar(1:n, med, med-lo, hi-med, 'o', 'LineWidth', 1.2);
+    yline(0, 'k--');
+    set(gca, 'XTick', 1:n, 'XTickLabel', {P.cell_key}, 'XTickLabelRotation', 45);
+    ylabel('\Delta MC vs control (seed median, 95% bootstrap CI)');
+    title('Paired MC effect sizes');
+    subtitle_mode('mixed', numel(agg.seeds), agg.run_dir);
+    subplot(1,2,2); hold on;
+    for i = 1:min(n, 6)
+        swarmchart(i*ones(size(P(i).delta_MC)), P(i).delta_MC, 12, 'filled');
+    end
+    yline(0, 'k--');
+    ylabel('per-seed \Delta MC'); title('Seed-level paired differences');
+    sgtitle({'Fig 3: Paired temporal capacity ablations', ...
+        sprintf('resampling unit=seed; n_seeds=%d; manifest=%s', ...
+        numel(agg.seeds), agg.run_dir)});
+end
+
+function [f, status] = fig4_learning_benchmarks(paths)
+    f = figure('Color', 'w', 'Visible', 'off', 'Position', [100 100 1100 700]);
+    agg = try_load_aggregate(paths);
+    if isempty(agg)
+        status = 'incomplete_awaiting_g7';
+        text(0.1, 0.5, 'Fig 4 incomplete: need G7 ablation aggregate with baselines.');
+        axis off; title('Fig 4: Learning benchmarks');
+        return;
+    end
+    status = 'ok';
+    rows = agg.raw_rows;
+    keys = unique({rows.cell_key}, 'stable');
+    subplot(1,2,1); hold on;
+    for i = 1:numel(keys)
+        m = rows(strcmp({rows.cell_key}, keys{i}));
+        swarmchart(i*ones(size(m)), [m.narma_test_nrmse], 10, 'filled');
+    end
+    set(gca, 'XTick', 1:numel(keys), 'XTickLabel', keys, 'XTickLabelRotation', 45);
+    ylabel('NARMA test NRMSE'); title('Seed distributions');
+    subplot(1,2,2); hold on;
+    for i = 1:numel(keys)
+        m = rows(strcmp({rows.cell_key}, keys{i}));
+        swarmchart(i*ones(size(m)), [m.mg_test_nrmse], 10, 'filled');
+    end
+    set(gca, 'XTick', 1:numel(keys), 'XTickLabel', keys, 'XTickLabelRotation', 45);
+    ylabel('MG one-step test NRMSE'); title('Teacher-forced (ODE/DDE)');
+    sgtitle({'Fig 4: Learning benchmarks', ...
+        'ODE autonomous horizons must be plotted separately when present; DDE autonomous unsupported'});
+end
+
+function [f, status] = fig5_meanfield_regime(paths)
+    f = figure('Color', 'w', 'Visible', 'off');
+    S = load(paths.meanfield);
+    status = 'ok_regime_sweep_not_bifurcation';
+    if isfield(S, 'REGIME')
+        imagesc(S.delay_grid, S.ca_grid, S.REGIME);
+        set(gca, 'YDir', 'normal');
+        xlabel('\tau_{delay}'); ylabel('c_a');
+        title('Dynamical regime sweep (not a bifurcation diagram)');
+        colorbar;
+    else
+        text(0.1, 0.5, 'meanfield file missing REGIME map');
+        axis off;
+        status = 'incomplete';
+    end
+    sgtitle('Fig 5 (optional): mean-field regime sweep');
+end
+
+function agg = try_load_aggregate(paths)
+    agg = [];
+    if isfield(paths, 'ablation_aggregate') && ~isempty(paths.ablation_aggregate)
+        S = load(paths.ablation_aggregate);
+        if isfield(S, 'aggregate')
+            agg = S.aggregate;
+        end
+        return;
+    end
+    if isfield(paths, 'ablation_run_dir') && ~isempty(paths.ablation_run_dir)
+        p = fullfile(paths.ablation_run_dir, 'aggregate_paired.mat');
+        if exist(p, 'file')
+            S = load(p);
+            if isfield(S, 'aggregate')
+                agg = S.aggregate;
+            end
+        end
+    end
+end
+
+function plot_seed_points(vals, ttl)
+    vals = vals(:);
+    swarmchart(ones(size(vals)), vals, 12, 'filled');
+    ylabel(ttl); grid on;
+end
+
+function subtitle_mode(mode, n_seeds, manifest_id)
+    title(sprintf('%s | n_{seeds}=%d | %s', mode, n_seeds, manifest_id), ...
+        'Interpreter', 'none', 'FontSize', 8);
 end
 
 function export_fig_local(f, dir_out, name, fmt, dpi)
@@ -225,15 +379,6 @@ function export_fig_local(f, dir_out, name, fmt, dpi)
         print(f, tmp, ['-d' fmt], sprintf('-r%d', dpi));
     end
     movefile(tmp, fname);
-end
-
-function v = safe_nn(specW, field)
-    if isstruct(specW) && isfield(specW, 'nonnormality') && ...
-            isfield(specW.nonnormality, field)
-        v = specW.nonnormality.(field);
-    else
-        v = NaN;
-    end
 end
 
 function v = local_get(s, f, d)
