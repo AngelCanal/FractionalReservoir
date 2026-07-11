@@ -69,15 +69,33 @@ function lya_results = compute_lyapunov_exponents(Lya_method, S_out, t_out, dt, 
             fprintf('Computing largest Lyapunov exponent using Benettin''s algorithm...\n');
             d0 = 1e-3;
             tic
-            [LLE, local_lya, finite_lya, t_lya] = benettin_algorithm(S_out, t_out, dt, fs, d0, T_interval, lya_dt, params, opts, rhs_func, t_ex, u_ex, ode_solver);
+            idx0 = find(t_out >= T_interval(1) - 10*eps(T_interval(1)), 1, 'first');
+            if isempty(idx0)
+                error('compute_lyapunov_exponents:StartNotInTrajectory', ...
+                    'No sample at or after T_interval(1)');
+            end
+            ben_opts = struct( ...
+                'odefun', rhs_func, ...
+                'x0', S_out(idx0, :).', ...
+                'T_interval', [t_out(idx0), T_interval(2)], ...
+                'lya_dt', lya_dt, ...
+                'd0', d0, ...
+                'seed', 1, ...
+                'ode_solver', ode_solver, ...
+                'ode_options', opts, ...
+                'params', params);
+            ben = benettin_lle_ode(ben_opts);
             toc
+            LLE = ben.LLE;
             fprintf('Largest Lyapunov Exponent: %.4f\n', LLE);
             lya_results.LLE = LLE;
-            lya_results.local_lya = local_lya;
-            lya_results.finite_lya = finite_lya;
-            lya_results.t_lya = t_lya;
+            lya_results.local_lya = ben.local_lya;
+            lya_results.finite_lya = ben.finite_lya;
+            lya_results.t_lya = ben.t_lya;
+            lya_results.segment_durations = ben.segment_durations;
             lya_results.lya_dt = lya_dt;
             lya_results.lya_fs = lya_fs;
+            lya_results.status = ben.status;
             
         case 'qr'
             fprintf('Computing full Lyapunov spectrum using QR decomposition method...\n');
