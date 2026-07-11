@@ -81,7 +81,26 @@ end
 
 function repo_root = find_repo_root()
     this_file = mfilename('fullpath');
-    repo_root = fileparts(fileparts(this_file));
+    % create_run_context lives in src/repro/ — climb to repository root.
+    cand = fileparts(fileparts(fileparts(this_file)));
+    if isfolder(fullfile(cand, 'src')) && isfolder(fullfile(cand, 'results'))
+        repo_root = cand;
+        return;
+    end
+    % Fallback: walk upward looking for .git / results
+    d = fileparts(this_file);
+    for k = 1:6
+        if isfolder(fullfile(d, '.git')) || ...
+                (isfolder(fullfile(d, 'src')) && isfolder(fullfile(d, 'results')))
+            repo_root = d;
+            return;
+        end
+        parent = fileparts(d);
+        if strcmp(parent, d); break; end
+        d = parent;
+    end
+    error('create_run_context:RepoRootNotFound', ...
+        'Could not locate repository root from %s', this_file);
 end
 
 function short_sha = git_short_sha(repo_root)

@@ -68,6 +68,11 @@ function bench = mackey_glass_benchmark(esn_or_params, options)
     if isfield(options, 'lambda_grid')
         train_opts.lambda_grid = options.lambda_grid;
     end
+    for fn = {'ode_reltol','ode_abstol','dde_reltol','dde_abstol','ode_solver'}
+        if isfield(options, fn{1})
+            train_opts.(fn{1}) = options.(fn{1});
+        end
+    end
 
     train_info = esn.trainReadout(u, y, train_opts);
     split = make_split_struct(train_info, washout_steps);

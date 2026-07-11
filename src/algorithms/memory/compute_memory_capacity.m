@@ -105,7 +105,11 @@ function mc = compute_memory_capacity(esn_or_params, options)
     lambda_per_lag = zeros(n_lag, 1);
     n_scored = zeros(n_lag, 1);
 
-    n_chance = 100;
+    n_chance = getFieldOrDefault(options, 'n_chance', 100);
+    if ~(isscalar(n_chance) && n_chance == floor(n_chance) && n_chance >= 1)
+        error('compute_memory_capacity:InvalidNChance', ...
+            'n_chance must be a positive integer.');
+    end
     % Deterministic circular shifts strictly larger than max_lag
     chance_shifts = max_lag + (1:n_chance);
 

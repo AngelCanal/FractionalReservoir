@@ -19,6 +19,10 @@ function setup_paths()
 
     addpath_once(scriptDir);
     addpath_once(srcPath);
+    expPath = fullfile(projectRoot, 'experiments', 'revalidated');
+    if isfolder(expPath)
+        addpath_once(expPath);
+    end
     % Also add recursive contents via genpath, but avoid re-adding if present
     addpath_genpath_once(scriptDir);
     addpath_genpath_once(srcPath);

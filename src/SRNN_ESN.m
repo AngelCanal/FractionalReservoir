@@ -77,6 +77,7 @@ classdef SRNN_ESN < handle
         % Canonical validated parameters and reproducible state seed
         params         % Full validated parameter struct
         state_rng_seed % Local RNG seed for resetState (default 42)
+        ode_solver     % Default ODE integrator (function handle); [] => ode23s
     end
     
     methods
@@ -148,6 +149,11 @@ classdef SRNN_ESN < handle
             obj.include_input = getFieldOrDefault(params, 'include_input', false);
             obj.lambda = getFieldOrDefault(params, 'lambda', 1e-6);
             obj.dt = getFieldOrDefault(params, 'dt', 1.0);
+            if isfield(params, 'ode_solver') && ~isempty(params.ode_solver)
+                obj.ode_solver = params.ode_solver;
+            else
+                obj.ode_solver = @ode23s;
+            end
             
             % Synaptic delay configuration (DDE mode)
             % E connections are instant, I connections are delayed
@@ -238,8 +244,15 @@ classdef SRNN_ESN < handle
 
             try
                 run_opts = struct('reset_before', true, 'update_internal_state', false, ...
-                    'ode_reltol', 1e-8, 'ode_abstol', 1e-10, ...
-                    'dde_reltol', 1e-7, 'dde_abstol', 1e-9);
+                    'ode_reltol', getFieldOrDefault(options, 'ode_reltol', 1e-8), ...
+                    'ode_abstol', getFieldOrDefault(options, 'ode_abstol', 1e-10), ...
+                    'dde_reltol', getFieldOrDefault(options, 'dde_reltol', 1e-7), ...
+                    'dde_abstol', getFieldOrDefault(options, 'dde_abstol', 1e-9));
+                if isfield(options, 'ode_solver')
+                    run_opts.ode_solver = options.ode_solver;
+                elseif ~isempty(obj.ode_solver)
+                    run_opts.ode_solver = obj.ode_solver;
+                end
                 [X_driven, ~] = obj.runReservoir(U(1:val_end, :), run_opts);
 
                 X_train = X_driven(washout_steps+1:n_train, :);
@@ -510,6 +523,20 @@ classdef SRNN_ESN < handle
             ode_abstol = getFieldOrDefault(options, 'ode_abstol', 1e-8);
             dde_reltol = getFieldOrDefault(options, 'dde_reltol', 1e-6);
             dde_abstol = getFieldOrDefault(options, 'dde_abstol', 1e-8);
+            if isfield(options, 'ode_solver') && ~isempty(options.ode_solver)
+                ode_solver = options.ode_solver;
+            elseif ~isempty(obj.ode_solver)
+                ode_solver = obj.ode_solver;
+            else
+                ode_solver = @ode23s;
+            end
+            if ischar(ode_solver) || (isstring(ode_solver) && isscalar(ode_solver))
+                ode_solver = str2func(char(ode_solver));
+            end
+            if ~isa(ode_solver, 'function_handle')
+                error('SRNN_ESN:InvalidODESolver', ...
+                    'options.ode_solver must be a function handle or name.');
+            end
 
             if isempty(U) || ndims(U) ~= 2 || any(~isfinite(U(:)))
                 error('SRNN_ESN:InvalidInput', 'U must be a finite nonempty 2-D array.');
@@ -547,7 +574,7 @@ classdef SRNN_ESN < handle
             if isempty(obj.lags)
                 odefun = @(t, S) SRNN_reservoir(t, S, u_fun, params);
                 options_ode = odeset('RelTol', ode_reltol, 'AbsTol', ode_abstol);
-                [~, S_history] = ode23s(odefun, t_span, S_start, options_ode);
+                [~, S_history] = ode_solver(odefun, t_span, S_start, options_ode);
                 mode = 'ODE';
                 reltol_used = ode_reltol;
                 abstol_used = ode_abstol;
