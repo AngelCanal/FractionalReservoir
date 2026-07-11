@@ -8,7 +8,7 @@ Pilot runs (`pilot_not_for_publication=true`) are **not** publication evidence.
 
 | claim | required evidence | result path | status | allowed wording |
 |---|---|---|---|---|
-| Can learn (readout pipeline) | Held-out synthetic temporal target NRMSE < 0.5 and ≥0.4 better than shuffled control across 3 seeds (G5) | `tests/scientific/test_esn_can_learn.m` (no results write) | **pending / in progress** until G5 CI green | “Corrected readout protocol can learn a temporal control task in synthetic tests” |
+| Can learn (readout pipeline) | Held-out synthetic temporal target NRMSE < 0.5 and ≥0.4 better than shuffled control across 3 seeds (G5) | `tests/scientific/test_esn_can_learn.m` (no results write); commit `d2e3824` | **supported** (gate G5) | “Corrected readout protocol can learn a temporal control task in synthetic tests” |
 | Improves memory (multi-timescale vs fair single-timescale) | Paired seed differences with 95% bootstrap CI and effect size; equal total `c_a_*` coupling; ≥30 seeds (G7) | `results/revalidated/<full_run>/aggregate_paired.mat` | **unsupported** until G7 complete | Only after G7: “Paired multi-timescale SFA changed held-out MC relative to single-timescale control (CI…)” |
 | Echo State Property | Full incremental-stability theorem for the equations used, **or** finite empirical convergence evidence | Empirical: ablation/ESP cells under `results/revalidated/`; theorem: none | **empirical only** | “Empirical state-convergence on the test set”; never “ESP proven” for DDE |
 | Edge of chaos | ODE Lyapunov / continuum diagnostics only | ODE LLE controls + ODE-only grids under revalidated paths | **ODE-only** | “ODE edge-of-chaos diagnostics”; DDE edge-of-chaos **unsupported** |

@@ -24,7 +24,7 @@ Recorded after implementing T100–T103 and T110–T111 on
 
 ## Stop / open conditions
 
-1. **G5** (`test_esn_can_learn.m`) may still be uncommitted/in progress — Phase 10 code/docs proceeded per instruction; learning claims remain pending in `CLAIM_EVIDENCE.md`.
+1. **G5** — `tests/scientific/test_esn_can_learn.m` committed (`d2e3824`); Gate G5 **passed** (3/3 seeds).
 2. **G7 incomplete** until the full ≥30-seed run finishes with all 36 cells and aggregate CIs. T103 supports 30 seeds via `run_mechanism_ablation_full` with `use_reduced_lengths=true` for compute feasibility; publication inference still requires declared full lengths or an explicit human decision that reduced lengths are only structural.
 3. Figure 1 needs a packaged `validation_controls.mat` path.
 4. Mechanism-superiority claims remain **unsupported** until G7.
