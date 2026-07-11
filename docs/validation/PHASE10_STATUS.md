@@ -24,13 +24,16 @@ Recorded after implementing T100–T103 and T110–T111 on
   - 1080 cell `.mat` files; `aggregate_paired.mat`; `full_summary.mat`
   - reduced lengths (structural / compute-feasible; not publication-length inference)
 - Figures: `results/revalidated/20260711_014502_paper_figures_validated_8026f16/`
+- Validation controls (Fig 1): `results/revalidated/20260711_140330_validation_controls_49c81c3/validation_controls.mat`
+  - Dale 20/20 zero-violation seeds; Jacobian FD all-pass; ODE+DDE isolation pass; LLE controls all-pass
+- Figures (with Fig 1): `results/revalidated/20260711_140358_paper_figures_validated_49c81c3/`
 
 ## Status notes
 
 1. **G5** — `tests/scientific/test_esn_can_learn.m` committed (`d2e3824`); Gate G5 **passed**.
 2. **G7** — full 30-seed reduced-length run **completed** (`g7=1`, exit 0, ~2.8 h wall time).
 3. Mechanism-superiority claims may cite paired CIs from `aggregate_paired.mat`, but must note **reduced sequence lengths** unless a full-length rerun is approved.
-4. Figure 1 still needs a packaged `validation_controls.mat` path for the validation-controls panel.
+4. **Fig 1** — packaged via `scripts/package_validation_controls.m`; regenerate with explicit `result_paths.validation_controls`.
 
 ## Commands
 
@@ -43,5 +46,9 @@ cfg = mechanism_ablation_config('pilot');
     'frozen_operating_point', cal.frozen_operating_point, ...
     'use_reduced_lengths', true, ...
     'max_seeds', 30));
-make_paper_figures(struct('result_paths', struct('ablation_run_dir', full_dir)));
+[~, vc_mat] = package_validation_controls();
+make_paper_figures(struct('result_paths', struct( ...
+    'ablation_run_dir', full_dir, ...
+    'ablation_aggregate', fullfile(full_dir, 'aggregate_paired.mat'), ...
+    'validation_controls', vc_mat)));
 ```

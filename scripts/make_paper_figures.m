@@ -292,7 +292,7 @@ function [f, status] = fig3_paired_capacity(paths)
     ylabel('per-seed \Delta MC'); title('Seed-level paired differences');
     sgtitle({'Fig 3: Paired temporal capacity ablations', ...
         sprintf('resampling unit=seed; n_seeds=%d; manifest=%s', ...
-        numel(agg.seeds), agg.run_dir)});
+        numel(agg.seeds), agg.run_dir)}, 'Interpreter', 'none');
 end
 
 function [f, status] = fig4_learning_benchmarks(paths)
