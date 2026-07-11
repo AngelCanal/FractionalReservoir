@@ -263,6 +263,14 @@ function [f, status] = fig3_paired_capacity(paths)
         title('Fig 3: Paired temporal capacity ablations');
         return;
     end
+    if numel(agg.seeds) < 30
+        status = 'incomplete_awaiting_g7';
+        text(0.1, 0.5, sprintf(['Fig 3 incomplete for publication: n_seeds=%d < 30 (G7). ', ...
+            'Pilot/partial aggregates must not support mechanism claims.'], numel(agg.seeds)));
+        axis off;
+        title('Fig 3: Paired temporal capacity ablations');
+        return;
+    end
     status = 'ok';
     P = agg.paired;
     n = numel(P);
@@ -293,6 +301,13 @@ function [f, status] = fig4_learning_benchmarks(paths)
     if isempty(agg)
         status = 'incomplete_awaiting_g7';
         text(0.1, 0.5, 'Fig 4 incomplete: need G7 ablation aggregate with baselines.');
+        axis off; title('Fig 4: Learning benchmarks');
+        return;
+    end
+    if numel(agg.seeds) < 30
+        status = 'incomplete_awaiting_g7';
+        text(0.1, 0.5, sprintf(['Fig 4 incomplete for publication: n_seeds=%d < 30 (G7).'], ...
+            numel(agg.seeds)));
         axis off; title('Fig 4: Learning benchmarks');
         return;
     end
