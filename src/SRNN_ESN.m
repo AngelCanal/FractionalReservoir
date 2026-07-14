@@ -514,6 +514,15 @@ classdef SRNN_ESN < handle
         
         function [X_features, S_history, info] = runReservoir(obj, U, options)
             % runReservoir  Simulate reservoir dynamics over input sequence U.
+            %
+            % Initial-condition precedence (unambiguous; conflicts error):
+            %   1. options.history_fn (DDE only) — fresh solve from that history.
+            %   2. options.initial_state — ODE IC, or DDE constant history if no
+            %      history_fn. Requires reset_before=false.
+            %   3. Else if reset_before=true — use obj.S0 (constant history in DDE).
+            %   4. Else — ODE continuation from obj.S (DDE continuation unsupported).
+            %
+            % Object state obj.S is updated only when update_internal_state=true.
             if nargin < 3 || isempty(options)
                 options = struct();
             end
@@ -523,6 +532,8 @@ classdef SRNN_ESN < handle
             ode_abstol = getFieldOrDefault(options, 'ode_abstol', 1e-8);
             dde_reltol = getFieldOrDefault(options, 'dde_reltol', 1e-6);
             dde_abstol = getFieldOrDefault(options, 'dde_abstol', 1e-8);
+            has_initial = isfield(options, 'initial_state') && ~isempty(options.initial_state);
+            has_history = isfield(options, 'history_fn') && ~isempty(options.history_fn);
             if isfield(options, 'ode_solver') && ~isempty(options.ode_solver)
                 ode_solver = options.ode_solver;
             elseif ~isempty(obj.ode_solver)
@@ -546,13 +557,48 @@ classdef SRNN_ESN < handle
                     'U must have %d input columns.', obj.n_inputs);
             end
 
+            if has_history && isempty(obj.lags)
+                error('SRNN_ESN:HistoryRequiresDDE', ...
+                    'options.history_fn is valid only in DDE mode (nonempty lags).');
+            end
+            if has_history && has_initial
+                error('SRNN_ESN:ConflictingInitialHistory', ...
+                    ['Supply either options.initial_state (ODE IC / DDE constant ', ...
+                     'history) or options.history_fn (DDE), not both.']);
+            end
+            if has_initial && reset_before
+                error('SRNN_ESN:ConflictingInitialState', ...
+                    ['Cannot combine options.initial_state with reset_before=true. ', ...
+                     'Set reset_before=false when providing an explicit initial state.']);
+            end
+            if has_history && reset_before
+                error('SRNN_ESN:ConflictingHistoryReset', ...
+                    ['Cannot combine options.history_fn with reset_before=true. ', ...
+                     'Set reset_before=false when providing an explicit history.']);
+            end
+            if ~isempty(obj.lags) && update_internal_state && ~(has_initial || has_history || reset_before)
+                error('SRNN_ESN:DDEContinuationUnsupported', ...
+                    'DDE continuation between separate runReservoir calls is unsupported.');
+            end
+
             n_timesteps = size(U, 1);
-            S_start = obj.S;
-            if reset_before
+            history_fn = [];
+            if has_history
+                history_fn = options.history_fn;
+                if ~isa(history_fn, 'function_handle')
+                    error('SRNN_ESN:InvalidHistoryFn', ...
+                        'options.history_fn must be a function handle t |-> packed state.');
+                end
+                S_start = validate_packed_state_vector(obj, history_fn(0));
+            elseif has_initial
+                S_start = validate_packed_state_vector(obj, options.initial_state);
+            elseif reset_before
                 S_start = obj.S0;
             elseif ~isempty(obj.lags)
                 error('SRNN_ESN:DDEContinuationUnsupported', ...
                     'DDE continuation between separate runReservoir calls is unsupported.');
+            else
+                S_start = obj.S;
             end
 
             if n_timesteps == 1
@@ -578,12 +624,21 @@ classdef SRNN_ESN < handle
                 mode = 'ODE';
                 reltol_used = ode_reltol;
                 abstol_used = ode_abstol;
+                history_mode = 'ode_initial_state';
             else
                 params.lags = obj.lags;
                 params.W_components = obj.W_components;
                 options_dde = ddeset('RelTol', dde_reltol, 'AbsTol', dde_abstol);
+                if isempty(history_fn)
+                    dde_history = S_start;  % constant history
+                    history_mode = 'dde_constant_history';
+                else
+                    lag_max = max(obj.lags(:));
+                    dde_history = @(t) validate_history_sample(obj, history_fn, t, lag_max);
+                    history_mode = 'dde_explicit_history_fn';
+                end
                 sol = dde23(@(t, y, Z) SRNN_reservoir_DDE(t, y, Z, u_fun, params), ...
-                    obj.lags, S_start, [t_span(1), t_span(end)], options_dde);
+                    obj.lags, dde_history, [t_span(1), t_span(end)], options_dde);
                 S_history = deval(sol, t_grid)';
                 mode = 'DDE';
                 reltol_used = dde_reltol;
@@ -605,11 +660,14 @@ classdef SRNN_ESN < handle
             info.mode = mode;
             info.reltol = reltol_used;
             info.abstol = abstol_used;
-            info.S_start = S_start;
+            info.S_start = S_start(:);
             info.S_end = S_end;
             info.t = t_grid;
             info.reset_before = reset_before;
             info.update_internal_state = update_internal_state;
+            info.used_explicit_initial_state = has_initial;
+            info.used_explicit_history_fn = has_history;
+            info.history_mode = history_mode;
         end
         
         function X = extractFeatures(obj, S_history, U)
@@ -672,5 +730,33 @@ function value = getFieldOrDefault(s, field, default_value)
     else
         value = default_value;
     end
+end
+
+function S = validate_packed_state_vector(obj, S_in)
+    layout = state_layout(obj.params);
+    S = S_in(:);
+    if numel(S) ~= layout.n_total
+        error('MESN:InvalidStateLength', ...
+            'State length %d does not match expected %d.', numel(S), layout.n_total);
+    end
+    if any(~isfinite(S))
+        error('MESN:InvalidStateShape', 'State vector contains non-finite values.');
+    end
+    resource_idx = [layout.idx_b_E(:); layout.idx_b_I(:)];
+    if ~isempty(resource_idx)
+        b = S(resource_idx);
+        if any(b < -1e-7) || any(b > 1 + 1e-7)
+            error('MESN:InvalidResourceState', ...
+                'STD resource components of initial_state/history must lie in [0,1].');
+        end
+        S(resource_idx) = min(max(b, 0), 1);
+    end
+end
+
+function S = validate_history_sample(obj, history_fn, t, lag_max)
+    if t < -lag_max - 10*eps(lag_max) || t > 10*eps(lag_max)
+        % dde23 may query slightly outside; still require a packed finite vector
+    end
+    S = validate_packed_state_vector(obj, history_fn(t));
 end
 

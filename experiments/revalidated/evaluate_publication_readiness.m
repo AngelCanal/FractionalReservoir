@@ -259,16 +259,28 @@ function vals = primary_endpoint_values(r)
         mg = r.mackey_glass.test_nrmse;
     end
     conv = NaN;
+    inconcl = false;
     if isfield(r, 'empirical_convergence')
         ec = r.empirical_convergence;
-        if isfield(ec, 'median_slope')
+        if isfield(ec, 'classification') && strcmp(ec.classification, 'inconclusive')
+            inconcl = true;
+        end
+        if isfield(ec, 'median_pair_slope')
+            conv = ec.median_pair_slope;
+        elseif isfield(ec, 'median_slope')
             conv = ec.median_slope;
+        elseif isfield(ec, 'mean_pair_slope')
+            conv = ec.mean_pair_slope;
         elseif isfield(ec, 'mean_slope')
             conv = ec.mean_slope;
         end
     end
     wall = local_get(r, 'wall_time_seconds', NaN);
-    vals = [mc; narma; mg; conv; wall];
+    if inconcl
+        vals = [mc; narma; mg; wall];
+    else
+        vals = [mc; narma; mg; conv; wall];
+    end
 end
 
 function [ok, detail] = check_dale_zero(records)

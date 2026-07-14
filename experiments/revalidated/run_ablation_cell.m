@@ -122,7 +122,14 @@ function cell_result = run_ablation_cell(cell_spec, base_seed, cfg, options)
             'ic_seed', base_seed + 42, ...
             'verbose', false);
         esp = verify_echo_state_property(esn, U_esp, esp_opts);
-        cell_result.empirical_convergence = compact_esp(esp);
+        cell_result.empirical_convergence = compact_empirical_convergence(esp);
+        [conv_ok, conv_reason] = validate_empirical_convergence_endpoint( ...
+            cell_result.empirical_convergence);
+        if ~conv_ok
+            cell_result.status = 'failed_primary_endpoint';
+            cell_result.failure_status = conv_reason;
+            cell_result.error_id = 'run_ablation_cell:NonfiniteConvergence';
+        end
 
         %% Explicit unsupported metrics
         cell_result.unsupported.fisher_memory = cfg.unsupported_status.fisher_memory;
@@ -319,20 +326,6 @@ function s = compact_bench(b)
             s.autonomous_nrmse = extract_nested_nrmse(b.autonomous);
         end
     end
-end
-
-function s = compact_esp(esp)
-    s = struct();
-    s.classification = local_field(esp, 'classification', '');
-    s.median_slope = local_field(esp, 'median_slope', NaN);
-    s.mean_slope = local_field(esp, 'mean_slope', NaN);
-    if isfield(esp, 'slope_ci')
-        s.slope_ci = esp.slope_ci;
-    else
-        s.slope_ci = [NaN, NaN];
-    end
-    s.dde_constant_history_limitation = local_field(esp, ...
-        'dde_constant_history_limitation', false);
 end
 
 function v = extract_nrmse(b, split_name)
