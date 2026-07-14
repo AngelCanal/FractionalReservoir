@@ -4,12 +4,20 @@ function selection = select_ridge_lambda(X_train, Y_train, X_val, Y_val, lambda_
 %   selection = select_ridge_lambda(X_train,Y_train,X_val,Y_val)
 %   selection = select_ridge_lambda(X_train,Y_train,X_val,Y_val,lambda_grid)
 %
-% Never accepts test arrays. On exact score ties, chooses the larger lambda.
+% Never accepts test arrays. Rank-deficient designs that the SVD / minimum-
+% norm solver handles safely remain eligible; selection is by validation
+% score only among finite successful candidates.
+%
+% Deterministic tie-break (independent of publication results):
+%   1. Minimize finite validation score.
+%   2. Among scores within tie_tolerance (1e-12 absolute), choose larger lambda.
+% Lambda is the absolute ridge strength used by fit_ridge_readout (not /n).
 
     if nargin < 5 || isempty(lambda_grid)
         lambda_grid = [0, logspace(-12, 2, 15)];
     end
-    lambda_grid = lambda_grid(:)';
+    lambda_grid = lambda_grid(:);
+    tie_tolerance = 1e-12;
 
     if size(X_train, 1) ~= size(Y_train, 1) || size(X_val, 1) ~= size(Y_val, 1)
         error('select_ridge_lambda:RowMismatch', 'Feature/target rows must match.');
@@ -20,42 +28,87 @@ function selection = select_ridge_lambda(X_train, Y_train, X_val, Y_val, lambda_
 
     n_lambda = numel(lambda_grid);
     n_out = size(Y_train, 2);
-    table_rows = struct('lambda', {}, 'train_nrmse', {}, 'val_nrmse', {}, ...
-        'val_score', {}, 'fallback_used', {});
-
-    best_score = inf;
-    best_lambda = lambda_grid(1);
-    best_model = [];
+    table_rows = repmat(struct( ...
+        'lambda', NaN, ...
+        'train_nrmse', [], ...
+        'val_nrmse', [], ...
+        'val_score', NaN, ...
+        'fallback_used', [], ...
+        'fit_status', 'rejected', ...
+        'numerical_rank', NaN, ...
+        'conditioning_status', 'failed_nonfinite', ...
+        'coefficient_norm', NaN, ...
+        'finite_predictions', false, ...
+        'accepted', false), n_lambda, 1);
+    candidate_models = cell(n_lambda, 1);
 
     for i = 1:n_lambda
         lam = lambda_grid(i);
-        model = fit_ridge_readout(X_train, Y_train, lam);
-        Ytr = apply_ridge_readout(model, X_train);
-        Yva = apply_ridge_readout(model, X_val);
+        row = table_rows(i);
+        row.lambda = lam;
+        try
+            model = fit_ridge_readout(X_train, Y_train, lam);
+            Ytr = apply_ridge_readout(model, X_train);
+            Yva = apply_ridge_readout(model, X_val);
 
-        [train_nrmse, ~] = per_output_nrmse(Ytr, Y_train);
-        [val_nrmse, fallback_used] = per_output_nrmse(Yva, Y_val);
-        score = mean(val_nrmse);
+            finite_pred = all(isfinite(Ytr(:))) && all(isfinite(Yva(:)));
+            [train_nrmse, ~] = per_output_nrmse(Ytr, Y_train);
+            [val_nrmse, fallback_used] = per_output_nrmse(Yva, Y_val);
+            score = mean(val_nrmse);
 
-        table_rows(i).lambda = lam;
-        table_rows(i).train_nrmse = train_nrmse;
-        table_rows(i).val_nrmse = val_nrmse;
-        table_rows(i).val_score = score;
-        table_rows(i).fallback_used = fallback_used;
-
-        if score < best_score - 0 || (abs(score - best_score) < eps && lam > best_lambda)
-            best_score = score;
-            best_lambda = lam;
-            best_model = model;
+            row.train_nrmse = train_nrmse;
+            row.val_nrmse = val_nrmse;
+            row.val_score = score;
+            row.fallback_used = fallback_used;
+            row.fit_status = 'ok';
+            row.numerical_rank = model.numerical_rank;
+            row.conditioning_status = char(string(model.conditioning_status));
+            row.coefficient_norm = model.coefficient_norm;
+            row.finite_predictions = finite_pred;
+            row.accepted = finite_pred && all(isfinite(model.coefficients(:))) && ...
+                all(isfinite(model.intercept(:))) && isfinite(score);
+            table_rows(i) = row;
+            candidate_models{i} = model;
+        catch ME
+            id = ME.identifier;
+            if isempty(id)
+                id = 'fit_failed';
+            end
+            row.fit_status = id;
+            row.conditioning_status = 'failed_nonfinite';
+            row.finite_predictions = false;
+            row.accepted = false;
+            table_rows(i) = row;
         end
     end
+
+    accepted = [table_rows.accepted];
+    if ~any(accepted)
+        error('select_ridge_lambda:NoValidCandidate', ...
+            'No lambda candidate produced a finite valid fit and validation score.');
+    end
+
+    scores = nan(n_lambda, 1);
+    for i = 1:n_lambda
+        if table_rows(i).accepted
+            scores(i) = table_rows(i).val_score;
+        end
+    end
+    best_score = min(scores);
+    tied = accepted(:) & isfinite(scores) & (abs(scores - best_score) <= tie_tolerance);
+    tied_lambdas = lambda_grid(tied);
+    selected_lambda = max(tied_lambdas);
+    selected_idx = find(tied & (lambda_grid == selected_lambda), 1, 'last');
+    best_model = candidate_models{selected_idx};
 
     selection = struct();
     selection.lambda_grid = lambda_grid;
     selection.table = table_rows;
-    selection.selected_lambda = best_lambda;
+    selection.selected_lambda = selected_lambda;
     selection.selected_model = best_model;
     selection.selected_val_score = best_score;
+    selection.tie_tolerance = tie_tolerance;
+    selection.tied_candidate_lambdas = tied_lambdas(:);
     selection.n_outputs = n_out;
 end
 

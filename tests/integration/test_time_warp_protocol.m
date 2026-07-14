@@ -74,6 +74,28 @@ function testSeedCollisionCaught(testCase)
         'evaluate_time_warp_generalization:SeedCollision');
 end
 
+function testTimeWarpNoSingularMatrixWarnings(testCase)
+    % Phase 4A regression: promote singular-matrix warnings to errors.
+    warn_near = warning('error', 'MATLAB:nearlySingularMatrix');
+    warn_sing = warning('error', 'MATLAB:singularMatrix');
+    cleanup = onCleanup(@() restore_warn_states(warn_near, warn_sing)); %#ok<NASGU>
+
+    params = make_test_params(struct( ...
+        'n', 8, 'n_a_E', 1, 'n_a_I', 0, 'n_b_E', 0, 'n_b_I', 0, ...
+        'lags', [], 'level_of_chaos', 0.8, 'dt', 0.1));
+    opts = base_opts();
+    opts.test_warps = [1.0, 1.5];
+    esn = SRNN_ESN(params);
+    warp = evaluate_time_warp_generalization(esn, opts);
+    testCase.verifyTrue(isstruct(warp.readout_snapshot));
+    testCase.verifyTrue(isfinite(esn.readout_model.coefficient_norm));
+end
+
+function restore_warn_states(warn_near, warn_sing)
+    warning(warn_near);
+    warning(warn_sing);
+end
+
 function opts = base_opts()
     opts = struct( ...
         'T_base', 400, ...
