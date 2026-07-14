@@ -17,6 +17,8 @@ function cell_result = run_ablation_cell(cell_spec, base_seed, cfg, options)
     cell_result.cell_id = cell_spec.cell_id;
     cell_result.base_seed = base_seed;
     cell_result.mode = cell_spec.mode;
+    cell_result.protocol_tier = local_get(cfg, 'protocol_tier', '');
+    cell_result.protocol_fingerprint = local_get(cfg, 'protocol_fingerprint', '');
     cell_result.pilot_not_for_publication = logical(cfg.pilot_not_for_publication);
     cell_result.status = 'ok';
     cell_result.failure_status = '';
@@ -33,8 +35,9 @@ function cell_result = run_ablation_cell(cell_spec, base_seed, cfg, options)
         L = cfg.lengths;
         if isfield(L, 'ode_solver') && ~isempty(L.ode_solver)
             esn.ode_solver = L.ode_solver;
-        elseif cfg.pilot_not_for_publication
-            esn.ode_solver = @ode45;  % faster integrator for reduced pilot QA
+        elseif cfg.pilot_not_for_publication || ...
+                (isfield(cfg, 'protocol_tier') && any(strcmp(cfg.protocol_tier, {'smoke', 'pilot'})))
+            esn.ode_solver = @ode45;  % faster integrator for reduced smoke/pilot QA
         end
 
         solver_train_opts = struct();

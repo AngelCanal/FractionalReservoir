@@ -1,8 +1,8 @@
 function [result, run_dir] = run_mechanism_ablation_full(options)
-% run_mechanism_ablation_full  T103 paired mechanism ablation (>=30 seeds).
+% run_mechanism_ablation_full  Publication-intent paired mechanism ablation.
 %
-% Requires a frozen operating point from T102. Supports running a seed subset
-% when full 30-seed compute is prohibitive; documents completion status.
+% Requires a frozen operating point. Reduced lengths force protocol_tier='smoke'
+% and can never set publication_ready / publication_protocol_complete.
 
     if nargin < 1 || isempty(options)
         options = struct();
@@ -13,16 +13,18 @@ function [result, run_dir] = run_mechanism_ablation_full(options)
     this_dir = fileparts(mfilename('fullpath'));
     addpath(this_dir);
 
-    cfg = mechanism_ablation_config('full');
+    cfg = mechanism_ablation_config('publication');
+    assert(strcmp(cfg.protocol_tier, 'publication'));
     assert(~cfg.pilot_not_for_publication);
 
-    % Optional: use reduced pilot lengths while keeping the full seed list / G7 structure.
-    if local_get(options, 'use_reduced_lengths', false)
-        pilot_cfg = mechanism_ablation_config('pilot');
-        cfg.lengths = pilot_cfg.lengths;
-        cfg.base.n = pilot_cfg.base.n;
+    used_reduced_lengths = local_get(options, 'use_reduced_lengths', false);
+    if used_reduced_lengths
+        smoke_cfg = mechanism_ablation_config('smoke');
+        cfg.lengths = smoke_cfg.lengths;
+        cfg.base.n = smoke_cfg.base.n;
         cfg.secondary_enabled = false;
-        cfg.length_note = 'reduced_lengths_for_compute_feasibility_not_publication_inference';
+        cfg = force_smoke_protocol(cfg, ...
+            'reduced_lengths_for_compute_feasibility_not_publication_inference');
     end
 
     if ~isfield(options, 'frozen_operating_point') || isempty(options.frozen_operating_point)
@@ -30,35 +32,48 @@ function [result, run_dir] = run_mechanism_ablation_full(options)
             'Pass options.frozen_operating_point from T102 before full runs.');
     end
     cfg.frozen_operating_point = options.frozen_operating_point;
+    cfg.protocol_fingerprint = compute_protocol_fingerprint(cfg);
 
     verbose = local_get(options, 'verbose', true);
     save_results = local_get(options, 'save_results', true);
     max_seeds = local_get(options, 'max_seeds', numel(cfg.seeds));
     max_cells = local_get(options, 'max_cells', numel(cfg.cells));
     run_secondary = local_get(options, 'run_secondary', false); % default off for feasibility
+    if used_reduced_lengths
+        run_secondary = false;
+    end
     seeds = cfg.seeds(1:min(numel(cfg.seeds), max_seeds));
     cells = cfg.cells(1:min(numel(cfg.cells), max_cells));
 
     run_dir = '';
+    ctx = struct();
     if save_results
         ctx_opts = struct('master_seed', seeds(1));
         if isfield(options, 'run_id'); ctx_opts.run_id = options.run_id; end
         if isfield(options, 'revalidated_root_override')
             ctx_opts.revalidated_root_override = options.revalidated_root_override;
         end
-        ctx = create_run_context('mechanism_ablation_full', ctx_opts);
+        exp_name = 'mechanism_ablation_full';
+        if strcmp(cfg.protocol_tier, 'smoke')
+            exp_name = 'mechanism_ablation_smoke_via_full';
+        end
+        ctx = create_run_context(exp_name, ctx_opts);
         run_dir = ctx.run_dir;
         mkdir(fullfile(run_dir, 'cells'));
         save_run_manifest(ctx, cfg, struct( ...
             'stage', 'T103_full', ...
+            'protocol_tier', cfg.protocol_tier, ...
+            'protocol_fingerprint', cfg.protocol_fingerprint, ...
             'frozen_operating_point', cfg.frozen_operating_point, ...
             'n_seeds_requested', numel(cfg.full_seeds), ...
             'n_seeds_this_run', numel(seeds), ...
-            'n_cells', numel(cells)));
+            'n_cells', numel(cells), ...
+            'use_reduced_lengths', used_reduced_lengths));
         atomic_save_results(fullfile(run_dir, 'preregistered_config.mat'), struct('cfg', cfg));
     end
 
     cell_index = {};
+    cell_results = {};
     n_fail = 0;
     for iseed = 1:numel(seeds)
         seed = seeds(iseed);
@@ -72,6 +87,7 @@ function [result, run_dir] = run_mechanism_ablation_full(options)
             cr = run_ablation_cell(cell_spec, seed, cfg, struct( ...
                 'verbose', verbose, ...
                 'run_secondary', run_secondary));
+            cell_results{end+1} = cr; %#ok<AGROW>
             if ~strcmp(cr.status, 'ok')
                 n_fail = n_fail + 1;
             end
@@ -96,8 +112,23 @@ function [result, run_dir] = run_mechanism_ablation_full(options)
             'save', true));
     end
 
+    readiness = evaluate_publication_readiness(cfg, struct( ...
+        'cell_records', cell_results, ...
+        'has_manifest', save_results, ...
+        'has_commit_sha', save_results, ...
+        'has_artifact_hashes', false, ...
+        'run_dir', run_dir));
+
+    % Hard overrides for reduced/smoke masquerading as full.
+    if used_reduced_lengths || ~strcmp(cfg.protocol_tier, 'publication')
+        readiness.publication_protocol_complete = false;
+        readiness.publication_ready = false;
+    end
+
     result = struct();
     result.cfg = cfg;
+    result.protocol_tier = cfg.protocol_tier;
+    result.protocol_fingerprint = cfg.protocol_fingerprint;
     result.seeds = seeds;
     result.n_seeds_requested = numel(cfg.full_seeds);
     result.n_seeds_completed = numel(seeds);
@@ -107,20 +138,33 @@ function [result, run_dir] = run_mechanism_ablation_full(options)
     result.aggregate = aggregate;
     result.frozen_operating_point = cfg.frozen_operating_point;
     result.run_dir = run_dir;
-    result.g7_complete = (numel(seeds) >= 30) && (n_fail == 0) && ...
-        (numel(cells) == cfg.n_cells);
+    result.structurally_complete = readiness.structurally_complete;
+    result.publication_protocol_complete = readiness.publication_protocol_complete;
+    result.all_primary_endpoints_finite = readiness.all_primary_endpoints_finite;
+    result.all_qa_checks_pass = readiness.all_qa_checks_pass;
+    result.artifact_package_complete = readiness.artifact_package_complete;
+    result.publication_ready = readiness.publication_ready;
+    result.readiness = readiness;
     result.status = ternary(n_fail == 0, 'ok', 'failed_cells');
     result.completion_note = sprintf( ...
-        'Completed %d/%d preregistered seeds and %d/%d cells. G7=%d.', ...
+        ['Completed %d/%d preregistered seeds and %d/%d cells. ', ...
+         'protocol_tier=%s publication_ready=%d structurally_complete=%d.'], ...
         numel(seeds), numel(cfg.full_seeds), numel(cells), cfg.n_cells, ...
-        result.g7_complete);
+        cfg.protocol_tier, result.publication_ready, result.structurally_complete);
 
     if save_results
         atomic_save_results(fullfile(run_dir, 'full_summary.mat'), struct('result', result));
         save_run_manifest(ctx, cfg, struct( ...
             'stage', 'T103_full_complete', ...
             'status', result.status, ...
-            'g7_complete', result.g7_complete, ...
+            'protocol_tier', cfg.protocol_tier, ...
+            'protocol_fingerprint', cfg.protocol_fingerprint, ...
+            'structurally_complete', result.structurally_complete, ...
+            'publication_protocol_complete', result.publication_protocol_complete, ...
+            'all_primary_endpoints_finite', result.all_primary_endpoints_finite, ...
+            'all_qa_checks_pass', result.all_qa_checks_pass, ...
+            'artifact_package_complete', result.artifact_package_complete, ...
+            'publication_ready', result.publication_ready, ...
             'completion_note', result.completion_note, ...
             'n_failed', n_fail));
     end
