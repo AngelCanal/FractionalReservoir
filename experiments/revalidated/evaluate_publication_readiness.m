@@ -23,6 +23,7 @@ function report = evaluate_publication_readiness(cfg, options)
     if nargin < 2 || isempty(options)
         options = struct();
     end
+    options = collapse_options_struct(options);
 
     expected_cfg = local_get(options, 'expected_cfg', []);
     if isempty(expected_cfg)
@@ -113,6 +114,9 @@ function report = evaluate_publication_readiness(cfg, options)
     [dde_ok, dde_detail] = check_no_unsupported_dde_as_computed(cell_records);
     checks{end+1} = make_check('no_unsupported_dde_metric_as_computed', dde_ok, dde_detail);
 
+    [tl_ok, tl_detail] = check_temporal_learning_gate(options, cfg);
+    checks{end+1} = make_check('temporal_learning_gate_passed', tl_ok, tl_detail);
+
     has_manifest = logical(local_get(options, 'has_manifest', false));
     has_commit_sha = logical(local_get(options, 'has_commit_sha', false));
     has_artifact_hashes = logical(local_get(options, 'has_artifact_hashes', false));
@@ -141,7 +145,8 @@ function report = evaluate_publication_readiness(cfg, options)
     all_primary_endpoints_finite = check_named(check_arr, 'all_primary_endpoints_finite');
     all_qa_checks_pass = check_named(check_arr, 'dale_violations_zero') && ...
         check_named(check_arr, 'qa_resource_and_operating_bands') && ...
-        check_named(check_arr, 'no_unsupported_dde_metric_as_computed');
+        check_named(check_arr, 'no_unsupported_dde_metric_as_computed') && ...
+        check_named(check_arr, 'temporal_learning_gate_passed');
     artifact_package_complete = check_named(check_arr, 'manifest_present') && ...
         check_named(check_arr, 'commit_sha_present') && ...
         check_named(check_arr, 'artifact_hashes_present');
@@ -365,10 +370,109 @@ function [ok, detail] = check_no_unsupported_dde_as_computed(records)
     detail = sprintf('n_dde_lle_as_computed=%d', bad);
 end
 
-function v = local_get(s, name, default)
-    if isstruct(s) && isfield(s, name) && ~isempty(s.(name))
-        v = s.(name);
+function [ok, detail] = check_temporal_learning_gate(options, cfg)
+% Fail closed unless a complete temporal_learning_gate_v1 result is present
+% and passed. Legacy direct-input / instantaneous readout checks never satisfy
+% this condition.
+    g = local_get(options, 'temporal_learning_gate', []);
+    if isempty(g) || ~isstruct(g) || numel(g) ~= 1
+        ok = false;
+        detail = 'temporal_learning_gate_missing';
+        return;
+    end
+    expected_version = 'temporal_learning_gate_v1';
+    n_expected = NaN;
+    if isfield(cfg, 'temporal_learning_gate')
+        tg = cfg.temporal_learning_gate;
+        if isfield(tg, 'protocol_version')
+            expected_version = char(tg.protocol_version);
+        end
+        if isfield(tg, 'model_seeds')
+            n_expected = numel(tg.model_seeds);
+        end
+    end
+    reasons = {};
+    if ~strcmp(char(local_get(g, 'status', '')), 'complete')
+        reasons{end+1} = 'status_not_complete'; %#ok<AGROW>
+    end
+    if ~logical(local_get(g, 'passed', false))
+        reasons{end+1} = 'passed_false'; %#ok<AGROW>
+    end
+    if logical(local_get(g, 'include_input', true))
+        reasons{end+1} = 'include_input_not_false'; %#ok<AGROW>
+    end
+    if ~strcmp(char(local_get(g, 'protocol_version', '')), expected_version)
+        reasons{end+1} = 'protocol_version_mismatch'; %#ok<AGROW>
+    end
+    required_controls = { ...
+        'current_input_only_control', ...
+        'no_recurrent_coupling_control', ...
+        'shuffled_target_control', ...
+        'exact_history_control'};
+    if ~isfield(g, 'seed_results') || isempty(g.seed_results)
+        reasons{end+1} = 'seed_results_missing'; %#ok<AGROW>
     else
+        if isfinite(n_expected) && numel(g.seed_results) ~= n_expected
+            reasons{end+1} = 'seed_row_count_mismatch'; %#ok<AGROW>
+        end
+        for i = 1:numel(g.seed_results)
+            sr = g.seed_results(i);
+            for c = 1:numel(required_controls)
+                if ~isfield(sr, required_controls{c})
+                    reasons{end+1} = ['missing_' required_controls{c}]; %#ok<AGROW>
+                end
+            end
+            if isfield(sr, 'mesn') && isfield(sr.mesn, 'metrics')
+                m = sr.mesn.metrics;
+                if any(~isfinite([local_get(m, 'nrmse', NaN), local_get(m, 'r2', NaN)]))
+                    reasons{end+1} = 'nonfinite_mesn_metric'; %#ok<AGROW>
+                end
+            else
+                reasons{end+1} = 'mesn_metrics_missing'; %#ok<AGROW>
+            end
+        end
+    end
+    % Legacy direct-input pipeline must not be accepted as this gate.
+    if isfield(g, 'legacy_direct_input_check') && logical(g.legacy_direct_input_check)
+        reasons{end+1} = 'legacy_direct_input_check_cannot_satisfy_gate'; %#ok<AGROW>
+    end
+    if isfield(g, 'gate_name') && contains(lower(char(g.gate_name)), 'direct_input')
+        reasons{end+1} = 'direct_input_name_rejected'; %#ok<AGROW>
+    end
+    ok = isempty(reasons);
+    if ok
+        detail = 'temporal_learning_gate_ok';
+    else
+        detail = strjoin(unique(reasons, 'stable'), ',');
+    end
+end
+
+function options = collapse_options_struct(options)
+% Repair the common footgun struct('cell_records', records, 'flag', true)
+% which expands into a struct array when records is non-scalar.
+    if ~isstruct(options) || numel(options) <= 1
+        return;
+    end
+    collapsed = struct();
+    fn = fieldnames(options);
+    for i = 1:numel(fn)
+        name = fn{i};
+        if strcmp(name, 'cell_records')
+            collapsed.cell_records = [options.(name)];
+        else
+            collapsed.(name) = options(1).(name);
+        end
+    end
+    options = collapsed;
+end
+
+function v = local_get(s, name, default)
+    if ~isstruct(s) || numel(s) ~= 1 || ~isfield(s, name)
+        v = default;
+        return;
+    end
+    v = s.(name);
+    if isempty(v)
         v = default;
     end
 end

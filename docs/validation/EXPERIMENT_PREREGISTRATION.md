@@ -164,9 +164,66 @@ rank, and ODE autonomous horizon. Secondary family uses Holm–Bonferroni at
 
 | Gate | Requirement |
 |---|---|
-| G5 | Synthetic readout learning + shuffled-target control (prerequisite) |
+| Temporal learning gate (`temporal_learning_gate_v1`) | Reconstruct `y(t)=u(t-k)` from MESN features with `include_input=false`; beat current-input and no-recurrence controls; shuffled high NRMSE; exact-history near zero (see §9.1) |
+| Instantaneous readout pipeline check (legacy G5) | Ridge plumbing with direct input — **not** reservoir memory evidence; never satisfies publication readiness |
 | G6 | Three-seed pilot completes; structural assertions pass |
 | G7 | Full ≥30-seed paired table with provenance and CI from raw cells |
+
+### 9.1 Temporal learning gate (Phase 4B; implementation validity)
+
+**Why the old direct-input check is insufficient.** A readout of the form
+`y_hat = Wout * [features; u(t); 1]` can solve instantaneous or near-lag targets
+through `u(t)` even if reservoir states carry no useful memory. That check is
+reclassified as an instantaneous readout-pipeline test only.
+
+**Task.** i.i.d. uniform input on `[-1, 1]`; strictly delayed target
+`y(t)=u(t-k)` with fixed `k=10` (`target_lag_time = k * dt`). Raw input is
+**excluded** from the MESN readout (`feature_mode=r`, `include_input=false`).
+
+**Splits.** Independent train / validation / test realizations (distinct seeds,
+not slices of one sequence). Each split carries its own washout + lag prefix.
+Reservoir (and DDE history) reset to the same canonical IC before every split.
+
+**Reference MESN.** Confirmatory cell
+`adapt-three_timescales__std-on__delay-dde_on__feat-r`: multi-timescale
+excitatory SFA, frozen single-timescale inhibitory SFA, STD on, inhibitory
+delay on. Only the network seed varies across replicates. No tuning against
+gate scores.
+
+**Controls.**
+
+1. `current_input_only_control` — design `X=u(t)` (near chance for i.i.d. lag task).
+2. `no_recurrent_coupling_control` — fresh `SRNN_ESN` with `W=0` rebuilt
+   (preserves `W_in` and biological params; not “memoryless”).
+3. `shuffled_target_control` — destroy time alignment (near chance).
+4. `exact_history_control` — `X=[u(t),…,u(t-k)]` (noise-free sanity; MESN need
+   not beat it).
+
+**Metrics (test split).** RMSE; NRMSE = RMSE / `std(y,1)`; R²; optional Pearson.
+
+**Publication lengths / seeds.** washout 200; train 4000; val 1000; test 2000;
+five model seeds `[1729, 2718, 31415, 10007, 10009]`. Smoke/pilot may shorten
+lengths and use three seeds but keep the same target, controls, metrics, and
+thresholds and can never set `publication_ready=true`.
+
+**Fixed thresholds (not to be altered after seeing MESN results).**
+
+| Rule | Threshold |
+|---|---|
+| median MESN NRMSE | ≤ 0.90 |
+| median MESN R² | ≥ 0.15 |
+| median Δ NRMSE vs current-input | ≥ 0.10 |
+| fraction beating current-input | ≥ 0.80 (≥4/5) |
+| median Δ NRMSE vs no-recurrence | ≥ 0.02 |
+| fraction beating no-recurrence | ≥ 0.60 (≥3/5) |
+| shuffled median NRMSE | ≥ 0.95 |
+| exact-history median NRMSE | ≤ 1e-6 |
+
+Ridge fits use Phase 4A economy-SVD solvers with absolute λ (not λ/n) and
+deterministic larger-λ tie-break (`tie_tolerance=1e-12`).
+
+This gate is **not** a confirmatory paper endpoint. Matched NARMA / Mackey–Glass
+baselines remain Phase 4C.
 
 Do not generate manuscript figures from pilot data. Figures require explicit
 validated result paths (no “latest file” lookup).

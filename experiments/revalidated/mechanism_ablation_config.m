@@ -311,8 +311,100 @@ function cfg = mechanism_ablation_config(mode, analysis_set)
         'dde_autonomous', 'unsupported_not_computed', ...
         'fisher_memory', 'unsupported_not_computed');
 
+    %% Temporal learning gate (Phase 4B) — implementation validity, not a paper endpoint
+    cfg.temporal_learning_gate = build_temporal_learning_gate(cfg, mode_in);
+
     %% Deterministic protocol identity (after all frozen fields are set)
     cfg.protocol_fingerprint = compute_protocol_fingerprint(cfg);
+end
+
+function gate = build_temporal_learning_gate(cfg, mode_in)
+% Preregistered delayed-input reservoir learning gate (no include_input).
+    ref = find_reference_learning_cell(cfg.cells_by_analysis_set.confirmatory);
+    thr = struct( ...
+        'mesn_median_nrmse_max', 0.90, ...
+        'mesn_median_r2_min', 0.15, ...
+        'median_delta_vs_current_min', 0.10, ...
+        'fraction_beating_current_min', 0.80, ...
+        'median_delta_vs_no_recurrence_min', 0.02, ...
+        'fraction_beating_no_recurrence_min', 0.60, ...
+        'shuffled_median_nrmse_min', 0.95, ...
+        'exact_history_median_nrmse_max', 1e-6);
+
+    gate = struct();
+    gate.enabled = true;
+    gate.protocol_version = 'temporal_learning_gate_v1';
+    gate.role = 'implementation_validity_not_paper_endpoint';
+    gate.input_distribution = 'iid_uniform';
+    gate.input_min = -1;
+    gate.input_max = 1;
+    gate.target_definition = 'y(t)=u(t-k)';
+    gate.target_lag_steps = 10;
+    gate.dt = cfg.base.dt;
+    gate.target_lag_time = gate.target_lag_steps * gate.dt;
+    gate.feature_mode = 'r';
+    gate.include_input = false;
+    gate.feature_dimension = cfg.base.n;  % which_states=r, no raw input
+    gate.lambda_grid = [0, logspace(-12, 2, 15)];
+    gate.thresholds = thr;
+    gate.controls = { ...
+        'current_input_only_control', ...
+        'no_recurrent_coupling_control', ...
+        'shuffled_target_control', ...
+        'exact_history_control'};
+    gate.reference_cell_key = ref.cell_key;
+    gate.reference_cell = ref;
+    gate.reference_description = [ ...
+        'Publication reference MESN: multi-timescale excitatory SFA ', ...
+        '(three_timescales), frozen single-timescale inhibitory SFA, ', ...
+        'STD on, inhibitory delay on, feature_mode=r, include_input=false.'];
+
+    % Task / shuffle seeds independent of model seeds
+    gate.train_input_seed = 9001;
+    gate.validation_input_seed = 9002;
+    gate.test_input_seed = 9003;
+    gate.shuffle_train_seed = 9101;
+    gate.shuffle_validation_seed = 9102;
+    gate.shuffle_test_seed = 9103;
+
+    switch mode_in
+        case 'publication'
+            gate.model_seeds = [1729, 2718, 31415, 10007, 10009];
+            gate.washout_steps = 200;
+            gate.train_samples = 4000;
+            gate.validation_samples = 1000;
+            gate.test_samples = 2000;
+            gate.ode_reltol = 1e-6;
+            gate.ode_abstol = 1e-8;
+            gate.dde_reltol = 1e-6;
+            gate.dde_abstol = 1e-8;
+        case {'smoke', 'pilot'}
+            % Same target/controls/metrics/thresholds; reduced lengths/seeds.
+            gate.model_seeds = [1729, 2718, 31415];
+            gate.washout_steps = 40;
+            gate.train_samples = 250;
+            gate.validation_samples = 80;
+            gate.test_samples = 120;
+            gate.ode_reltol = 1e-4;
+            gate.ode_abstol = 1e-6;
+            gate.dde_reltol = 1e-4;
+            gate.dde_abstol = 1e-6;
+            gate.length_note = 'smoke_or_pilot_reduced_never_publication_evidence';
+        otherwise
+            error('mechanism_ablation_config:BadGateTier', 'Unknown protocol_tier.');
+    end
+end
+
+function cell_spec = find_reference_learning_cell(cells)
+    key = 'adapt-three_timescales__std-on__delay-dde_on__feat-r';
+    for i = 1:numel(cells)
+        if strcmp(cells{i}.cell_key, key)
+            cell_spec = cells{i};
+            return;
+        end
+    end
+    error('mechanism_ablation_config:MissingLearningGateCell', ...
+        'Reference cell %s not found in confirmatory set.', key);
 end
 
 function profiles = build_adaptation_profiles(c_total_E, c_total_I, tau_a_I, c_a_I)

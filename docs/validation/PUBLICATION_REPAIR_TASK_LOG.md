@@ -152,3 +152,46 @@ Time-warp protocol (same seeds/options as the warning regression):
 ### Remaining blockers
 
 Phase 4B+ (temporal learning gate, conventional ESN baseline, NARMA/MG redesign, aggregation, calibration).
+
+## Phase 4B checklist (before edits)
+
+- [x] Confirm branch/SHA `80ee2a9` clean
+- [x] Inspect legacy G5 `test_esn_can_learn.m` (include_input=true, input-dominated target)
+- [x] Reclassify legacy check; add temporal_learning_gate_v1 config + evaluator + controls
+- [x] Wire fingerprint + publication readiness fail-closed
+- [x] Unit + scientific integration tests; docs; commit; stop (no 4C)
+
+### Phase 4B inspection findings (legacy check)
+
+| Item | Finding |
+|---|---|
+| Function | `tests/scientific/test_esn_can_learn.m` → reclassified as `test_instantaneous_readout_pipeline_check.m` |
+| `include_input` | **true** |
+| Target | `Y = 0.85*U + 0.15*U(t-1)` (input-dominated; not `u(t-k)` alone) |
+| Split | `trainReadout` contiguous train/val/test ratios on one trajectory |
+| Seeds | three fixed seeds `[1729, 2718, 31415]`; global `rng(seed)` |
+| Result fields | none persisted; fprintf NRMSE only |
+| Readiness consumer | none previously; baseline/docs called it a “learning gate” incorrectly |
+| Tests declaring success | legacy G5 thresholds NRMSE<0.5 and gap≥0.4 |
+| Test-target leakage | shuffled control refits separately; held-out mutation of unused variables does not change model (trainReadout never sees test) |
+
+## Phase 4B after edits
+
+| Field | Value |
+|---|---|
+| Status | complete (implementation + tests); temporal gate **failed** fixed thresholds |
+| Starting SHA | `80ee2a9aab63809ae42cebbc70146456555bdd9c` |
+| Ending SHA | branch tip after Phase 4B commit |
+| Temporal task | `y(t)=u(t-k)`, i.i.d. uniform[-1,1], `k=10`, `include_input=false`, features=`r` |
+| Publication lengths | washout 200 / train 4000 / val 1000 / test 2000; 5 model seeds |
+| Smoke lengths | washout 40 / train 250 / val 80 / test 120; 3 model seeds |
+| Controls | current-input-only; no-recurrent-coupling (W=0 rebuild); shuffled-target; exact-history |
+| Ridge | Phase 4A SVD absolute-λ; diagnostics retained per fit |
+| Targeted tests | `test_temporal_learning_gate` 14/14; integration 2/2; pipeline 2/2; fingerprint 14/14 |
+| Full suite | 302/302 pass (~1389 s wall) |
+| Actual smoke gate | **failed** (no threshold change): median MESN NRMSE≈0.975 > 0.90; median R²≈0.04 < 0.15; median Δ vs current≈0.028 < 0.10; fraction beat current=3/3; Δ vs no-recurrence OK; shuffled & exact-history OK |
+| Publication gate | not executed in-suite (lengths reserved); same thresholds apply |
+
+### Remaining blockers
+
+Phase 4C+ (matched benchmarks / MG rollout, aggregation redesign, calibration, artifact export, figures). Scientific review of the failed temporal gate (implementation verified; MESN memory on this IID lag task is weak under preregistered thresholds).

@@ -1,9 +1,14 @@
-function tests = test_esn_can_learn
+function tests = test_instantaneous_readout_pipeline_check
+% Instantaneous / direct-input readout pipeline check (legacy G5).
+%
+% This validates that the ridge readout plumbing can fit an input-dominated
+% target when include_input=true. It is NOT a reservoir temporal-learning gate
+% and must never satisfy publication temporal_learning_gate readiness.
 tests = functiontests(localfunctions);
 end
 
-function testSyntheticLearningGateG5(testCase)
-    % Gate G5: real-target test NRMSE < 0.5 and at least 0.4 lower than shuffled.
+function testInstantaneousReadoutPipelineCheck(testCase)
+    % Legacy pipeline: real-target test NRMSE < 0.5 and >=0.4 better than shuffled.
     seeds = [1729, 2718, 31415];
     for s = 1:numel(seeds)
         [nrmse_real, nrmse_shuf] = run_one_seed(seeds(s));
@@ -15,6 +20,27 @@ function testSyntheticLearningGateG5(testCase)
             sprintf('seed %d gap=%.3f (real=%.3f shuf=%.3f)', ...
             seeds(s), nrmse_shuf - nrmse_real, nrmse_real, nrmse_shuf));
     end
+end
+
+function testCannotSatisfyTemporalLearningGate(testCase)
+    legacy = struct( ...
+        'status', 'complete', ...
+        'passed', true, ...
+        'include_input', true, ...
+        'protocol_version', 'legacy_direct_input_g5', ...
+        'legacy_direct_input_check', true, ...
+        'gate_name', 'direct_input_learning_check', ...
+        'seed_results', struct('mesn', struct('metrics', struct('nrmse', 0.1, 'r2', 0.9))));
+    cfg = mechanism_ablation_config('publication');
+    report = evaluate_publication_readiness(cfg, struct( ...
+        'temporal_learning_gate', legacy, ...
+        'has_manifest', true, ...
+        'has_commit_sha', true, ...
+        'has_artifact_hashes', true));
+    names = {report.checks.name};
+    idx = strcmp(names, 'temporal_learning_gate_passed');
+    testCase.verifyFalse(report.checks(idx).pass);
+    testCase.verifyFalse(report.publication_ready);
 end
 
 function [nrmse_real, nrmse_shuf] = run_one_seed(seed)
@@ -35,12 +61,11 @@ function [nrmse_real, nrmse_shuf] = run_one_seed(seed)
 
     esn = SRNN_ESN(params);
     esn.which_states = 'x';
-    esn.include_input = true;  % exposes lag-0 input in the feature horizon
+    esn.include_input = true;  % exposes lag-0 input — pipeline only, not memory gate
 
     T = 400;
     U = randn(T, 1);
-    % Linear mix of recent lags within demonstrated horizon (lag 0 via include_input,
-    % plus a small lag-1 component carried by leaky reservoir state).
+    % Linear mix of recent lags (lag 0 via include_input).
     Y = 0.85 * U + 0.15 * [0; U(1:end-1)];
 
     opts = struct('train_ratio', 0.5, 'val_ratio', 0.25, 'washout_steps', 20, ...
