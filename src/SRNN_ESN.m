@@ -445,11 +445,44 @@ classdef SRNN_ESN < handle
         end
 
         function resetState(obj)
+            % resetState  Initialize packed reservoir state from state_rng_seed.
+            %
+            % adaptation_initialization_mode (params):
+            %   'legacy_independent' — independent random a per filter (legacy)
+            %   'paired_weighted_match' — one base value per neuron, repeated
+            %       across adaptation filters so weighted sum c_a*a at t=0
+            %       matches the single-filter control (publication-safe)
             stream = RandStream('mt19937ar', 'Seed', obj.state_rng_seed);
 
             state = struct();
-            state.a_E = 0.1 * rand(stream, obj.n_E, obj.n_a_E);
-            state.a_I = 0.1 * rand(stream, obj.n_I, obj.n_a_I);
+            init_mode = 'legacy_independent';
+            if isfield(obj.params, 'adaptation_initialization_mode') && ...
+                    ~isempty(obj.params.adaptation_initialization_mode)
+                init_mode = char(obj.params.adaptation_initialization_mode);
+            end
+
+            switch init_mode
+                case 'legacy_independent'
+                    state.a_E = 0.1 * rand(stream, obj.n_E, obj.n_a_E);
+                    state.a_I = 0.1 * rand(stream, obj.n_I, obj.n_a_I);
+                case 'paired_weighted_match'
+                    if obj.n_a_E > 0
+                        a_base_E = 0.1 * rand(stream, obj.n_E, 1);
+                        state.a_E = repmat(a_base_E, 1, obj.n_a_E);
+                    else
+                        state.a_E = zeros(obj.n_E, 0);
+                    end
+                    if obj.n_a_I > 0
+                        a_base_I = 0.1 * rand(stream, obj.n_I, 1);
+                        state.a_I = repmat(a_base_I, 1, obj.n_a_I);
+                    else
+                        state.a_I = zeros(obj.n_I, 0);
+                    end
+                otherwise
+                    error('SRNN_ESN:InvalidAdaptationInitMode', ...
+                        ['adaptation_initialization_mode must be ', ...
+                         '''legacy_independent'' or ''paired_weighted_match''.']);
+            end
 
             if obj.n_b_E > 0
                 state.b_E = ones(obj.n_E * obj.n_b_E, 1);

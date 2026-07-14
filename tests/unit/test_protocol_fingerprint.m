@@ -100,7 +100,8 @@ function testThirtySmokeSeedsFailPublicationReadiness(testCase)
     testCase.verifyEqual(cfg.protocol_tier, 'smoke');
 
     records = synthetic_full_grid(cfg, struct('finite', true));
-    testCase.verifyEqual(numel(records), 30 * 36);
+    testCase.verifyEqual(numel(records), 30 * cfg.n_cells);
+    testCase.verifyEqual(cfg.n_cells, 24);
 
     report = evaluate_publication_readiness(cfg, struct( ...
         'cell_records', records, ...

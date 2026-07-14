@@ -20,13 +20,26 @@ function cell_result = run_ablation_cell(cell_spec, base_seed, cfg, options)
     cell_result.protocol_tier = local_get(cfg, 'protocol_tier', '');
     cell_result.protocol_fingerprint = local_get(cfg, 'protocol_fingerprint', '');
     cell_result.pilot_not_for_publication = logical(cfg.pilot_not_for_publication);
+    cell_result.analysis_set = local_field(cell_spec, 'analysis_set', ...
+        local_get(cfg, 'active_analysis_set', ''));
+    cell_result.analysis_role = local_field(cell_spec, 'analysis_role', '');
+    cell_result.adaptation_profile_label = local_field(cell_spec, ...
+        'adaptation_profile_label', local_field(cell_spec, 'adaptation', ''));
+    cell_result.feature_analysis_role = local_field(cell_spec, ...
+        'feature_analysis_role', '');
+    cell_result.raw_feature_dimension = local_field(cell_spec, ...
+        'raw_feature_dimension', NaN);
+    cell_result.projected_feature_dimension = local_field(cell_spec, ...
+        'projected_feature_dimension', NaN);
+    cell_result.dimension_matched = local_field(cell_spec, ...
+        'dimension_matched', false);
     cell_result.status = 'ok';
     cell_result.failure_status = '';
     cell_result.unsupported = struct();
 
     try
         [params, meta] = build_ablation_params(cell_spec, base_seed, cfg, param_overrides);
-        cell_result.params_summary = summarize_params(params, meta);
+        cell_result.params_summary = summarize_params(params, meta, cell_spec);
         cell_result.dale_violations_E = meta.sign_violations_E;
         cell_result.dale_violations_I = meta.sign_violations_I;
         cell_result.dale_violations = meta.sign_violations_E + meta.sign_violations_I;
@@ -360,7 +373,10 @@ function v = extract_nested_nrmse(m)
     if isfield(m, 'test_nrmse'); v = m.test_nrmse; return; end
 end
 
-function s = summarize_params(params, meta)
+function s = summarize_params(params, meta, cell_spec)
+    if nargin < 3
+        cell_spec = struct();
+    end
     s = struct();
     s.n = params.n;
     s.n_a_E = params.n_a_E;
@@ -371,10 +387,41 @@ function s = summarize_params(params, meta)
     s.which_states = params.which_states;
     s.input_scaling = meta.input_scaling;
     s.level_of_chaos = meta.level_of_chaos;
+    if isfield(params, 'tau_a_E'); s.tau_a_E = params.tau_a_E; end
+    if isfield(params, 'tau_a_I'); s.tau_a_I = params.tau_a_I; end
     if isfield(params, 'c_total_E'); s.c_total_E = params.c_total_E; end
     if isfield(params, 'c_total_I'); s.c_total_I = params.c_total_I; end
     if isfield(params, 'c_a_E'); s.c_a_E = params.c_a_E; end
     if isfield(params, 'c_a_I'); s.c_a_I = params.c_a_I; end
+    if isfield(params, 'input_mask_mode'); s.input_mask_mode = params.input_mask_mode; end
+    if isfield(params, 'input_driven_indices')
+        s.input_driven_indices = params.input_driven_indices;
+    end
+    if isfield(params, 'input_nnz_per_channel')
+        s.input_nnz_per_channel = params.input_nnz_per_channel;
+    end
+    if isfield(params, 'adaptation_initialization_mode')
+        s.adaptation_initialization_mode = params.adaptation_initialization_mode;
+    end
+    if isfield(params, 'adaptation_profile_label')
+        s.adaptation_profile_label = params.adaptation_profile_label;
+    elseif isfield(cell_spec, 'adaptation_profile_label')
+        s.adaptation_profile_label = cell_spec.adaptation_profile_label;
+    end
+    if isfield(params, 'analysis_set'); s.analysis_set = params.analysis_set; end
+    if isfield(params, 'analysis_role'); s.analysis_role = params.analysis_role; end
+    if isfield(params, 'feature_analysis_role')
+        s.feature_analysis_role = params.feature_analysis_role;
+    end
+    if isfield(params, 'raw_feature_dimension')
+        s.raw_feature_dimension = params.raw_feature_dimension;
+    end
+    if isfield(params, 'projected_feature_dimension')
+        s.projected_feature_dimension = params.projected_feature_dimension;
+    end
+    if isfield(params, 'dimension_matched')
+        s.dimension_matched = params.dimension_matched;
+    end
 end
 
 function v = local_get(s, name, default)

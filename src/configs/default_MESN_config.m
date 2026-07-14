@@ -14,6 +14,19 @@ function [params, meta] = default_MESN_config(overrides)
 %   4. nonstructural scalar overrides
 %   5. explicit tau_a_*, W, and W_in overrides
 %   6. validate_MESN_params
+%
+% Publication protocols must supply explicit tau_a_* (see mechanism_ablation_config).
+% The logspace defaults below remain for legacy/non-publication callers only.
+%
+% input_mask_mode:
+%   'bernoulli'   — legacy independent Bernoulli mask (backward compatible)
+%   'fixed_count' — exactly k=max(1,round((1-input_sparsity)*n)) driven neurons
+%                   per input channel (publication-safe)
+%
+% adaptation_initialization_mode:
+%   'legacy_independent'     — independent random a per filter (legacy)
+%   'paired_weighted_match'  — one base value/neuron, repeated across filters so
+%                              sum(c_k a_k) matches the single-filter control
 
     if nargin < 1 || isempty(overrides)
         overrides = struct();
@@ -34,6 +47,7 @@ function [params, meta] = default_MESN_config(overrides)
 
     cfg.weight_rng_seed = 42;
     cfg.input_rng_seed = 43;
+    cfg.state_rng_seed = 42;
 
     cfg.dt = 0.1;
     cfg.tau_d = 0.55;
@@ -50,6 +64,7 @@ function [params, meta] = default_MESN_config(overrides)
 
     cfg.input_scaling = 0.75;
     cfg.input_sparsity = 0.8;
+    cfg.input_mask_mode = 'bernoulli';  % legacy default; publication uses fixed_count
 
     cfg.level_of_chaos = 1.7;
     cfg.row_center_W = false;
@@ -59,12 +74,13 @@ function [params, meta] = default_MESN_config(overrides)
     cfg.which_states = 'x';
     cfg.include_input = false;
     cfg.lambda = 1e-6;
+    cfg.adaptation_initialization_mode = 'legacy_independent';
 
     % -------------------------
     % 2. Structural overrides
     % -------------------------
     structural_fields = {'n', 'fraction_E', 'n_a_E', 'n_a_I', 'n_b_E', 'n_b_I', ...
-        'n_inputs', 'weight_rng_seed', 'input_rng_seed'};
+        'n_inputs', 'weight_rng_seed', 'input_rng_seed', 'state_rng_seed'};
     cfg = apply_selected_overrides(cfg, overrides, structural_fields);
 
     % -------------------------
@@ -76,6 +92,7 @@ function [params, meta] = default_MESN_config(overrides)
     E_indices = 1:n_E;
     I_indices = (n_E+1):n;
 
+    % Legacy default only: publication profiles always override tau_a_* explicitly.
     if cfg.n_a_E == 0
         cfg.tau_a_E = zeros(1, 0);
     else
@@ -93,6 +110,7 @@ function [params, meta] = default_MESN_config(overrides)
     nonstructural_fields = {'dt', 'tau_d', 'c_E', 'c_I', 'c_a_E', 'c_a_I', ...
         'tau_b_E_rec', 'tau_b_E_rel', 'tau_b_I_rec', 'tau_b_I_rel', ...
         'lags', 'S_a', 'S_c', 'input_scaling', 'input_sparsity', ...
+        'input_mask_mode', 'adaptation_initialization_mode', ...
         'level_of_chaos', 'row_center_W', 'dale', 'W_scale_method', ...
         'which_states', 'include_input', 'lambda'};
     cfg = apply_selected_overrides(cfg, overrides, nonstructural_fields);
@@ -120,15 +138,21 @@ function [params, meta] = default_MESN_config(overrides)
         W = scale_recurrent_matrix(W0, cfg.level_of_chaos, cfg.W_scale_method);
     end
 
+    input_driven_indices = {};
+    input_nnz_per_channel = zeros(1, 0);
     if isfield(overrides, 'W_in')
         W_in = overrides.W_in;
+        input_driven_indices = cell(1, size(W_in, 2));
+        input_nnz_per_channel = zeros(1, size(W_in, 2));
+        for j = 1:size(W_in, 2)
+            input_driven_indices{j} = find(W_in(:, j) ~= 0);
+            input_nnz_per_channel(j) = numel(input_driven_indices{j});
+        end
     else
         input_stream = RandStream('mt19937ar', 'Seed', cfg.input_rng_seed);
         W_in = (2 * rand(input_stream, n, cfg.n_inputs) - 1) * cfg.input_scaling;
-        if cfg.input_sparsity > 0
-            mask = rand(input_stream, n, cfg.n_inputs) < (1 - cfg.input_sparsity);
-            W_in = W_in .* mask;
-        end
+        [W_in, input_driven_indices, input_nnz_per_channel] = apply_input_mask( ...
+            W_in, cfg.input_mask_mode, cfg.input_sparsity, input_stream);
     end
 
     % -------------------------
@@ -153,6 +177,10 @@ function [params, meta] = default_MESN_config(overrides)
 
     params.W = W;
     params.W_in = W_in;
+    params.input_mask_mode = cfg.input_mask_mode;
+    params.input_sparsity = cfg.input_sparsity;
+    params.input_driven_indices = input_driven_indices;
+    params.input_nnz_per_channel = input_nnz_per_channel;
 
     params.tau_d = cfg.tau_d;
     params.dt = cfg.dt;
@@ -189,6 +217,8 @@ function [params, meta] = default_MESN_config(overrides)
     params.which_states = cfg.which_states;
     params.include_input = cfg.include_input;
     params.lambda = cfg.lambda;
+    params.state_rng_seed = cfg.state_rng_seed;
+    params.adaptation_initialization_mode = cfg.adaptation_initialization_mode;
 
     % -------------------------
     % 6. Final validation
@@ -200,8 +230,51 @@ function [params, meta] = default_MESN_config(overrides)
     meta.W0 = W0;
     meta.sign_violations_E = sum(W(:, E_indices) < 0, 'all');
     meta.sign_violations_I = sum(W(:, I_indices) > 0, 'all');
+    meta.input_mask_mode = cfg.input_mask_mode;
+    meta.input_driven_indices = input_driven_indices;
+    meta.input_nnz_per_channel = input_nnz_per_channel;
+    meta.adaptation_initialization_mode = cfg.adaptation_initialization_mode;
     if cfg.dale && w_generated
         assert(meta.sign_violations_E == 0 && meta.sign_violations_I == 0);
+    end
+end
+
+function [W_in, driven_indices, nnz_per_channel] = apply_input_mask( ...
+        W_in, mode, input_sparsity, input_stream)
+    n = size(W_in, 1);
+    n_inputs = size(W_in, 2);
+    driven_indices = cell(1, n_inputs);
+    nnz_per_channel = zeros(1, n_inputs);
+    mode = char(mode);
+
+    switch mode
+        case 'bernoulli'
+            if input_sparsity > 0
+                mask = rand(input_stream, n, n_inputs) < (1 - input_sparsity);
+                W_in = W_in .* mask;
+            end
+            for j = 1:n_inputs
+                driven_indices{j} = find(W_in(:, j) ~= 0);
+                nnz_per_channel(j) = numel(driven_indices{j});
+            end
+        case 'fixed_count'
+            k = max(1, round((1 - input_sparsity) * n));
+            for j = 1:n_inputs
+                perm = randperm(input_stream, n);
+                idx = sort(perm(1:k));
+                mask = false(n, 1);
+                mask(idx) = true;
+                W_in(:, j) = W_in(:, j) .* mask;
+                driven_indices{j} = idx(:);
+                nnz_per_channel(j) = k;
+            end
+            if any(nnz_per_channel < 1)
+                error('default_MESN_config:EmptyInputMask', ...
+                    'fixed_count input mask produced a zero column in W_in.');
+            end
+        otherwise
+            error('default_MESN_config:InvalidInputMaskMode', ...
+                'input_mask_mode must be ''bernoulli'' or ''fixed_count'', got %s.', mode);
     end
 end
 
