@@ -97,9 +97,9 @@ function [result, run_dir] = run_mechanism_ablation_smoke(options)
     end
 
     % Final cfg is established (including any frozen operating point) — gate once.
-    gate_override = local_get(options, 'temporal_learning_gate_override', []);
+    persist_opts = build_temporal_gate_persist_opts(options, 'run_mechanism_ablation_smoke');
     [temporal_gate, ~, gate_manifest] = ...
-        evaluate_and_persist_temporal_learning_gate(cfg, run_dir, save_results, gate_override);
+        evaluate_and_persist_temporal_learning_gate(cfg, run_dir, save_results, persist_opts);
 
     readiness = evaluate_publication_readiness(cfg, struct( ...
         'cell_records', cell_results, ...
@@ -108,6 +108,12 @@ function [result, run_dir] = run_mechanism_ablation_smoke(options)
         'has_artifact_hashes', false, ...
         'run_dir', run_dir, ...
         'temporal_learning_gate', temporal_gate));
+
+    if isfield(temporal_gate, 'evaluation_provenance') && ...
+            strcmp(char(temporal_gate.evaluation_provenance.mode), 'injected_test_fixture')
+        readiness.publication_ready = false;
+        readiness.publication_protocol_complete = false;
+    end
 
     result = struct();
     result.protocol_tier = cfg.protocol_tier;
@@ -165,6 +171,24 @@ function out = merge_structs(a, b)
     fn = fieldnames(b);
     for i = 1:numel(fn)
         out.(fn{i}) = b.(fn{i});
+    end
+end
+
+function persist_opts = build_temporal_gate_persist_opts(options, runner_id)
+    persist_opts = struct();
+    gate_override = local_get(options, 'temporal_learning_gate_override', []);
+    allow_injected = logical(local_get(options, 'allow_injected_test_fixture', false));
+    if ~isempty(gate_override)
+        if ~allow_injected
+            error(sprintf('%s:TemporalGateOverrideForbidden', runner_id), ...
+                ['temporal_learning_gate_override requires ', ...
+                 'allow_injected_test_fixture=true.']);
+        end
+        persist_opts.gate_override = gate_override;
+        persist_opts.allow_injected_test_fixture = true;
+    elseif allow_injected
+        error(sprintf('%s:InjectedFixtureWithoutOverride', runner_id), ...
+            'allow_injected_test_fixture=true without temporal_learning_gate_override.');
     end
 end
 

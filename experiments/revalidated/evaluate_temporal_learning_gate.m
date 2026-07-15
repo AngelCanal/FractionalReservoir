@@ -16,6 +16,15 @@ function result = evaluate_temporal_learning_gate(cfg, options)
     if nargin < 2 || isempty(options)
         options = struct();
     end
+    if isfield(options, 'mutate_test_target')
+        error('evaluate_temporal_learning_gate:MutateTestTargetForbidden', ...
+            'mutate_test_target is not supported in production evaluation.');
+    end
+    if isfield(options, 'temporal_learning_gate_override') && ...
+            ~isempty(options.temporal_learning_gate_override)
+        error('evaluate_temporal_learning_gate:OverrideForbidden', ...
+            'temporal_learning_gate_override is not supported in production evaluation.');
+    end
     if ~isfield(cfg, 'temporal_learning_gate')
         error('evaluate_temporal_learning_gate:MissingConfig', ...
             'cfg.temporal_learning_gate is required.');
@@ -62,11 +71,6 @@ function result = evaluate_temporal_learning_gate(cfg, options)
         'dde_reltol', gate.dde_reltol, ...
         'dde_abstol', gate.dde_abstol);
 
-    mutate_test_target = [];
-    if isfield(options, 'mutate_test_target') && ~isempty(options.mutate_test_target)
-        mutate_test_target = options.mutate_test_target;
-    end
-
     seed_results = cell(n_seeds, 1);
     failure_reasons = {};
     all_finite = true;
@@ -77,7 +81,7 @@ function result = evaluate_temporal_learning_gate(cfg, options)
         seed = model_seeds(i);
         try
             [seed_results{i}, split_info] = evaluate_one_seed(cfg, gate, cell_spec, seed, ...
-                lambda_grid, run_opts, dt, target_lag_time, mutate_test_target);
+                lambda_grid, run_opts, dt, target_lag_time);
             if ~split_meta.recorded
                 split_meta = split_info;
                 split_meta.recorded = true;
@@ -176,140 +180,19 @@ function result = evaluate_temporal_learning_gate(cfg, options)
     result.seed_results = seed_results;
     result.aggregate_results = aggregate;
     result.gate_conditions = gate_conditions;
+    result.evaluation_provenance = struct( ...
+        'mode', 'executed', ...
+        'test_override_used', false, ...
+        'test_target_mutated', false);
 end
 
 function [seed, split_meta] = evaluate_one_seed(cfg, gate, cell_spec, model_seed, lambda_grid, ...
-        run_opts, dt, target_lag_time, mutate_test_target)
-    k = gate.target_lag_steps;
-    [params, ~] = build_ablation_params(cell_spec, model_seed, cfg);
-    params.include_input = false;
-    params.which_states = char(gate.feature_mode);
-
-    esn = SRNN_ESN(params);
-    if logical(esn.include_input)
-        error('evaluate_temporal_learning_gate:IncludeInputAssert', ...
-            'include_input must be false after construction.');
-    end
-
-    params_nr = params;
-    params_nr.W = zeros(size(params.W));
-    esn_nr = SRNN_ESN(params_nr);
-    if any(esn_nr.W(:) ~= 0)
-        error('evaluate_temporal_learning_gate:NonzeroRecurrence', ...
-            'no_recurrent_coupling_control W must be identically zero.');
-    end
-    if ~isempty(esn_nr.W_components)
-        for c = 1:numel(esn_nr.W_components)
-            if any(esn_nr.W_components{c}(:) ~= 0)
-                error('evaluate_temporal_learning_gate:NonzeroDelayedRecurrence', ...
-                    'Delayed recurrent components must rebuild to zero.');
-            end
-        end
-    end
-    if ~isequal(esn_nr.W_in, esn.W_in)
-        error('evaluate_temporal_learning_gate:WinMismatch', ...
-            'no_recurrent_coupling_control must preserve W_in.');
-    end
-
-    splits = generate_temporal_gate_splits(gate);
-    assert_split_independence(splits);
-    split_meta = capture_split_metadata(gate, splits);
-
-    [X_tr, Y_tr, n_tr] = run_split_features(esn, splits.train, k, run_opts, gate);
-    [X_va, Y_va, n_va] = run_split_features(esn, splits.validation, k, run_opts, gate);
-    [X_te, Y_te, n_te] = run_split_features(esn, splits.test, k, run_opts, gate);
-
-    feature_dim = size(X_tr, 2);
-    if feature_dim ~= gate.feature_dimension
-        error('evaluate_temporal_learning_gate:FeatureDimMismatch', ...
-            'Expected feature_dimension %d, got %d.', gate.feature_dimension, feature_dim);
-    end
-    if size(X_tr, 2) ~= params.n
-        error('evaluate_temporal_learning_gate:UnexpectedInputColumn', ...
-            'MESN design matrix must contain only reservoir features (n columns).');
-    end
-
-    % MESN fit (train/validation only; test target never enters selection)
-    mesn_sel = select_ridge_lambda(X_tr, Y_tr, X_va, Y_va, lambda_grid);
-    mesn_model = mesn_sel.selected_model;
-
-    % Current-input-only control
-    Xu_tr = splits.train.U_scored;
-    Xu_va = splits.validation.U_scored;
-    Xu_te = splits.test.U_scored;
-    cur_sel = select_ridge_lambda(Xu_tr, Y_tr, Xu_va, Y_va, lambda_grid);
-    if size(Xu_tr, 2) ~= 1
-        error('evaluate_temporal_learning_gate:CurrentControlDim', ...
-            'current_input_only_control must have exactly one feature column.');
-    end
-
-    % No-recurrent-coupling control
-    [Xnr_tr, ~, ~] = run_split_features(esn_nr, splits.train, k, run_opts, gate);
-    [Xnr_va, ~, ~] = run_split_features(esn_nr, splits.validation, k, run_opts, gate);
-    [Xnr_te, ~, ~] = run_split_features(esn_nr, splits.test, k, run_opts, gate);
-    nr_sel = select_ridge_lambda(Xnr_tr, Y_tr, Xnr_va, Y_va, lambda_grid);
-
-    % Shuffled-target negative control (shuffle train/val before fit)
-    Y_tr_s = permute_with_seed(Y_tr, gate.shuffle_train_seed);
-    Y_va_s = permute_with_seed(Y_va, gate.shuffle_validation_seed);
-    Y_te_s = permute_with_seed(Y_te, gate.shuffle_test_seed);
-    sh_sel = select_ridge_lambda(X_tr, Y_tr_s, X_va, Y_va_s, lambda_grid);
-
-    % Exact-lag history positive control
-    [Xh_tr, Xh_va, Xh_te] = history_design_matrices(splits, k);
-    if size(Xh_tr, 2) ~= k + 1
-        error('evaluate_temporal_learning_gate:HistoryWidth', ...
-            'Exact-lag history must have k+1 columns.');
-    end
-    % Column k+1 is u(t-k)
-    if max(abs(Xh_tr(:, end) - Y_tr)) > 1e-14
-        error('evaluate_temporal_learning_gate:HistoryLagColumn', ...
-            'Last history column must equal u(t-k).');
-    end
-    hist_sel = select_ridge_lambda(Xh_tr, Y_tr, Xh_va, Y_va, lambda_grid);
-
-    % Optional test-only mutation for isolation tests (after all fits).
-    if ~isempty(mutate_test_target)
-        Y_te = mutate_test_target(Y_te);
-        Y_te_s = permute_with_seed(Y_te, gate.shuffle_test_seed);
-    end
-
-    mesn_pred = apply_ridge_readout(mesn_model, X_te);
-    mesn_metrics = compute_gate_metrics(mesn_pred, Y_te);
-    cur_pred = apply_ridge_readout(cur_sel.selected_model, Xu_te);
-    cur_metrics = compute_gate_metrics(cur_pred, Y_te);
-    nr_pred = apply_ridge_readout(nr_sel.selected_model, Xnr_te);
-    nr_metrics = compute_gate_metrics(nr_pred, Y_te);
-    sh_pred = apply_ridge_readout(sh_sel.selected_model, X_te);
-    sh_metrics = compute_gate_metrics(sh_pred, Y_te_s);
-    hist_pred = apply_ridge_readout(hist_sel.selected_model, Xh_te);
-    hist_metrics = compute_gate_metrics(hist_pred, Y_te);
-
-    seed = empty_seed_result();
-    seed.model_seed = model_seed;
-    seed.status = 'ok';
-    seed.target_lag_steps = k;
-    seed.target_lag_time = target_lag_time;
-    seed.dt = dt;
-    seed.include_input = false;
-    seed.feature_mode = char(gate.feature_mode);
-    seed.feature_dimension = feature_dim;
-    seed.train_samples_used = n_tr;
-    seed.validation_samples_used = n_va;
-    seed.test_samples_used = n_te;
-    seed.mesn = pack_fit(mesn_sel, mesn_metrics, mesn_pred, lambda_grid);
-    seed.current_input_only_control = pack_fit(cur_sel, cur_metrics, cur_pred, lambda_grid);
-    seed.no_recurrent_coupling_control = pack_fit(nr_sel, nr_metrics, nr_pred, lambda_grid);
-    seed.shuffled_target_control = pack_fit(sh_sel, sh_metrics, sh_pred, lambda_grid);
-    seed.exact_history_control = pack_fit(hist_sel, hist_metrics, hist_pred, lambda_grid);
-    seed.delta_vs_current_nrmse = cur_metrics.nrmse - mesn_metrics.nrmse;
-    seed.delta_vs_no_recurrence_nrmse = nr_metrics.nrmse - mesn_metrics.nrmse;
-    seed.beats_current = seed.delta_vs_current_nrmse > 0;
-    seed.beats_no_recurrence = seed.delta_vs_no_recurrence_nrmse > 0;
-    seed.all_finite = all_metrics_finite(seed);
-    seed.W_in_hash = local_hash(esn.W_in);
-    seed.W_norm = norm(esn.W, 'fro');
-    seed.W_nr_norm = norm(esn_nr.W, 'fro');
+        run_opts, dt, target_lag_time)
+    %#ok<INUSD>
+    bundle = fit_temporal_learning_gate_seed(cfg, model_seed);
+    split_meta = bundle.split_meta;
+    seed = score_temporal_learning_gate_seed(bundle, ...
+        bundle.Y_te_protocol, bundle.Y_te_shuffled_protocol, dt, target_lag_time);
 end
 
 function [X, Y, n_used] = run_split_features(esn, split, k, run_opts, gate)

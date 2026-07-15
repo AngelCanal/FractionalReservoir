@@ -37,6 +37,8 @@ function [result, run_dir] = run_mechanism_ablation_full(options)
     cfg.frozen_operating_point = options.frozen_operating_point;
     cfg.protocol_fingerprint = compute_protocol_fingerprint(cfg);
 
+    reject_temporal_gate_override(options, 'run_mechanism_ablation_full');
+
     verbose = local_get(options, 'verbose', true);
     save_results = local_get(options, 'save_results', true);
     max_seeds = local_get(options, 'max_seeds', numel(cfg.seeds));
@@ -116,9 +118,8 @@ function [result, run_dir] = run_mechanism_ablation_full(options)
     end
 
     % Final cfg is established (including frozen OP / smoke rebuild) — gate once.
-    gate_override = local_get(options, 'temporal_learning_gate_override', []);
     [temporal_gate, ~, gate_manifest] = ...
-        evaluate_and_persist_temporal_learning_gate(cfg, run_dir, save_results, gate_override);
+        evaluate_and_persist_temporal_learning_gate(cfg, run_dir, save_results);
 
     readiness = evaluate_publication_readiness(cfg, struct( ...
         'cell_records', cell_results, ...
@@ -187,6 +188,18 @@ function out = merge_structs(a, b)
     fn = fieldnames(b);
     for i = 1:numel(fn)
         out.(fn{i}) = b.(fn{i});
+    end
+end
+
+function reject_temporal_gate_override(options, runner_id)
+    if isfield(options, 'temporal_learning_gate_override') && ...
+            ~isempty(options.temporal_learning_gate_override)
+        error(sprintf('%s:TemporalGateOverrideForbidden', runner_id), ...
+            'temporal_learning_gate_override is forbidden for publication runners.');
+    end
+    if logical(local_get(options, 'allow_injected_test_fixture', false))
+        error(sprintf('%s:InjectedFixtureForbidden', runner_id), ...
+            'allow_injected_test_fixture is forbidden for publication runners.');
     end
 end
 

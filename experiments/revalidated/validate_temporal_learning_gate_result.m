@@ -52,6 +52,27 @@ function [ok, report] = validate_temporal_learning_gate_result(gate_result, cfg)
     if ~strcmp(char(local_get(gate_result, 'status', '')), 'complete')
         reasons{end+1} = 'status_not_complete'; %#ok<AGROW>
     end
+
+    prov = local_get(gate_result, 'evaluation_provenance', struct());
+    tier = char(local_get(cfg, 'protocol_tier', ''));
+    if strcmp(tier, 'publication')
+        if ~strcmp(char(local_get(prov, 'mode', '')), 'executed')
+            reasons{end+1} = 'evaluation_provenance_mode_not_executed'; %#ok<AGROW>
+        end
+        if logical(local_get(prov, 'test_override_used', true))
+            reasons{end+1} = 'evaluation_provenance_test_override_used'; %#ok<AGROW>
+        end
+        if logical(local_get(prov, 'test_target_mutated', true))
+            reasons{end+1} = 'evaluation_provenance_test_target_mutated'; %#ok<AGROW>
+        end
+    elseif strcmp(char(local_get(prov, 'mode', '')), 'injected_test_fixture')
+        reasons{end+1} = 'evaluation_provenance_injected_test_fixture'; %#ok<AGROW>
+    elseif strcmp(char(local_get(prov, 'mode', '')), 'test_target_mutated')
+        reasons{end+1} = 'evaluation_provenance_test_target_mutated_mode'; %#ok<AGROW>
+    elseif logical(local_get(prov, 'test_target_mutated', false))
+        reasons{end+1} = 'evaluation_provenance_test_target_mutated'; %#ok<AGROW>
+    end
+
     if logical(local_get(gate_result, 'include_input', true))
         reasons{end+1} = 'include_input_not_false'; %#ok<AGROW>
     end
@@ -394,11 +415,17 @@ function agg = recompute_aggregate(seed_results, thresholds, n_requested)
         agg.fraction_beating_current = NaN;
         agg.fraction_beating_no_recurrence = NaN;
     else
-        agg.fraction_beating_current = mean(beat_cur(ok));
-        agg.fraction_beating_no_recurrence = mean(beat_nr(ok));
+        ok_mask = false(n_requested, 1);
+        n_ok_use = min(n_requested, numel(ok));
+        ok_mask(1:n_ok_use) = ok(1:n_ok_use);
+        agg.fraction_beating_current = mean(beat_cur(ok_mask));
+        agg.fraction_beating_no_recurrence = mean(beat_nr(ok_mask));
     end
-    agg.n_beating_current = nnz(beat_cur & ok(:));
-    agg.n_beating_no_recurrence = nnz(beat_nr & ok(:));
+    ok_mask = false(n_requested, 1);
+    n_ok_use = min(n_requested, numel(ok));
+    ok_mask(1:n_ok_use) = ok(1:n_ok_use);
+    agg.n_beating_current = nnz(beat_cur & ok_mask);
+    agg.n_beating_no_recurrence = nnz(beat_nr & ok_mask);
     agg.thresholds = thresholds;
 end
 
