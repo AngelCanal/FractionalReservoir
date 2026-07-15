@@ -175,6 +175,12 @@ function result = attach_readiness_fields(result, readiness)
     result.publication_protocol_complete = readiness.publication_protocol_complete;
     result.all_primary_endpoints_finite = readiness.all_primary_endpoints_finite;
     result.all_qa_checks_pass = readiness.all_qa_checks_pass;
+    if isfield(readiness, 'all_required_secondary_endpoints_complete')
+        result.all_required_secondary_endpoints_complete = ...
+            readiness.all_required_secondary_endpoints_complete;
+    else
+        result.all_required_secondary_endpoints_complete = false;
+    end
     result.artifact_package_complete = readiness.artifact_package_complete;
     result.publication_ready = readiness.publication_ready;
     result.readiness = readiness;

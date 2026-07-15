@@ -301,8 +301,62 @@ Dale-only reference keys:
 `pending_paired_aggregation` — not fabricated inside non-control cells.
 
 No benchmark-superiority claim yet. Smoke/pilot results are pipeline evidence
-only and never publication-ready. Autonomous rollout unchanged in 4C-A
-(deferred to Phase 4C-B).
+only and never publication-ready.
+
+### 9.3 Mackey–Glass autonomous ODE rollout (Phase 4C-B1)
+
+Protocol version: `mackey_glass_autonomous_rollout_v1` (`cfg.mg_autonomous_rollout`,
+fingerprinted). Role: **preregistered secondary endpoint**
+`autonomous_ode_horizon` (not a primary endpoint).
+
+**Task alignment.** Mackey–Glass one-step data satisfy `U(i)=x(i)`,
+`Y(i)=x(i+1)`. For forecast origin `i` (last observed input index) and horizon
+`H`:
+
+- forecast step `k` scores `Y(i+k-1)=x(i+k)`;
+- step 1 is the frozen one-step readout prediction at origin `i` (state after
+  processing `U(1:i)`), **not** a discarded feedback seed;
+- steps `2…H` feed prior predictions recursively into the ODE.
+
+**Context.** Full observed history through the origin
+(`context_policy=all_observed_inputs_through_forecast_origin`). Legacy
+`washout_steps` truncation of context is rejected.
+
+**Origins.** Deterministic evenly spaced held-out origins:
+
+`first_origin = test_idx(1)`,
+`last_origin = test_idx(end) - H + 1`,
+`round(linspace(first_origin, last_origin, n_forecast_origins))`.
+
+Publication: `H=100`, `n_forecast_origins=5`,
+`fixed_report_horizons=[1,5,10,25,50,100]`.
+Smoke/pilot: `H=20`, `n_forecast_origins=2`,
+`fixed_report_horizons=[1,5,10,20]` (pipeline evidence only).
+
+Insufficient allocation fails closed as
+`failed_required_autonomous_endpoint` (never silently skipped/shortened).
+
+**Normalization.** `sigma_ref = std(Y_fit, 1)` on train-after-washout ∪
+validation targets. Valid horizon at primary threshold `0.4`: first step where
+`|err|/sigma_ref > 0.4` gives `valid_horizon = k-1`; if none exceed, horizon
+`H` is right-censored. Thresholds `{0.2,0.8}` are exploratory only.
+
+**DDE.** Autonomous continuation is unsupported:
+`status=unsupported_not_computed` (never computed/failed/NaN-without-status).
+`SRNN_ESN.generateAutonomous` still throws `DDEAutonomousUnsupported`.
+
+**Selection invariant.** Autonomous metrics never select λ, readout, origins,
+horizons, or models. Enabling rollout must leave one-step metrics/selection
+unchanged within solver tolerance.
+
+**Publication readiness.** Gate `mg_autonomous_protocol_complete` requires every
+publication ODE cell to have a validated `computed` result and every DDE cell a
+validated `unsupported_not_computed` result. Exposed as
+`all_required_secondary_endpoints_complete` in `publication_ready`.
+
+Phase **4C-B2** will add matched autonomous persistence, linear-AR, and
+conventional ESN controls. Do not interpret ODE autonomous forecasts as proof of
+echo-state, stability, chaos reproduction, or mechanism superiority.
 
 Do not generate manuscript figures from pilot data. Figures require explicit
 validated result paths (no “latest file” lookup).

@@ -5,7 +5,11 @@ function bench = mackey_glass_benchmark(esn_or_params, options)
 % When options.shared_baseline_bundle is provided, task/split hashes are verified
 % against the seed-shared bundle. Standalone local baselines use
 % executed_cell_local provenance (not publication shared-bundle provenance).
-% Autonomous rollout repair remains Phase 4C-B.
+%
+% Autonomous ODE rollout uses options.mg_autonomous_rollout (or
+% options.cfg.mg_autonomous_rollout): full-history context, deterministic
+% held-out origins, corrected one-step-to-autonomous alignment. DDE models
+% emit unsupported_not_computed (never skipped/computed/NaN-without-status).
 
     if nargin < 2 || isempty(options)
         options = struct();
@@ -24,6 +28,7 @@ function bench = mackey_glass_benchmark(esn_or_params, options)
     do_rollout = getFieldOrDefault(options, 'do_rollout', true);
     rollout_steps = getFieldOrDefault(options, 'rollout_steps', 500);
     ar_lags = getFieldOrDefault(options, 'ar_lags', 10);
+    rollout_cfg = resolve_mg_rollout_cfg(options, do_rollout, rollout_steps);
 
     if isa(esn_or_params, 'SRNN_ESN')
         esn = esn_or_params;
@@ -79,9 +84,14 @@ function bench = mackey_glass_benchmark(esn_or_params, options)
     pred_opts = struct( ...
         'reset_before', true, ...
         'context_U', u(1:split.test_idx(1)-1, :));
+    for fn = {'ode_reltol','ode_abstol','dde_reltol','dde_abstol','ode_solver'}
+        if isfield(train_opts, fn{1})
+            pred_opts.(fn{1}) = train_opts.(fn{1});
+        end
+    end
     y_pred_test = esn.predict(u(split.test_idx, :), pred_opts);
-    y_pred_train = predict_segment(esn, u, split.train_idx, washout_steps);
-    y_pred_val = predict_segment(esn, u, split.val_idx, 0);
+    y_pred_train = predict_segment(esn, u, split.train_idx, washout_steps, train_opts);
+    y_pred_val = predict_segment(esn, u, split.val_idx, 0, train_opts);
 
     y_train = y(split.train_idx(washout_steps+1:end), :);
     y_val = y(split.val_idx, :);
@@ -166,6 +176,7 @@ function bench = mackey_glass_benchmark(esn_or_params, options)
         'feature_mode', feature_mode, ...
         'do_rollout', do_rollout, ...
         'rollout_steps', rollout_steps, ...
+        'mg_autonomous_rollout', rollout_cfg, ...
         'ar_lags', ar_lags, ...
         'resolved_lambda_grid', lambda_grid(:), ...
         'matched_baselines_protocol', bb.protocol_version, ...
@@ -204,39 +215,204 @@ function bench = mackey_glass_benchmark(esn_or_params, options)
         bench.baseline_failure_reasons = failure_reasons;
     end
 
-    teacher_forced_ok = isempty(esn.lags) ...
-        && esn.n_inputs == 1 ...
-        && esn.n_outputs == 1 ...
-        && isfinite(metrics_test.nrmse) ...
-        && isfinite(metrics_test.rmse);
-    if do_rollout && teacher_forced_ok
-        init_len = max(2*washout_steps, 200);
-        init_len = min(init_len, numel(split.test_idx) - 1);
-        if init_len < 2 || (init_len + rollout_steps) > numel(split.test_idx)
-            bench.rollout = struct( ...
-                'status', 'skipped', ...
-                'reason', 'Test segment too short for requested autonomous rollout.', ...
-                'prediction_mode', 'ode_autonomous');
-        else
-            u_test = u(split.test_idx);
-            y_test_full = y(split.test_idx);
-            init_data = u_test(1:init_len);
-            [y_roll, ~] = esn.generateAutonomous(init_data, rollout_steps);
-            y_true = y_test_full((init_len+1):(init_len+rollout_steps));
-            y_true = y_true(:);
-            bench.rollout = struct();
-            bench.rollout.status = 'computed';
-            bench.rollout.prediction_mode = 'ode_autonomous';
-            bench.rollout.init_len = init_len;
-            bench.rollout.y_roll = y_roll;
-            bench.rollout.y_true = y_true;
-            bench.rollout.metrics = compute_metrics(y_roll, y_true);
+    rollout_enabled = do_rollout;
+    if ~isempty(rollout_cfg) && isfield(rollout_cfg, 'enabled')
+        rollout_enabled = do_rollout && logical(rollout_cfg.enabled);
+    end
+    if rollout_enabled
+        bench.rollout = evaluate_mg_autonomous_rollout(esn, u, y, split, y_pred_test, ...
+            metrics_test, train_opts, rollout_cfg);
+        if strcmp(bench.rollout.status, 'failed_required_autonomous_endpoint') && ...
+                strcmp(bench.status, 'ok')
+            bench.status = 'failed_required_autonomous_endpoint';
+            if isfield(bench.rollout, 'failure_reasons')
+                bench.failure_status = strjoin(bench.rollout.failure_reasons, ',');
+            else
+                bench.failure_status = 'failed_required_autonomous_endpoint';
+            end
         end
-    elseif do_rollout
-        bench.rollout = struct( ...
-            'status', 'skipped', ...
-            'reason', 'Autonomous rollout requires ODE mode, scalar I/O, and finite one-step test metrics.', ...
-            'prediction_mode', 'ode_autonomous');
+    end
+end
+
+function rollout = evaluate_mg_autonomous_rollout(esn, u, y, split, y_pred_test, ...
+        metrics_test, train_opts, rollout_cfg)
+    is_dde = ~isempty(esn.lags);
+    if is_dde
+        rollout = struct();
+        rollout.status = 'unsupported_not_computed';
+        rollout.protocol_version = char(rollout_cfg.protocol_version);
+        rollout.mode = 'DDE';
+        rollout.reason = 'DDE autonomous continuation is not implemented';
+        rollout.predictions = [];
+        rollout.metrics = [];
+        rollout.evaluation_provenance = struct('mode', 'unsupported');
+        return;
+    end
+
+    failure_reasons = {};
+    try
+        if esn.n_inputs ~= 1 || esn.n_outputs ~= 1
+            error('mackey_glass_benchmark:AutonomousIO', ...
+                'MG autonomous rollout requires scalar I/O.');
+        end
+        if esn.include_input
+            error('mackey_glass_benchmark:IncludeInput', ...
+                'MG autonomous protocol requires include_input=false.');
+        end
+        if ~(isfinite(metrics_test.nrmse) && isfinite(metrics_test.rmse))
+            error('mackey_glass_benchmark:NonfiniteOneStep', ...
+                'One-step test metrics must be finite before autonomous rollout.');
+        end
+
+        schedule = build_mg_autonomous_origin_schedule(split, rollout_cfg);
+        origins = schedule.origin_indices(:);
+        H = schedule.forecast_horizon_steps;
+        % Drive the same contiguous prefix used by one-step test prediction
+        % (U through test_end). Stopping early at max(origin) changes adaptive
+        % ODE meshing and breaks first-step alignment.
+        drive_end = split.test_idx(end);
+
+        run_opts = struct( ...
+            'reset_before', true, ...
+            'update_internal_state', false, ...
+            'ode_reltol', getFieldOrDefault(train_opts, 'ode_reltol', 1e-6), ...
+            'ode_abstol', getFieldOrDefault(train_opts, 'ode_abstol', 1e-8));
+        if isfield(train_opts, 'ode_solver')
+            run_opts.ode_solver = train_opts.ode_solver;
+        elseif ~isempty(esn.ode_solver)
+            run_opts.ode_solver = esn.ode_solver;
+        end
+
+        S_before = esn.S;
+        [X_drv, S_hist] = esn.runReservoir(u(1:drive_end, :), run_opts);
+        if ~isequaln(esn.S, S_before)
+            error('mackey_glass_benchmark:StateMutation', ...
+                'Teacher-forced trajectory mutated obj.S.');
+        end
+
+        auto_opts = struct( ...
+            'return_features', true, ...
+            'ode_reltol', run_opts.ode_reltol, ...
+            'ode_abstol', run_opts.ode_abstol);
+        if isfield(run_opts, 'ode_solver')
+            auto_opts.ode_solver = run_opts.ode_solver;
+        end
+
+        align_tol = 1e-7;
+        preds = cell(numel(origins), 1);
+        align_ok = true(numel(origins), 1);
+        for o = 1:numel(origins)
+            i = origins(o);
+            S_i = S_hist(i, :).';
+            frozen = apply_ridge_readout(esn.readout_model, X_drv(i, :));
+            test_rel = schedule.origin_test_relative_indices(o);
+            frozen_bench = y_pred_test(test_rel, :);
+            if max(abs(frozen(:) - frozen_bench(:))) > align_tol * max(1, max(abs(frozen_bench(:))))
+                align_ok(o) = false;
+                failure_reasons{end+1} = sprintf( ...
+                    'frozen_one_step_mismatch_origin_%d', i); %#ok<AGROW>
+            end
+
+            [y_hat, ~, gen_info] = esn.generateAutonomousFromState( ...
+                S_i, u(i, :), H, auto_opts);
+            if ~isequaln(esn.S, S_before)
+                error('mackey_glass_benchmark:StateMutation', ...
+                    'Autonomous generation mutated obj.S at origin %d.', i);
+            end
+            if max(abs(y_hat(1, :) - frozen(:)')) > align_tol * max(1, max(abs(frozen(:))))
+                align_ok(o) = false;
+                failure_reasons{end+1} = sprintf( ...
+                    'step1_alignment_failed_origin_%d', i); %#ok<AGROW>
+            end
+            if any(~isfinite(y_hat(:)))
+                error('mackey_glass_benchmark:NonfiniteForecast', ...
+                    'Nonfinite autonomous forecast at origin %d.', i);
+            end
+            preds{o} = y_hat(:);
+            if o == 1
+                first_gen_info = gen_info;
+            end
+        end
+
+        if ~all(align_ok)
+            error('mackey_glass_benchmark:AlignmentFailed', ...
+                'First-step autonomous alignment failed: %s', ...
+                strjoin(failure_reasons, ','));
+        end
+
+        scored = score_mg_autonomous_forecasts(preds, y, origins, split, rollout_cfg);
+
+        rollout = struct();
+        rollout.status = 'computed';
+        rollout.protocol_version = char(rollout_cfg.protocol_version);
+        rollout.role = char(rollout_cfg.role);
+        rollout.mode = 'ODE';
+        rollout.origin_schedule = schedule;
+        rollout.forecast_horizon_steps = H;
+        rollout.fixed_report_horizons = rollout_cfg.fixed_report_horizons(:);
+        rollout.normalization_reference = char(rollout_cfg.normalization_reference);
+        rollout.normalization_scale = scored.normalization_scale;
+        rollout.per_origin = scored.per_origin;
+        rollout.metrics = scored.metrics;
+        rollout.predictions = preds;
+        rollout.evaluation_provenance = struct( ...
+            'mode', 'executed', ...
+            'test_target_override_used', false, ...
+            'origin_override_used', false, ...
+            'model_refit_for_rollout', false, ...
+            'lambda_reselected_for_rollout', false, ...
+            'autonomous_performance_used_for_selection', false, ...
+            'first_prediction_alignment_verified', true, ...
+            'object_state_unchanged', true, ...
+            'generation_info', first_gen_info);
+        [vok, vrep] = validate_mg_autonomous_rollout_result(rollout, ...
+            struct('mg_autonomous_rollout', rollout_cfg), 'ODE');
+        if ~vok
+            error('mackey_glass_benchmark:RolloutValidationFailed', ...
+                'Rollout validation failed: %s', strjoin(vrep.reasons, ','));
+        end
+    catch ME
+        rollout = struct();
+        rollout.status = 'failed_required_autonomous_endpoint';
+        rollout.protocol_version = char(rollout_cfg.protocol_version);
+        rollout.role = char(rollout_cfg.role);
+        rollout.mode = 'ODE';
+        rollout.failure_reasons = unique([failure_reasons(:).', {ME.message}], 'stable');
+        rollout.error_id = ME.identifier;
+        rollout.predictions = [];
+        rollout.metrics = [];
+        rollout.evaluation_provenance = struct( ...
+            'mode', 'failed', ...
+            'test_target_override_used', false, ...
+            'origin_override_used', false, ...
+            'model_refit_for_rollout', false, ...
+            'lambda_reselected_for_rollout', false, ...
+            'autonomous_performance_used_for_selection', false, ...
+            'first_prediction_alignment_verified', false);
+    end
+end
+
+function rollout_cfg = resolve_mg_rollout_cfg(options, do_rollout, rollout_steps)
+    rollout_cfg = [];
+    if isfield(options, 'mg_autonomous_rollout') && ~isempty(options.mg_autonomous_rollout)
+        rollout_cfg = options.mg_autonomous_rollout;
+    elseif isfield(options, 'cfg') && isstruct(options.cfg) && ...
+            isfield(options.cfg, 'mg_autonomous_rollout')
+        rollout_cfg = options.cfg.mg_autonomous_rollout;
+    end
+    if isempty(rollout_cfg)
+        if ~do_rollout
+            return;
+        end
+        % Standalone/test fallback: smoke-sized protocol with requested horizon
+        rollout_cfg = build_mg_autonomous_rollout_config('smoke');
+        if ~isempty(rollout_steps) && isfinite(rollout_steps) && rollout_steps >= 1
+            H = double(rollout_steps);
+            rollout_cfg.forecast_horizon_steps = H;
+            rollout_cfg.fixed_report_horizons = unique([1, min(5, H), min(10, H), H], 'stable');
+            rollout_cfg.fixed_report_horizons = rollout_cfg.fixed_report_horizons( ...
+                rollout_cfg.fixed_report_horizons >= 1 & rollout_cfg.fixed_report_horizons <= H);
+        end
     end
 end
 
@@ -266,7 +442,10 @@ function verify_shared_task_identity(shared, task, options, W_in)
     end
 end
 
-function y_pred = predict_segment(esn, u, idx, washout_discard)
+function y_pred = predict_segment(esn, u, idx, washout_discard, train_opts)
+    if nargin < 5
+        train_opts = struct();
+    end
     if isempty(idx)
         y_pred = zeros(0, esn.n_outputs);
         return;
@@ -276,7 +455,13 @@ function y_pred = predict_segment(esn, u, idx, washout_discard)
     else
         context_U = u(1:idx(1)-1, :);
     end
-    y_all = esn.predict(u(idx, :), struct('reset_before', true, 'context_U', context_U));
+    pred_opts = struct('reset_before', true, 'context_U', context_U);
+    for fn = {'ode_reltol','ode_abstol','dde_reltol','dde_abstol','ode_solver'}
+        if isfield(train_opts, fn{1})
+            pred_opts.(fn{1}) = train_opts.(fn{1});
+        end
+    end
+    y_all = esn.predict(u(idx, :), pred_opts);
     if washout_discard > 0
         y_pred = y_all(washout_discard+1:end, :);
     else

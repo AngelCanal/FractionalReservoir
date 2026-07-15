@@ -169,6 +169,12 @@ function [result, run_dir] = run_mechanism_ablation_pilot(options)
     result.publication_protocol_complete = false;
     result.all_primary_endpoints_finite = readiness.all_primary_endpoints_finite;
     result.all_qa_checks_pass = readiness.all_qa_checks_pass;
+    if isfield(readiness, 'all_required_secondary_endpoints_complete')
+        result.all_required_secondary_endpoints_complete = ...
+            readiness.all_required_secondary_endpoints_complete;
+    else
+        result.all_required_secondary_endpoints_complete = false;
+    end
     result.artifact_package_complete = readiness.artifact_package_complete;
     result.publication_ready = false;
     result.readiness = readiness;

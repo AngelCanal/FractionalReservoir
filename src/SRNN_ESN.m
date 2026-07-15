@@ -1,5 +1,5 @@
 classdef SRNN_ESN < handle
-    % SRNN_ESN: Echo State Network wrapper for the SRNN reservoir
+    % SRNN_ESN: Echo State Network wrapper for the continuous-time MESN/SRNN reservoir
     %
     % This class implements a complete Reservoir Computing / Echo State Network
     % paradigm using the SRNN reservoir (SRNN_reservoir.m or SRNN_reservoir_DDE.m)
@@ -10,7 +10,7 @@ classdef SRNN_ESN < handle
     %   dx/dt = (-x + W*s + u) / tau_d, plus SFA/STD on a and b
     %
     % Key features:
-    %   - Wraps the fractional SRNN reservoir dynamics
+    %   - Wraps continuous-time MESN/SRNN reservoir dynamics (ODE; optional DDE delays)
     %   - Implements ridge regression for readout training
     %   - Handles time series data with proper temporal splitting and washout
     %   - Configurable feature extraction from reservoir states
@@ -342,6 +342,11 @@ classdef SRNN_ESN < handle
                 'ode_abstol', getFieldOrDefault(options, 'ode_abstol', 1e-8), ...
                 'dde_reltol', getFieldOrDefault(options, 'dde_reltol', 1e-6), ...
                 'dde_abstol', getFieldOrDefault(options, 'dde_abstol', 1e-8));
+            if isfield(options, 'ode_solver')
+                run_opts.ode_solver = options.ode_solver;
+            elseif ~isempty(obj.ode_solver)
+                run_opts.ode_solver = obj.ode_solver;
+            end
             [X_all, ~, run_info] = obj.runReservoir(U_run, run_opts);
             X_features = X_all(n_context+1:end, :);
             Y_pred = apply_ridge_readout(obj.readout_model, X_features);
@@ -353,40 +358,31 @@ classdef SRNN_ESN < handle
             info.mode = run_info.mode;
         end
         
-        function [Y_gen, X_features] = generateAutonomous(obj, initial_data, n_steps, options)
-            % generateAutonomous: ODE closed-loop generation with state-consistent feedback
+        function [Y_gen, X_features, info] = generateAutonomous(obj, initial_data, n_steps, options)
+            % generateAutonomous: ODE closed-loop generation (corrected alignment)
+            %
+            % Consumes every row of initial_data as teacher-forced context through
+            % the forecast origin. Forecast step 1 is the frozen readout applied to
+            % the state after that context (no discarded first prediction).
+            % Feedback begins at step 2. Leaves obj.S unchanged.
             %
             % Inputs:
-            %   initial_data - Teacher-forcing prefix (n_washout x n_inputs) or struct.input
+            %   initial_data - Full observed context through origin (N x n_inputs)
             %   n_steps      - Number of autonomous steps (>= 1)
-            %   options      - horizon (must be 1), washout_steps, return_features,
-            %                  ode_reltol, ode_abstol
+            %   options      - horizon (must be 1), washout_steps (must equal N if set),
+            %                  return_features, ode_reltol, ode_abstol
             %
             % Outputs:
             %   Y_gen        - Generated outputs (n_steps x n_outputs)
             %   X_features   - Reservoir features during generation (optional)
-
-            if ~obj.is_trained
-                error('SRNN_ESN:NotTrained', ...
-                    'Readout layer has not been trained. Call trainReadout() first.');
-            end
-            if ~isempty(obj.lags)
-                error('SRNN_ESN:DDEAutonomousUnsupported', ...
-                    'Autonomous generation is unsupported in DDE mode.');
-            end
-            if n_steps < 1
-                error('SRNN_ESN:InvalidAutonomousSteps', ...
-                    'n_steps must be >= 1.');
-            end
-            if obj.n_inputs ~= obj.n_outputs
-                error('SRNN_ESN:AutonomousDimensionMismatch', ...
-                    'Autonomous closed-loop requires n_inputs == n_outputs (got %d and %d).', ...
-                    obj.n_inputs, obj.n_outputs);
-            end
+            %   info         - Provenance / protocol fields
 
             if nargin < 4 || isempty(options)
                 options = struct();
             end
+
+            obj.assertAutonomousPreconditions_();
+
             horizon = getFieldOrDefault(options, 'horizon', 1);
             if horizon ~= 1
                 error('SRNN_ESN:UnsupportedAutonomousHorizon', ...
@@ -404,39 +400,158 @@ classdef SRNN_ESN < handle
                 error('SRNN_ESN:InvalidInput', ...
                     'initial_data must have %d input columns.', obj.n_inputs);
             end
+            if isfield(options, 'washout_steps') && ~isempty(options.washout_steps)
+                washout_steps = options.washout_steps;
+                if washout_steps ~= size(initial_data, 1)
+                    error('SRNN_ESN:AutonomousContextTruncationRejected', ...
+                        ['washout_steps (%d) must equal the full context length (%d). ', ...
+                         'Partial context truncation is rejected.'], ...
+                        washout_steps, size(initial_data, 1));
+                end
+            end
 
-            washout_steps = getFieldOrDefault(options, 'washout_steps', size(initial_data, 1));
+            S_before = obj.S;
+            ode_reltol = getFieldOrDefault(options, 'ode_reltol', 1e-6);
+            ode_abstol = getFieldOrDefault(options, 'ode_abstol', 1e-8);
+            wash_opts = struct('reset_before', true, 'update_internal_state', false, ...
+                'ode_reltol', ode_reltol, 'ode_abstol', ode_abstol);
+            if isfield(options, 'ode_solver')
+                wash_opts.ode_solver = options.ode_solver;
+            elseif ~isempty(obj.ode_solver)
+                wash_opts.ode_solver = obj.ode_solver;
+            end
+            [~, S_hist] = obj.runReservoir(initial_data, wash_opts);
+            if ~isequaln(obj.S, S_before)
+                error('SRNN_ESN:AutonomousMutatedState', ...
+                    'Context drive mutated obj.S; autonomous generation forbids mutation.');
+            end
+
+            initial_state = S_hist(end, :).';
+            input_at_origin = initial_data(end, :);
+            [Y_gen, X_features, info] = obj.generateAutonomousFromState( ...
+                initial_state, input_at_origin, n_steps, options);
+            info.context_rows_consumed = size(initial_data, 1);
+            info.context_policy = 'all_observed_inputs_through_forecast_origin';
+            if ~isequaln(obj.S, S_before)
+                error('SRNN_ESN:AutonomousMutatedState', ...
+                    'generateAutonomous mutated obj.S.');
+            end
+            info.object_state_unchanged = true;
+        end
+
+        function [Y_gen, X_features, info] = generateAutonomousFromState( ...
+                obj, initial_state, input_at_origin, n_steps, options)
+            % generateAutonomousFromState  ODE autonomous rollout from a packed state.
+            %
+            % Step 1 applies the frozen readout to features of initial_state
+            % (no extra ODE step). Steps 2..H feed prior predictions recursively.
+            % Does not accept targets. Leaves obj.S, readout, and lambda unchanged.
+
+            if nargin < 5 || isempty(options)
+                options = struct();
+            end
+
+            obj.assertAutonomousPreconditions_();
+
+            if n_steps < 1
+                error('SRNN_ESN:InvalidAutonomousSteps', ...
+                    'n_steps must be >= 1.');
+            end
+            if obj.include_input
+                error('SRNN_ESN:AutonomousIncludeInputForbidden', ...
+                    'Autonomous generation for this protocol requires include_input=false.');
+            end
+            if isfield(options, 'Y') || isfield(options, 'targets') || isfield(options, 'y_true')
+                error('SRNN_ESN:AutonomousTargetsForbidden', ...
+                    'Autonomous generation must not receive target values.');
+            end
+
+            S0 = validate_packed_state_vector(obj, initial_state);
+            if isempty(input_at_origin) || any(~isfinite(input_at_origin(:)))
+                error('SRNN_ESN:InvalidInput', ...
+                    'input_at_origin must be finite.');
+            end
+            input_at_origin = input_at_origin(:)';
+            if numel(input_at_origin) ~= obj.n_inputs
+                error('SRNN_ESN:InvalidInput', ...
+                    'input_at_origin must have %d elements.', obj.n_inputs);
+            end
+
             return_features = getFieldOrDefault(options, 'return_features', false);
             ode_reltol = getFieldOrDefault(options, 'ode_reltol', 1e-6);
             ode_abstol = getFieldOrDefault(options, 'ode_abstol', 1e-8);
 
-            washout_steps = min(washout_steps, size(initial_data, 1));
-            U_washout = initial_data(1:washout_steps, :);
+            S_before = obj.S;
+            readout_before = obj.readout_model;
+            lambda_before = obj.lambda;
 
-            wash_opts = struct('reset_before', true, 'update_internal_state', true, ...
-                'ode_reltol', ode_reltol, 'ode_abstol', ode_abstol);
-            [X_washout, ~] = obj.runReservoir(U_washout, wash_opts);
-
-            current_feedback = apply_ridge_readout(obj.readout_model, X_washout(end, :));
-
+            X0 = obj.extractFeatures(S0.', input_at_origin);
             Y_gen = zeros(n_steps, obj.n_outputs);
+            Y_gen(1, :) = apply_ridge_readout(obj.readout_model, X0);
             if return_features
-                X_features = zeros(n_steps, obj.readout_model.n_features);
+                X_features = zeros(n_steps, size(X0, 2));
+                X_features(1, :) = X0;
             else
                 X_features = [];
             end
 
-            step_opts = struct('reset_before', false, 'update_internal_state', true, ...
-                'ode_reltol', ode_reltol, 'ode_abstol', ode_abstol);
+            S_cur = S0;
+            step_opts = struct( ...
+                'reset_before', false, ...
+                'update_internal_state', false, ...
+                'ode_reltol', ode_reltol, ...
+                'ode_abstol', ode_abstol);
+            if isfield(options, 'ode_solver')
+                step_opts.ode_solver = options.ode_solver;
+            elseif ~isempty(obj.ode_solver)
+                step_opts.ode_solver = obj.ode_solver;
+            end
 
-            for t = 1:n_steps
-                [X_t, ~] = obj.runReservoir(current_feedback, step_opts);
-                Y_t = apply_ridge_readout(obj.readout_model, X_t);
-                Y_gen(t, :) = Y_t;
+            for k = 2:n_steps
+                u_fb = Y_gen(k-1, :);
+                step_opts.initial_state = S_cur;
+                [X_t, S_hist] = obj.runReservoir(u_fb, step_opts);
+                S_cur = S_hist(end, :).';
+                Y_gen(k, :) = apply_ridge_readout(obj.readout_model, X_t);
                 if return_features
-                    X_features(t, :) = X_t;
+                    X_features(k, :) = X_t;
                 end
-                current_feedback = Y_t;
+            end
+
+            if ~isequaln(obj.S, S_before)
+                error('SRNN_ESN:AutonomousMutatedState', ...
+                    'generateAutonomousFromState mutated obj.S.');
+            end
+            if ~isequaln(obj.readout_model, readout_before) || obj.lambda ~= lambda_before
+                error('SRNN_ESN:AutonomousMutatedReadout', ...
+                    'Autonomous generation must not modify the fitted readout or lambda.');
+            end
+
+            info = struct();
+            info.protocol_version = 'mackey_glass_autonomous_rollout_v1';
+            info.initial_state_hash = hash_numeric_array(S0);
+            info.n_steps = n_steps;
+            info.first_prediction_from_origin_state = true;
+            info.feedback_starts_at_step = 2;
+            info.object_state_unchanged = true;
+            info.include_input = false;
+            info.mode = 'ODE';
+            info.alignment = 'prediction_k_scores_Y(origin+k-1)';
+        end
+
+        function assertAutonomousPreconditions_(obj)
+            if ~obj.is_trained
+                error('SRNN_ESN:NotTrained', ...
+                    'Readout layer has not been trained. Call trainReadout() first.');
+            end
+            if ~isempty(obj.lags)
+                error('SRNN_ESN:DDEAutonomousUnsupported', ...
+                    'Autonomous generation is unsupported in DDE mode.');
+            end
+            if obj.n_inputs ~= obj.n_outputs
+                error('SRNN_ESN:AutonomousDimensionMismatch', ...
+                    'Autonomous closed-loop requires n_inputs == n_outputs (got %d and %d).', ...
+                    obj.n_inputs, obj.n_outputs);
             end
         end
         

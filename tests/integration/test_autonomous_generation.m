@@ -9,10 +9,23 @@ function testTwoStepMatchesManualReference(testCase)
 
     Y_gen = esn.generateAutonomous(init_data, n_steps, struct( ...
         'washout_steps', 8, 'ode_reltol', 1e-8, 'ode_abstol', 1e-10));
-    Y_manual = manual_autonomous_reference(esn, init_data, n_steps, 8);
+    Y_manual = manual_autonomous_reference(esn, init_data, n_steps);
 
     testCase.verifyEqual(Y_gen, Y_manual, 'RelTol', 1e-6, 'AbsTol', 1e-8);
     testCase.verifyGreaterThan(abs(Y_gen(2) - Y_gen(1)), 1e-6);
+end
+
+function testFirstStepEqualsOriginReadout(testCase)
+    esn = make_linear_autonomous_esn();
+    init_data = 0.15 * ones(8, 1);
+    opts = struct('ode_reltol', 1e-8, 'ode_abstol', 1e-10);
+    [~, S_hist] = esn.runReservoir(init_data, struct( ...
+        'reset_before', true, 'update_internal_state', false, ...
+        'ode_reltol', 1e-8, 'ode_abstol', 1e-10));
+    X0 = esn.extractFeatures(S_hist(end, :), init_data(end, :));
+    y0 = apply_ridge_readout(esn.readout_model, X0);
+    Y_gen = esn.generateAutonomous(init_data, 3, opts);
+    testCase.verifyEqual(Y_gen(1), y0, 'AbsTol', 1e-10);
 end
 
 function testChangingFirstPredictionChangesLaterOutput(testCase)
@@ -65,6 +78,26 @@ function testDimensionMismatchRejected(testCase)
         'SRNN_ESN:AutonomousDimensionMismatch');
 end
 
+function testContextTruncationRejected(testCase)
+    esn = make_linear_autonomous_esn();
+    init_data = 0.1 * ones(8, 1);
+    testCase.verifyError(@() esn.generateAutonomous(init_data, 2, struct( ...
+        'washout_steps', 4)), 'SRNN_ESN:AutonomousContextTruncationRejected');
+end
+
+function testObjectStateUnchanged(testCase)
+    esn = make_linear_autonomous_esn();
+    S_before = esn.S;
+    init_data = 0.12 * ones(6, 1);
+    esn.generateAutonomous(init_data, 4, struct('ode_reltol', 1e-8, 'ode_abstol', 1e-10));
+    testCase.verifyEqual(esn.S, S_before, 'AbsTol', 0);
+    [~, S_hist] = esn.runReservoir(init_data, struct( ...
+        'reset_before', true, 'update_internal_state', false));
+    esn.generateAutonomousFromState(S_hist(end, :).', init_data(end, :), 3, ...
+        struct('ode_reltol', 1e-8, 'ode_abstol', 1e-10));
+    testCase.verifyEqual(esn.S, S_before, 'AbsTol', 0);
+end
+
 function esn = make_linear_autonomous_esn()
     overrides = struct( ...
         'n', 1, ...
@@ -104,20 +137,21 @@ function esn = make_linear_autonomous_esn()
     esn.n_outputs = 1;
 end
 
-function Y = manual_autonomous_reference(esn, init_data, n_steps, washout_steps)
-    sim_opts = struct('reset_before', true, 'update_internal_state', true, ...
+function Y = manual_autonomous_reference(esn, init_data, n_steps)
+    % Corrected recurrence: step 1 from origin state; feedback from step 2.
+    sim_opts = struct('reset_before', true, 'update_internal_state', false, ...
         'ode_reltol', 1e-8, 'ode_abstol', 1e-10);
-    step_opts = struct('reset_before', false, 'update_internal_state', true, ...
-        'ode_reltol', 1e-8, 'ode_abstol', 1e-10);
-
-    U_washout = init_data(1:washout_steps, :);
-    [X_washout, ~] = esn.runReservoir(U_washout, sim_opts);
-    feedback = apply_ridge_readout(esn.readout_model, X_washout(end, :));
-
+    [~, S_hist] = esn.runReservoir(init_data, sim_opts);
+    S = S_hist(end, :).';
+    X0 = esn.extractFeatures(S.', init_data(end, :));
     Y = zeros(n_steps, esn.n_outputs);
-    for t = 1:n_steps
-        [X_t, ~] = esn.runReservoir(feedback, step_opts);
+    Y(1, :) = apply_ridge_readout(esn.readout_model, X0);
+    step_opts = struct('reset_before', false, 'update_internal_state', false, ...
+        'ode_reltol', 1e-8, 'ode_abstol', 1e-10);
+    for t = 2:n_steps
+        step_opts.initial_state = S;
+        [X_t, S_hist_t] = esn.runReservoir(Y(t-1, :), step_opts);
+        S = S_hist_t(end, :).';
         Y(t, :) = apply_ridge_readout(esn.readout_model, X_t);
-        feedback = Y(t, :);
     end
 end

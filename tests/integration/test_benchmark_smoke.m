@@ -73,8 +73,13 @@ end
 
 function testMackeyGlassSmoke(testCase)
     esn = SRNN_ESN(smoke_params());
+    rollout_cfg = build_mg_autonomous_rollout_config('smoke');
+    rollout_cfg.forecast_horizon_steps = 12;
+    rollout_cfg.n_forecast_origins = 2;
+    rollout_cfg.fixed_report_horizons = [1, 5, 10, 12];
     bench = mackey_glass_benchmark(esn, smoke_split_opts(struct( ...
-        'T', 150, 'discard', 50, 'do_rollout', true, 'rollout_steps', 20)));
+        'T', 160, 'discard', 40, 'do_rollout', true, ...
+        'mg_autonomous_rollout', rollout_cfg)));
     assert_common_fields(testCase, bench);
     testCase.verifyTrue(isfinite(bench.metrics_test.nrmse));
     testCase.verifyTrue(isfield(bench.baselines, 'persistence'));
@@ -83,11 +88,10 @@ function testMackeyGlassSmoke(testCase)
     testCase.verifyTrue(isfinite(bench.baselines.persistence.metrics_test.nrmse));
     testCase.verifyEqual(bench.baselines.conventional_leaky_esn.status, 'computed');
     testCase.verifyTrue(isfield(bench, 'rollout'));
-    testCase.verifyTrue(ismember(bench.rollout.status, {'computed', 'skipped'}));
-    testCase.verifyEqual(bench.rollout.prediction_mode, 'ode_autonomous');
-    if strcmp(bench.rollout.status, 'computed')
-        testCase.verifyTrue(isfinite(bench.rollout.metrics.nrmse));
-    end
+    testCase.verifyEqual(bench.rollout.status, 'computed');
+    testCase.verifyEqual(bench.rollout.mode, 'ODE');
+    testCase.verifyTrue(isfinite(bench.rollout.metrics.pooled_nrmse_full_horizon));
+    testCase.verifyTrue(bench.rollout.evaluation_provenance.first_prediction_alignment_verified);
 end
 
 function testLorenzSmoke(testCase)

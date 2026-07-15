@@ -117,6 +117,9 @@ function report = evaluate_publication_readiness(cfg, options)
     [tl_ok, tl_detail] = check_temporal_learning_gate(options, cfg);
     checks{end+1} = make_check('temporal_learning_gate_passed', tl_ok, tl_detail);
 
+    [mg_auto_ok, mg_auto_detail] = check_mg_autonomous_protocol_complete(cell_records, cfg);
+    checks{end+1} = make_check('mg_autonomous_protocol_complete', mg_auto_ok, mg_auto_detail);
+
     has_manifest = logical(local_get(options, 'has_manifest', false));
     has_commit_sha = logical(local_get(options, 'has_commit_sha', false));
     has_artifact_hashes = logical(local_get(options, 'has_artifact_hashes', false));
@@ -147,12 +150,15 @@ function report = evaluate_publication_readiness(cfg, options)
         check_named(check_arr, 'qa_resource_and_operating_bands') && ...
         check_named(check_arr, 'no_unsupported_dde_metric_as_computed') && ...
         check_named(check_arr, 'temporal_learning_gate_passed');
+    all_required_secondary_endpoints_complete = ...
+        check_named(check_arr, 'mg_autonomous_protocol_complete');
     artifact_package_complete = check_named(check_arr, 'manifest_present') && ...
         check_named(check_arr, 'commit_sha_present') && ...
         check_named(check_arr, 'artifact_hashes_present');
 
     publication_ready = publication_protocol_complete && structurally_complete && ...
-        all_primary_endpoints_finite && all_qa_checks_pass && artifact_package_complete;
+        all_primary_endpoints_finite && all_qa_checks_pass && ...
+        all_required_secondary_endpoints_complete && artifact_package_complete;
 
     report = struct();
     report.cfg_protocol_tier = tier;
@@ -164,6 +170,7 @@ function report = evaluate_publication_readiness(cfg, options)
     report.publication_protocol_complete = publication_protocol_complete;
     report.all_primary_endpoints_finite = all_primary_endpoints_finite;
     report.all_qa_checks_pass = all_qa_checks_pass;
+    report.all_required_secondary_endpoints_complete = all_required_secondary_endpoints_complete;
     report.artifact_package_complete = artifact_package_complete;
     report.publication_ready = publication_ready;
     report.n_cells_observed = numel(pair_keys);
@@ -444,6 +451,79 @@ function [ok, detail] = check_temporal_learning_gate(options, cfg)
         detail = 'temporal_learning_gate_ok';
     else
         detail = strjoin(unique(reasons, 'stable'), ',');
+    end
+end
+
+function [ok, detail] = check_mg_autonomous_protocol_complete(records, cfg)
+% Every publication ODE cell must have a valid computed MG autonomous result;
+% every DDE cell must have unsupported_not_computed. Secondary endpoint only.
+    if isempty(records)
+        ok = false;
+        detail = 'no_records';
+        return;
+    end
+    rollout_cfg = [];
+    if isfield(cfg, 'mg_autonomous_rollout')
+        rollout_cfg = cfg.mg_autonomous_rollout;
+    end
+    if isempty(rollout_cfg)
+        ok = false;
+        detail = 'missing_mg_autonomous_rollout_cfg';
+        return;
+    end
+    bad = 0;
+    for i = 1:numel(records)
+        r = records(i);
+        mode = char(local_get(r, 'mode', ''));
+        rollout = extract_cell_rollout(r);
+        if isempty(rollout)
+            bad = bad + 1;
+            continue;
+        end
+        [vok, ~] = validate_mg_autonomous_rollout_result(rollout, ...
+            struct('mg_autonomous_rollout', rollout_cfg), mode);
+        if ~vok
+            bad = bad + 1;
+            continue;
+        end
+        st = char(local_get(rollout, 'status', ''));
+        if strcmp(mode, 'ODE') && strcmp(st, 'skipped')
+            bad = bad + 1;
+        elseif strcmp(mode, 'ODE') && ~strcmp(st, 'computed')
+            bad = bad + 1;
+        elseif strcmp(mode, 'DDE') && ~strcmp(st, 'unsupported_not_computed')
+            bad = bad + 1;
+        end
+    end
+    ok = bad == 0;
+    detail = sprintf('n_mg_autonomous_bad=%d / %d', bad, numel(records));
+end
+
+function rollout = extract_cell_rollout(r)
+    rollout = [];
+    if isfield(r, 'mackey_glass') && isstruct(r.mackey_glass)
+        mg = r.mackey_glass;
+        if isfield(mg, 'rollout') && isstruct(mg.rollout)
+            rollout = mg.rollout;
+            return;
+        end
+        % Reconstruct minimal DDE/ODE status from compact fields when present
+        if isfield(mg, 'autonomous_status')
+            st = char(mg.autonomous_status);
+            mode = char(local_get(r, 'mode', ''));
+            rollout = struct('status', st, 'mode', mode);
+            if isfield(mg, 'rollout')
+                rollout = mg.rollout;
+            else
+                if strcmp(st, 'unsupported_not_computed')
+                    rollout.protocol_version = 'mackey_glass_autonomous_rollout_v1';
+                    rollout.reason = 'DDE autonomous continuation is not implemented';
+                    rollout.predictions = [];
+                    rollout.metrics = [];
+                    rollout.evaluation_provenance = struct('mode', 'unsupported');
+                end
+            end
+        end
     end
 end
 

@@ -223,3 +223,36 @@ Phase 4C+ (matched benchmarks / MG rollout, aggregation redesign, calibration, a
 - [x] Compact cell payloads; recompute cell-specific comparisons; Dale remains feature-specific
 - [x] Central fail-closed `validate_matched_task_baselines`; publication rejects overrides
 - [x] Focused shared-bundle / fail-closed tests + docs; stop before 4C-B
+
+## Phase 4C-B1 checklist (MG autonomous alignment + allocation)
+
+- [x] Confirm branch/SHA `e9704b1` clean
+- [x] Regression tests for off-by-one first step and publication skip allocation
+- [x] Fingerprinted `cfg.mg_autonomous_rollout` (`mackey_glass_autonomous_rollout_v1`)
+- [x] Deterministic origin schedule helper (fail closed; no silent shorten)
+- [x] Corrected `generateAutonomous` / `generateAutonomousFromState` (step 1 = origin readout)
+- [x] Single teacher-forced trajectory; state-seeded per origin; obj.S unchanged
+- [x] Score `Y(i:i+H-1)`; train/val `sigma_ref`; valid-horizon + censoring; fixed horizons
+- [x] ODE `computed` / DDE `unsupported_not_computed` schemas; fail closed (no skip)
+- [x] One-step λ/readout/metrics invariance with rollout enabled
+- [x] Compaction + publication-readiness `mg_autonomous_protocol_complete`
+- [x] Unit/scientific/smoke tests + docs; stop before 4C-B2 (matched autonomous controls)
+
+### Phase 4C-B1 defects reproduced (before repair)
+
+| Defect | Evidence |
+|---|---|
+| Allocation skip | Publication `T=3000` → `U` length 2999 → test ≈601; old `init_len=200` + `rollout_steps=500` required 700 → `status=skipped` |
+| First-step discard | `generateAutonomous` computed origin readout then fed it as input before recording step 1 |
+| Truncatable washout context | `washout_steps = min(washout, N)` could ignore trailing context rows |
+
+### Corrected contract
+
+- Step 1 = frozen one-step prediction at origin; feedback starts at step 2
+- Targets: prediction `k` scores `Y(origin+k-1)`
+- Publication origins: 5 × horizon 100; smoke/pilot: 2 × horizon 20
+- DDE: explicit `unsupported_not_computed`; never call `generateAutonomous` for DDE cells in the benchmark path
+
+### Remaining blockers
+
+Phase 4C-B2 matched autonomous controls; aggregation; calibration; figures.

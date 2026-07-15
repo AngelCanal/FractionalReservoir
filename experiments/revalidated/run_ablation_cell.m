@@ -125,7 +125,7 @@ function cell_result = run_ablation_cell(cell_spec, base_seed, cfg, options)
                 'narma_required_baseline_failed');
         end
 
-        %% Primary: Mackey-Glass one-step
+        %% Primary: Mackey-Glass one-step (+ secondary autonomous ODE endpoint)
         mg_opts = struct( ...
             'T', L.mg_T, ...
             'discard', L.mg_discard, ...
@@ -135,7 +135,9 @@ function cell_result = run_ablation_cell(cell_spec, base_seed, cfg, options)
             'seed', base_seed + 30, ...
             'base_seed', base_seed, ...
             'feature_mode', cell_spec.which_states, ...
-            'do_rollout', L.mg_do_rollout && strcmp(cell_spec.mode, 'ODE'), ...
+            'do_rollout', logical(L.mg_do_rollout), ...
+            'mg_autonomous_rollout', local_get(cfg, 'mg_autonomous_rollout', ...
+                build_mg_autonomous_rollout_config(local_get(cfg, 'protocol_tier', 'smoke'))), ...
             'cfg', cfg, ...
             'benchmark_baselines', local_get(cfg, 'benchmark_baselines', struct()));
         if isfield(L, 'lambda_grid') && ~isempty(L.lambda_grid)
@@ -148,7 +150,6 @@ function cell_result = run_ablation_cell(cell_spec, base_seed, cfg, options)
             mg_opts.shared_baseline_bundle = shared_baseline_bundle;
         end
         if strcmp(cell_spec.mode, 'DDE')
-            mg_opts.do_rollout = false;
             cell_result.unsupported.dde_autonomous = cfg.unsupported_status.dde_autonomous;
         end
         mg_opts = merge_structs(mg_opts, solver_train_opts);
@@ -163,6 +164,14 @@ function cell_result = run_ablation_cell(cell_spec, base_seed, cfg, options)
             cell_result.status = 'failed_primary_endpoint';
             cell_result.failure_status = local_field(mg, 'failure_status', ...
                 'mackey_glass_required_baseline_failed');
+        end
+        if strcmp(mg.status, 'failed_required_autonomous_endpoint')
+            cell_result.status = 'failed_required_autonomous_endpoint';
+            cell_result.failure_status = local_field(mg, 'failure_status', ...
+                'failed_required_autonomous_endpoint');
+            if isfield(mg, 'rollout') && isfield(mg.rollout, 'failure_reasons')
+                cell_result.autonomous_failure_reasons = mg.rollout.failure_reasons;
+            end
         end
 
         %% Primary: empirical convergence
@@ -384,13 +393,55 @@ function s = compact_bench(b)
     end
     if isfield(b, 'rollout') || isfield(b, 'autonomous')
         if isfield(b, 'rollout')
-            s.autonomous_nrmse = extract_nested_nrmse(b.rollout);
+            s.rollout = compact_mg_rollout(b.rollout);
             if isfield(b.rollout, 'status')
                 s.autonomous_status = b.rollout.status;
+            end
+            if strcmp(local_field(b.rollout, 'status', ''), 'computed')
+                s.autonomous_nrmse = extract_nested_nrmse(b.rollout.metrics);
+            else
+                s.autonomous_nrmse = NaN;
             end
         else
             s.autonomous_nrmse = extract_nested_nrmse(b.autonomous);
         end
+    end
+end
+
+function r = compact_mg_rollout(rollout)
+% Retain structured autonomous summary needed for later aggregation.
+    r = struct();
+    keep = {'status', 'protocol_version', 'role', 'mode', 'reason', ...
+        'origin_schedule', 'forecast_horizon_steps', 'fixed_report_horizons', ...
+        'normalization_reference', 'normalization_scale', 'per_origin', ...
+        'metrics', 'evaluation_provenance', 'failure_reasons', 'error_id'};
+    for i = 1:numel(keep)
+        if isfield(rollout, keep{i})
+            r.(keep{i}) = rollout.(keep{i});
+        end
+    end
+    if isfield(r, 'per_origin') && ~isempty(r.per_origin)
+        n_po = numel(r.per_origin);
+        slim_cells = cell(n_po, 1);
+        for o = 1:n_po
+            po = r.per_origin(o);
+            slim = struct();
+            for f = {'origin_global_index', 'origin_test_relative_index', 'horizon', ...
+                    'full_horizon_nrmse', 'rmse', 'valid_horizon_steps', ...
+                    'first_threshold_exceedance_step', 'right_censored', ...
+                    'valid_error_threshold', 'threshold_sensitivity'}
+                if isfield(po, f{1})
+                    slim.(f{1}) = po.(f{1});
+                end
+            end
+            slim_cells{o} = slim;
+        end
+        r.per_origin = [slim_cells{:}];
+        r.per_origin = r.per_origin(:);
+    end
+    if strcmp(local_field(r, 'status', ''), 'unsupported_not_computed')
+        r.predictions = [];
+        r.metrics = [];
     end
 end
 
