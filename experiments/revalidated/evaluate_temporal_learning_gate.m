@@ -62,15 +62,26 @@ function result = evaluate_temporal_learning_gate(cfg, options)
         'dde_reltol', gate.dde_reltol, ...
         'dde_abstol', gate.dde_abstol);
 
+    mutate_test_target = [];
+    if isfield(options, 'mutate_test_target') && ~isempty(options.mutate_test_target)
+        mutate_test_target = options.mutate_test_target;
+    end
+
     seed_results = cell(n_seeds, 1);
     failure_reasons = {};
     all_finite = true;
+    split_meta = struct();
+    split_meta.recorded = false;
 
     for i = 1:n_seeds
         seed = model_seeds(i);
         try
-            seed_results{i} = evaluate_one_seed(cfg, gate, cell_spec, seed, ...
-                lambda_grid, run_opts, dt, target_lag_time);
+            [seed_results{i}, split_info] = evaluate_one_seed(cfg, gate, cell_spec, seed, ...
+                lambda_grid, run_opts, dt, target_lag_time, mutate_test_target);
+            if ~split_meta.recorded
+                split_meta = split_info;
+                split_meta.recorded = true;
+            end
             if ~seed_results{i}.all_finite
                 all_finite = false;
                 failure_reasons{end+1} = sprintf('seed_%g_nonfinite', seed); %#ok<AGROW>
@@ -90,9 +101,17 @@ function result = evaluate_temporal_learning_gate(cfg, options)
     seed_results = [seed_results{:}];
     seed_results = seed_results(:);
 
+    if ~split_meta.recorded
+        splits = generate_temporal_gate_splits(gate);
+        split_meta = capture_split_metadata(gate, splits);
+        split_meta.recorded = true;
+    end
+
     aggregate = aggregate_seed_results(seed_results, thresholds, n_seeds);
+    controls_ok = seed_controls_present(seed_results);
+    diagnostics_ok = seed_diagnostics_present(seed_results);
     gate_conditions = evaluate_gate_conditions(aggregate, gate, thresholds, ...
-        all_finite, n_seeds, target_lag_time);
+        all_finite, n_seeds, target_lag_time, split_meta, controls_ok, diagnostics_ok);
     failed = {};
     names = fieldnames(gate_conditions);
     for i = 1:numel(names)
@@ -124,6 +143,7 @@ function result = evaluate_temporal_learning_gate(cfg, options)
     result.feature_dimension = gate.feature_dimension;
     result.target_definition = 'y(t)=u(t-k)';
     result.target_lag_steps = gate.target_lag_steps;
+    result.dt = dt;
     result.target_lag_time = target_lag_time;
     result.input_distribution = char(gate.input_distribution);
     result.input_range = [gate.input_min, gate.input_max];
@@ -147,6 +167,8 @@ function result = evaluate_temporal_learning_gate(cfg, options)
     result.shuffle_train_seed = gate.shuffle_train_seed;
     result.shuffle_validation_seed = gate.shuffle_validation_seed;
     result.shuffle_test_seed = gate.shuffle_test_seed;
+    result.split_seeds = split_meta.split_seeds;
+    result.split_independence = split_meta.split_independence;
     result.lambda_grid = lambda_grid;
     result.thresholds = thresholds;
     result.reference_cell_key = char(gate.reference_cell_key);
@@ -156,8 +178,8 @@ function result = evaluate_temporal_learning_gate(cfg, options)
     result.gate_conditions = gate_conditions;
 end
 
-function seed = evaluate_one_seed(cfg, gate, cell_spec, model_seed, lambda_grid, ...
-        run_opts, dt, target_lag_time)
+function [seed, split_meta] = evaluate_one_seed(cfg, gate, cell_spec, model_seed, lambda_grid, ...
+        run_opts, dt, target_lag_time, mutate_test_target)
     k = gate.target_lag_steps;
     [params, ~] = build_ablation_params(cell_spec, model_seed, cfg);
     params.include_input = false;
@@ -191,6 +213,7 @@ function seed = evaluate_one_seed(cfg, gate, cell_spec, model_seed, lambda_grid,
 
     splits = generate_temporal_gate_splits(gate);
     assert_split_independence(splits);
+    split_meta = capture_split_metadata(gate, splits);
 
     [X_tr, Y_tr, n_tr] = run_split_features(esn, splits.train, k, run_opts, gate);
     [X_va, Y_va, n_va] = run_split_features(esn, splits.validation, k, run_opts, gate);
@@ -206,19 +229,15 @@ function seed = evaluate_one_seed(cfg, gate, cell_spec, model_seed, lambda_grid,
             'MESN design matrix must contain only reservoir features (n columns).');
     end
 
-    % MESN fit
+    % MESN fit (train/validation only; test target never enters selection)
     mesn_sel = select_ridge_lambda(X_tr, Y_tr, X_va, Y_va, lambda_grid);
     mesn_model = mesn_sel.selected_model;
-    mesn_pred = apply_ridge_readout(mesn_model, X_te);
-    mesn_metrics = compute_gate_metrics(mesn_pred, Y_te);
 
     % Current-input-only control
     Xu_tr = splits.train.U_scored;
     Xu_va = splits.validation.U_scored;
     Xu_te = splits.test.U_scored;
     cur_sel = select_ridge_lambda(Xu_tr, Y_tr, Xu_va, Y_va, lambda_grid);
-    cur_pred = apply_ridge_readout(cur_sel.selected_model, Xu_te);
-    cur_metrics = compute_gate_metrics(cur_pred, Y_te);
     if size(Xu_tr, 2) ~= 1
         error('evaluate_temporal_learning_gate:CurrentControlDim', ...
             'current_input_only_control must have exactly one feature column.');
@@ -229,16 +248,12 @@ function seed = evaluate_one_seed(cfg, gate, cell_spec, model_seed, lambda_grid,
     [Xnr_va, ~, ~] = run_split_features(esn_nr, splits.validation, k, run_opts, gate);
     [Xnr_te, ~, ~] = run_split_features(esn_nr, splits.test, k, run_opts, gate);
     nr_sel = select_ridge_lambda(Xnr_tr, Y_tr, Xnr_va, Y_va, lambda_grid);
-    nr_pred = apply_ridge_readout(nr_sel.selected_model, Xnr_te);
-    nr_metrics = compute_gate_metrics(nr_pred, Y_te);
 
-    % Shuffled-target negative control
+    % Shuffled-target negative control (shuffle train/val before fit)
     Y_tr_s = permute_with_seed(Y_tr, gate.shuffle_train_seed);
     Y_va_s = permute_with_seed(Y_va, gate.shuffle_validation_seed);
     Y_te_s = permute_with_seed(Y_te, gate.shuffle_test_seed);
     sh_sel = select_ridge_lambda(X_tr, Y_tr_s, X_va, Y_va_s, lambda_grid);
-    sh_pred = apply_ridge_readout(sh_sel.selected_model, X_te);
-    sh_metrics = compute_gate_metrics(sh_pred, Y_te_s);
 
     % Exact-lag history positive control
     [Xh_tr, Xh_va, Xh_te] = history_design_matrices(splits, k);
@@ -252,6 +267,21 @@ function seed = evaluate_one_seed(cfg, gate, cell_spec, model_seed, lambda_grid,
             'Last history column must equal u(t-k).');
     end
     hist_sel = select_ridge_lambda(Xh_tr, Y_tr, Xh_va, Y_va, lambda_grid);
+
+    % Optional test-only mutation for isolation tests (after all fits).
+    if ~isempty(mutate_test_target)
+        Y_te = mutate_test_target(Y_te);
+        Y_te_s = permute_with_seed(Y_te, gate.shuffle_test_seed);
+    end
+
+    mesn_pred = apply_ridge_readout(mesn_model, X_te);
+    mesn_metrics = compute_gate_metrics(mesn_pred, Y_te);
+    cur_pred = apply_ridge_readout(cur_sel.selected_model, Xu_te);
+    cur_metrics = compute_gate_metrics(cur_pred, Y_te);
+    nr_pred = apply_ridge_readout(nr_sel.selected_model, Xnr_te);
+    nr_metrics = compute_gate_metrics(nr_pred, Y_te);
+    sh_pred = apply_ridge_readout(sh_sel.selected_model, X_te);
+    sh_metrics = compute_gate_metrics(sh_pred, Y_te_s);
     hist_pred = apply_ridge_readout(hist_sel.selected_model, Xh_te);
     hist_metrics = compute_gate_metrics(hist_pred, Y_te);
 
@@ -267,11 +297,11 @@ function seed = evaluate_one_seed(cfg, gate, cell_spec, model_seed, lambda_grid,
     seed.train_samples_used = n_tr;
     seed.validation_samples_used = n_va;
     seed.test_samples_used = n_te;
-    seed.mesn = pack_fit(mesn_sel, mesn_metrics, mesn_pred);
-    seed.current_input_only_control = pack_fit(cur_sel, cur_metrics, cur_pred);
-    seed.no_recurrent_coupling_control = pack_fit(nr_sel, nr_metrics, nr_pred);
-    seed.shuffled_target_control = pack_fit(sh_sel, sh_metrics, sh_pred);
-    seed.exact_history_control = pack_fit(hist_sel, hist_metrics, hist_pred);
+    seed.mesn = pack_fit(mesn_sel, mesn_metrics, mesn_pred, lambda_grid);
+    seed.current_input_only_control = pack_fit(cur_sel, cur_metrics, cur_pred, lambda_grid);
+    seed.no_recurrent_coupling_control = pack_fit(nr_sel, nr_metrics, nr_pred, lambda_grid);
+    seed.shuffled_target_control = pack_fit(sh_sel, sh_metrics, sh_pred, lambda_grid);
+    seed.exact_history_control = pack_fit(hist_sel, hist_metrics, hist_pred, lambda_grid);
     seed.delta_vs_current_nrmse = cur_metrics.nrmse - mesn_metrics.nrmse;
     seed.delta_vs_no_recurrence_nrmse = nr_metrics.nrmse - mesn_metrics.nrmse;
     seed.beats_current = seed.delta_vs_current_nrmse > 0;
@@ -399,7 +429,7 @@ function m = compute_gate_metrics(y_hat, y)
     m = struct('rmse', rmse, 'nrmse', nrmse, 'r2', r2, 'pearson', pearson);
 end
 
-function pack = pack_fit(selection, metrics, y_hat)
+function pack = pack_fit(selection, metrics, y_hat, lambda_grid)
     model = selection.selected_model;
     pack = struct();
     pack.metrics = metrics;
@@ -408,6 +438,143 @@ function pack = pack_fit(selection, metrics, y_hat)
     pack.ridge = extract_ridge_diagnostics(model);
     pack.y_hat_finite = all(isfinite(y_hat(:)));
     pack.fit_status = 'ok';
+    pack.lambda_selection_table = compact_lambda_selection_table(selection);
+    grid = lambda_grid(:);
+    if isempty(grid)
+        grid = selection.lambda_grid(:);
+    end
+    pack.selected_at_grid_boundary = isfinite(selection.selected_lambda) && ...
+        (selection.selected_lambda == min(grid) || selection.selected_lambda == max(grid));
+end
+
+function rows = compact_lambda_selection_table(selection)
+    src = selection.table;
+    n = numel(src);
+    rows = repmat(struct( ...
+        'candidate_lambda', NaN, ...
+        'validation_nrmse', NaN, ...
+        'status', 'rejected', ...
+        'numerical_rank', NaN, ...
+        'coefficient_norm', NaN, ...
+        'selected_candidate', false), n, 1);
+    for i = 1:n
+        rows(i).candidate_lambda = src(i).lambda;
+        if isfinite(src(i).val_score)
+            rows(i).validation_nrmse = src(i).val_score;
+        elseif ~isempty(src(i).val_nrmse)
+            rows(i).validation_nrmse = mean(src(i).val_nrmse);
+        else
+            rows(i).validation_nrmse = NaN;
+        end
+        if logical(src(i).accepted)
+            rows(i).status = 'accepted';
+        else
+            rows(i).status = 'rejected';
+        end
+        rows(i).numerical_rank = src(i).numerical_rank;
+        rows(i).coefficient_norm = src(i).coefficient_norm;
+        rows(i).selected_candidate = logical(src(i).accepted) && ...
+            isfinite(src(i).lambda) && isfinite(selection.selected_lambda) && ...
+            src(i).lambda == selection.selected_lambda;
+    end
+end
+
+function meta = capture_split_metadata(gate, splits)
+    meta = struct();
+    meta.split_seeds = struct( ...
+        'train_input_seed', gate.train_input_seed, ...
+        'validation_input_seed', gate.validation_input_seed, ...
+        'test_input_seed', gate.test_input_seed, ...
+        'shuffle_train_seed', gate.shuffle_train_seed, ...
+        'shuffle_validation_seed', gate.shuffle_validation_seed, ...
+        'shuffle_test_seed', gate.shuffle_test_seed);
+    task_seeds = [gate.train_input_seed, gate.validation_input_seed, gate.test_input_seed];
+    shuffle_seeds = [gate.shuffle_train_seed, gate.shuffle_validation_seed, ...
+        gate.shuffle_test_seed];
+    model_seeds = gate.model_seeds(:)';
+    sequences_distinct = ~(isequal(splits.train.U, splits.validation.U) || ...
+        isequal(splits.train.U, splits.test.U) || ...
+        isequal(splits.validation.U, splits.test.U));
+    meta.split_independence = struct( ...
+        'task_seeds_distinct', numel(unique(task_seeds)) == 3, ...
+        'shuffle_seeds_distinct', numel(unique(shuffle_seeds)) == 3, ...
+        'model_seeds_disjoint_from_task_seeds', ...
+            isempty(intersect(model_seeds, task_seeds)), ...
+        'model_seeds_disjoint_from_shuffle_seeds', ...
+            isempty(intersect(model_seeds, shuffle_seeds)), ...
+        'sequences_distinct', sequences_distinct, ...
+        'verified', true);
+end
+
+function tf = seed_controls_present(seed_results)
+    required = {'current_input_only_control', 'no_recurrent_coupling_control', ...
+        'shuffled_target_control', 'exact_history_control'};
+    tf = ~isempty(seed_results);
+    for i = 1:numel(seed_results)
+        if ~strcmp(seed_results(i).status, 'ok')
+            tf = false;
+            return;
+        end
+        for c = 1:numel(required)
+            name = required{c};
+            if ~isfield(seed_results(i), name)
+                tf = false;
+                return;
+            end
+            fit = seed_results(i).(name);
+            if ~isstruct(fit) || ~isfield(fit, 'fit_status') || ...
+                    ~strcmp(char(fit.fit_status), 'ok') || ...
+                    ~isfield(fit, 'metrics')
+                tf = false;
+                return;
+            end
+        end
+        if ~isfield(seed_results(i), 'mesn') || ...
+                ~strcmp(char(seed_results(i).mesn.fit_status), 'ok')
+            tf = false;
+            return;
+        end
+    end
+end
+
+function tf = seed_diagnostics_present(seed_results)
+    fit_names = {'mesn', 'current_input_only_control', 'no_recurrent_coupling_control', ...
+        'shuffled_target_control', 'exact_history_control'};
+    required_finite = {'numerical_rank', 'coefficient_norm', 'lambda', 'intercept'};
+    tf = ~isempty(seed_results);
+    for i = 1:numel(seed_results)
+        if ~strcmp(seed_results(i).status, 'ok')
+            tf = false;
+            return;
+        end
+        for f = 1:numel(fit_names)
+            fit = seed_results(i).(fit_names{f});
+            if ~isfield(fit, 'ridge') || ~isstruct(fit.ridge) || ...
+                    ~isfield(fit, 'lambda_selection_table') || ...
+                    isempty(fit.lambda_selection_table) || ...
+                    ~isfield(fit, 'selected_at_grid_boundary')
+                tf = false;
+                return;
+            end
+            d = fit.ridge;
+            if ~isfield(d, 'solver_method') || isempty(char(string(d.solver_method)))
+                tf = false;
+                return;
+            end
+            for r = 1:numel(required_finite)
+                name = required_finite{r};
+                if ~isfield(d, name) || any(~isfinite(d.(name)(:)))
+                    tf = false;
+                    return;
+                end
+            end
+            if ~isfield(d, 'feature_mean') || ~isfield(d, 'feature_scale') || ...
+                    any(~isfinite(d.feature_mean(:))) || any(~isfinite(d.feature_scale(:)))
+                tf = false;
+                return;
+            end
+        end
+    end
 end
 
 function d = extract_ridge_diagnostics(model)
@@ -534,14 +701,21 @@ function q = local_iqr(v)
     q = q3 - q1;
 end
 
-function gc = evaluate_gate_conditions(agg, gate, thr, all_finite, n_seeds, target_lag_time)
+function gc = evaluate_gate_conditions(agg, gate, thr, all_finite, n_seeds, target_lag_time, ...
+        split_meta, controls_ok, diagnostics_ok)
     gc = struct();
     gc.all_fits_and_metrics_finite = all_finite && ...
         isfinite(agg.mesn_nrmse.median) && isfinite(agg.mesn_r2.median);
     gc.include_input_false = ~logical(gate.include_input);
     gc.target_lag_positive = gate.target_lag_steps > 0;
     gc.target_lag_time_consistent = abs(target_lag_time - gate.target_lag_steps * gate.dt) <= 1e-12;
-    gc.splits_independent = true; % enforced earlier by hard errors
+    if nargin >= 7 && isstruct(split_meta) && isfield(split_meta, 'split_independence')
+        si = split_meta.split_independence;
+        gc.splits_independent = logical(si.task_seeds_distinct) && ...
+            logical(si.sequences_distinct) && logical(si.verified);
+    else
+        gc.splits_independent = false;
+    end
     gc.mesn_median_nrmse_ok = isfinite(agg.mesn_nrmse.median) && ...
         agg.mesn_nrmse.median <= thr.mesn_median_nrmse_max;
     gc.mesn_median_r2_ok = isfinite(agg.mesn_r2.median) && ...
@@ -559,8 +733,16 @@ function gc = evaluate_gate_conditions(agg, gate, thr, all_finite, n_seeds, targ
     gc.exact_history_median_nrmse_ok = isfinite(agg.exact_history_control_nrmse.median) && ...
         agg.exact_history_control_nrmse.median <= thr.exact_history_median_nrmse_max;
     gc.seed_rows_complete = agg.n_seeds_completed == n_seeds;
-    gc.controls_present = true;
-    gc.diagnostics_present = true;
+    if nargin >= 8
+        gc.controls_present = logical(controls_ok);
+    else
+        gc.controls_present = false;
+    end
+    if nargin >= 9
+        gc.diagnostics_present = logical(diagnostics_ok);
+    else
+        gc.diagnostics_present = false;
+    end
 end
 
 function s = empty_seed_result()

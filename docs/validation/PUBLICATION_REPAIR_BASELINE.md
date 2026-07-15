@@ -98,8 +98,8 @@ Default `logspace` timescales give one-timescale `[0.25]` vs three-timescale `[0
 pipeline (`tests/scientific/test_instantaneous_readout_pipeline_check.m`).
 Publication readiness now requires `temporal_learning_gate_v1`
 (`y(t)=u(t-k)`, `include_input=false`). On the official smoke protocol the
-MESN gate currently **fails** fixed thresholds (median NRMSE≈0.97 > 0.90;
-median R²≈0.04 < 0.15; median Δ vs current≈0.02 < 0.10) without threshold
+MESN gate currently **fails** fixed thresholds (median NRMSE≈0.9796 > 0.90;
+median R²≈0.04 < 0.15; median Δ vs current≈0.0236 < 0.10) without threshold
 modification — see task log.
 
 ### 2.7 Baselines discarded by aggregation and figures

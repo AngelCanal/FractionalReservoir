@@ -53,6 +53,8 @@ function testRealSRNNTemporalGateSmokeSchema(testCase)
         testCase.verifyTrue(isfinite(sr.shuffled_target_control.metrics.nrmse));
         testCase.verifyTrue(isfinite(sr.exact_history_control.metrics.nrmse));
         testCase.verifyLessThan(sr.exact_history_control.metrics.nrmse, 1e-6);
+        testCase.verifyTrue(isfield(sr.mesn, 'lambda_selection_table'));
+        testCase.verifyTrue(isfield(sr.mesn, 'selected_at_grid_boundary'));
         % Negative controls should not crush NRMSE like exact history
         testCase.verifyGreaterThan(sr.current_input_only_control.metrics.nrmse, 0.5);
         testCase.verifyGreaterThan(sr.shuffled_target_control.metrics.nrmse, 0.5);

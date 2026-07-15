@@ -10,6 +10,12 @@ function setupOnce(testCase)
     addpath(genpath(fullfile(repo_root, 'experiments', 'revalidated')));
     addpath(genpath(fullfile(repo_root, 'tests')));
     testCase.TestData.repo_root = repo_root;
+
+    % Official smoke gate once for independent-validation / persistence tests.
+    cfg = mechanism_ablation_config('smoke');
+    gate = evaluate_temporal_learning_gate(cfg);
+    testCase.TestData.smoke_gate_cfg = cfg;
+    testCase.TestData.smoke_gate_result = gate;
 end
 
 %% A. Target construction
@@ -192,20 +198,30 @@ function testCurrentInputOnlyNearChanceOnIID(testCase)
 end
 
 function testChangingTestTargetDoesNotAlterModel(testCase)
-    rng(11);
-    Xtr = randn(80, 4);
-    Ytr = Xtr * [1; -1; 0.2; 0] + 0.01 * randn(80, 1);
-    Xva = randn(40, 4);
-    Yva = Xva * [1; -1; 0.2; 0] + 0.01 * randn(40, 1);
-    sel1 = select_ridge_lambda(Xtr, Ytr, Xva, Yva, [1e-4, 1e-2, 1]);
-    m1 = sel1.selected_model;
-    % Mutating a held-out test target variable cannot affect selection
-    Yte = randn(40, 1); %#ok<NASGU>
-    Yte = Yte + 100; %#ok<NASGU>
-    sel2 = select_ridge_lambda(Xtr, Ytr, Xva, Yva, [1e-4, 1e-2, 1]);
-    testCase.verifyEqual(sel1.selected_lambda, sel2.selected_lambda);
-    testCase.verifyEqual(m1.coefficients, sel2.selected_model.coefficients);
-    testCase.verifyEqual(m1.feature_mean, sel2.selected_model.feature_mean);
+% Integration isolation: mutate only the test target after train/val selection.
+    cfg = mechanism_ablation_config('smoke');
+    cfg.temporal_learning_gate.model_seeds = 1729;
+    cfg.temporal_learning_gate.washout_steps = 25;
+    cfg.temporal_learning_gate.train_samples = 120;
+    cfg.temporal_learning_gate.validation_samples = 50;
+    cfg.temporal_learning_gate.test_samples = 60;
+    cfg.protocol_fingerprint = compute_protocol_fingerprint(cfg);
+
+    r1 = evaluate_temporal_learning_gate(cfg);
+    r2 = evaluate_temporal_learning_gate(cfg, struct( ...
+        'mutate_test_target', @(y) y + 3.5));
+
+    s1 = r1.seed_results(1);
+    s2 = r2.seed_results(1);
+    testCase.verifyEqual(s1.mesn.selected_lambda, s2.mesn.selected_lambda);
+    testCase.verifyEqual(s1.mesn.ridge.coefficients, s2.mesn.ridge.coefficients);
+    testCase.verifyEqual(s1.mesn.ridge.intercept, s2.mesn.ridge.intercept);
+    testCase.verifyEqual(s1.mesn.ridge.feature_mean, s2.mesn.ridge.feature_mean);
+    testCase.verifyEqual(s1.mesn.ridge.feature_scale, s2.mesn.ridge.feature_scale);
+    testCase.verifyEqual(s1.mesn.ridge.numerical_rank, s2.mesn.ridge.numerical_rank);
+    testCase.verifyTrue(isequaln(s1.mesn.lambda_selection_table, s2.mesn.lambda_selection_table));
+    testCase.verifyNotEqual(s1.mesn.metrics.nrmse, s2.mesn.metrics.nrmse);
+    testCase.verifyTrue(isfield(s1.mesn, 'selected_at_grid_boundary'));
 end
 
 %% F. Gate logic with synthetic seed rows
@@ -249,7 +265,168 @@ function testNonfiniteMetricFailsReadiness(testCase)
     testCase.verifyFalse(report.checks(idx).pass);
 end
 
+%% G. Independent validator + runner persistence (Phase 4B-R)
+function testIndependentValidatorAcceptsHonestSmokeResult(testCase)
+    [cfg, gate] = cached_smoke_gate(testCase);
+    [ok, report] = validate_temporal_learning_gate_result(gate, cfg);
+    testCase.verifyTrue(ok, strjoin(report.reasons, ','));
+    testCase.verifyEqual(report.stored_passed, report.recomputed_passed);
+end
+
+function testFabricatedPassedFailsIndependentValidation(testCase)
+    [cfg, gate] = cached_smoke_gate(testCase);
+    gate.passed = true;
+    [ok, report] = validate_temporal_learning_gate_result(gate, cfg);
+    testCase.verifyFalse(ok);
+    testCase.verifyTrue(any(strcmp(report.reasons, ...
+        'passed_flag_does_not_match_recomputed_conditions')));
+end
+
+function testWrongFingerprintFailsValidation(testCase)
+    [cfg, gate] = cached_smoke_gate(testCase);
+    gate.protocol_fingerprint = 'deadbeef';
+    [ok, report] = validate_temporal_learning_gate_result(gate, cfg);
+    testCase.verifyFalse(ok);
+    testCase.verifyTrue(any(strcmp(report.reasons, 'protocol_fingerprint_mismatch')));
+end
+
+function testWrongSeedIdentityFailsValidation(testCase)
+    [cfg, gate] = cached_smoke_gate(testCase);
+    gate.seed_results(2).model_seed = 99999;
+    [ok, report] = validate_temporal_learning_gate_result(gate, cfg);
+    testCase.verifyFalse(ok);
+    testCase.verifyTrue(any(strcmp(report.reasons, 'seed_identity_or_order_mismatch')));
+end
+
+function testChangedThresholdsFailValidation(testCase)
+    [cfg, gate] = cached_smoke_gate(testCase);
+    gate.thresholds.mesn_median_nrmse_max = 0.10;
+    [ok, report] = validate_temporal_learning_gate_result(gate, cfg);
+    testCase.verifyFalse(ok);
+    testCase.verifyTrue(any(strcmp(report.reasons, 'thresholds_mismatch')));
+end
+
+function testMissingControlDiagnosticsFailValidation(testCase)
+    [cfg, gate] = cached_smoke_gate(testCase);
+    gate.seed_results(1).current_input_only_control = rmfield( ...
+        gate.seed_results(1).current_input_only_control, 'ridge');
+    [ok, report] = validate_temporal_learning_gate_result(gate, cfg);
+    testCase.verifyFalse(ok);
+    testCase.verifyTrue(any(contains(report.reasons, 'diagnostics')));
+end
+
+function testRunnersPassGateIntoReadiness(testCase)
+    [cfg, gate] = cached_smoke_gate(testCase);
+    tmp = tempname;
+    mkdir(tmp);
+    cleanup = onCleanup(@() rmdir(tmp, 's')); %#ok<NASGU>
+
+    opts = struct( ...
+        'max_cells', 0, ...
+        'max_seeds', 1, ...
+        'save_results', true, ...
+        'verbose', false, ...
+        'revalidated_root_override', tmp, ...
+        'temporal_learning_gate_override', gate, ...
+        'do_rerun_check', false);
+
+    [smoke_res, ~] = run_mechanism_ablation_smoke(opts);
+    testCase.verifyTrue(isfield(smoke_res, 'temporal_learning_gate'));
+    testCase.verifyTrue(isfield(smoke_res.readiness.checks, 'name') || ...
+        isfield(smoke_res.readiness, 'checks'));
+    names = {smoke_res.readiness.checks.name};
+    testCase.verifyTrue(any(strcmp(names, 'temporal_learning_gate_passed')));
+
+    [pilot_res, ~] = run_mechanism_ablation_pilot(opts);
+    testCase.verifyTrue(isfield(pilot_res, 'temporal_learning_gate'));
+
+    full_opts = opts;
+    full_opts.frozen_operating_point = struct( ...
+        'input_scaling', 0.5, 'level_of_chaos', 0.8, 'source', 'test');
+    full_opts.use_reduced_lengths = true;
+    [full_res, ~] = run_mechanism_ablation_full(full_opts);
+    testCase.verifyTrue(isfield(full_res, 'temporal_learning_gate'));
+    testCase.verifyFalse(full_res.publication_ready);
+end
+
+function testSavedRunRevalidatesAndMissingArtifactFailsClosed(testCase)
+    [cfg, gate] = cached_smoke_gate(testCase);
+    tmp = tempname;
+    mkdir(tmp);
+    cleanup = onCleanup(@() rmdir(tmp, 's')); %#ok<NASGU>
+
+    opts = struct( ...
+        'max_cells', 0, ...
+        'max_seeds', 1, ...
+        'save_results', true, ...
+        'verbose', false, ...
+        'revalidated_root_override', tmp, ...
+        'temporal_learning_gate_override', gate);
+    [~, run_dir] = run_mechanism_ablation_smoke(opts);
+    art = fullfile(run_dir, 'validation', 'temporal_learning_gate.mat');
+    testCase.verifyTrue(isfile(art));
+
+    report = validate_publication_run(run_dir);
+    names = {report.checks.name};
+    idx = find(strcmp(names, 'temporal_learning_gate_independent_validation'), 1);
+    testCase.verifyTrue(report.checks(idx).pass);
+    testCase.verifyFalse(report.publication_ready); % smoke never ready
+
+    delete(art);
+    report2 = validate_publication_run(run_dir);
+    idx2 = find(strcmp({report2.checks.name}, 'temporal_learning_gate_artifact_present'), 1);
+    testCase.verifyFalse(report2.checks(idx2).pass);
+    testCase.verifyFalse(report2.publication_ready);
+    %#ok<NASGU>
+    cfg = cfg;
+end
+
+function testReducedViaFullUsesSmokeGateFeatureDimension(testCase)
+    smoke = mechanism_ablation_config('smoke');
+    pub = mechanism_ablation_config('publication');
+    cfg = pub;
+    cfg.lengths = smoke.lengths;
+    cfg.base.n = smoke.base.n;
+    cfg.secondary_enabled = false;
+    cfg.temporal_learning_gate = smoke.temporal_learning_gate;
+    cfg = force_smoke_protocol(cfg, 'test_reduced');
+    cfg.frozen_operating_point = struct('input_scaling', 0.5, 'level_of_chaos', 0.8);
+    cfg.protocol_fingerprint = compute_protocol_fingerprint(cfg);
+
+    testCase.verifyEqual(cfg.temporal_learning_gate.feature_dimension, smoke.base.n);
+    testCase.verifyEqual(numel(cfg.temporal_learning_gate.model_seeds), 3);
+    testCase.verifyEqual(cfg.temporal_learning_gate.train_samples, ...
+        smoke.temporal_learning_gate.train_samples);
+    testCase.verifyEqual(cfg.protocol_tier, 'smoke');
+
+    tmp = tempname;
+    mkdir(tmp);
+    cleanup = onCleanup(@() rmdir(tmp, 's')); %#ok<NASGU>
+    [~, gate] = cached_smoke_gate(testCase);
+    % Align override fingerprint/tier to rebuilt cfg
+    gate.protocol_fingerprint = cfg.protocol_fingerprint;
+    gate.protocol_tier = cfg.protocol_tier;
+    gate.feature_dimension = cfg.temporal_learning_gate.feature_dimension;
+    opts = struct( ...
+        'max_cells', 0, ...
+        'max_seeds', 1, ...
+        'save_results', false, ...
+        'verbose', false, ...
+        'use_reduced_lengths', true, ...
+        'frozen_operating_point', cfg.frozen_operating_point, ...
+        'temporal_learning_gate_override', gate);
+    [result, ~] = run_mechanism_ablation_full(opts);
+    testCase.verifyEqual(result.cfg.temporal_learning_gate.feature_dimension, 12);
+    testCase.verifyEqual(result.cfg.protocol_tier, 'smoke');
+    testCase.verifyFalse(result.publication_ready);
+end
+
 %% Helpers
+function [cfg, gate] = cached_smoke_gate(testCase)
+    cfg = testCase.TestData.smoke_gate_cfg;
+    gate = testCase.TestData.smoke_gate_result;
+end
+
 function g = synthetic_passed_gate(cfg)
     seeds = cfg.temporal_learning_gate.model_seeds(:)';
     n = numel(seeds);

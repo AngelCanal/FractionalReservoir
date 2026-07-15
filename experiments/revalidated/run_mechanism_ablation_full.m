@@ -23,6 +23,9 @@ function [result, run_dir] = run_mechanism_ablation_full(options)
         cfg.lengths = smoke_cfg.lengths;
         cfg.base.n = smoke_cfg.base.n;
         cfg.secondary_enabled = false;
+        % Rebuild temporal-gate config for smoke n/lengths/seeds/tier before
+        % fingerprinting (publication gate was constructed earlier).
+        cfg.temporal_learning_gate = smoke_cfg.temporal_learning_gate;
         cfg = force_smoke_protocol(cfg, ...
             'reduced_lengths_for_compute_feasibility_not_publication_inference');
     end
@@ -106,18 +109,24 @@ function [result, run_dir] = run_mechanism_ablation_full(options)
     end
 
     aggregate = struct('status', 'not_computed');
-    if save_results && n_fail == 0
+    if save_results && n_fail == 0 && ~isempty(cell_results)
         aggregate = aggregate_ablation_results(run_dir, struct( ...
             'control_cell_key', 'adapt-off__std-off__delay-ode_off__feat-x', ...
             'save', true));
     end
+
+    % Final cfg is established (including frozen OP / smoke rebuild) — gate once.
+    gate_override = local_get(options, 'temporal_learning_gate_override', []);
+    [temporal_gate, ~, gate_manifest] = ...
+        evaluate_and_persist_temporal_learning_gate(cfg, run_dir, save_results, gate_override);
 
     readiness = evaluate_publication_readiness(cfg, struct( ...
         'cell_records', cell_results, ...
         'has_manifest', save_results, ...
         'has_commit_sha', save_results, ...
         'has_artifact_hashes', false, ...
-        'run_dir', run_dir));
+        'run_dir', run_dir, ...
+        'temporal_learning_gate', temporal_gate));
 
     % Hard overrides for reduced/smoke masquerading as full.
     if used_reduced_lengths || ~strcmp(cfg.protocol_tier, 'publication')
@@ -136,6 +145,7 @@ function [result, run_dir] = run_mechanism_ablation_full(options)
     result.n_failed = n_fail;
     result.cell_index = cell_index;
     result.aggregate = aggregate;
+    result.temporal_learning_gate = temporal_gate;
     result.frozen_operating_point = cfg.frozen_operating_point;
     result.run_dir = run_dir;
     result.structurally_complete = readiness.structurally_complete;
@@ -154,7 +164,7 @@ function [result, run_dir] = run_mechanism_ablation_full(options)
 
     if save_results
         atomic_save_results(fullfile(run_dir, 'full_summary.mat'), struct('result', result));
-        save_run_manifest(ctx, cfg, struct( ...
+        man = struct( ...
             'stage', 'T103_full_complete', ...
             'status', result.status, ...
             'protocol_tier', cfg.protocol_tier, ...
@@ -166,7 +176,17 @@ function [result, run_dir] = run_mechanism_ablation_full(options)
             'artifact_package_complete', result.artifact_package_complete, ...
             'publication_ready', result.publication_ready, ...
             'completion_note', result.completion_note, ...
-            'n_failed', n_fail));
+            'n_failed', n_fail);
+        man = merge_structs(man, gate_manifest);
+        save_run_manifest(ctx, cfg, man);
+    end
+end
+
+function out = merge_structs(a, b)
+    out = a;
+    fn = fieldnames(b);
+    for i = 1:numel(fn)
+        out.(fn{i}) = b.(fn{i});
     end
 end
 

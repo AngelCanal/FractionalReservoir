@@ -6,9 +6,10 @@ function report = validate_publication_run(run_dir, options)
 %
 % Verifies protocol tier/fingerprint, exact seeds/conditions, no missing or
 % duplicate pairs, finite primary endpoints, cell status, Dale/QA bounds,
-% unsupported-DDE hygiene, manifest/commit metadata, and artifact hashes when
-% present. publication_ready is the logical AND of all publication requirements
-% and never depends only on seed/cell counts.
+% unsupported-DDE hygiene, manifest/commit metadata, artifact hashes when
+% present, and independently revalidates the persisted temporal learning gate.
+% publication_ready is the logical AND of all publication requirements and never
+% depends only on seed/cell counts.
 
     if nargin < 1 || isempty(run_dir)
         error('validate_publication_run:MissingRunDir', 'run_dir is required.');
@@ -37,6 +38,8 @@ function report = validate_publication_run(run_dir, options)
     has_artifact_hashes = isfile(fullfile(run_dir, 'checksums.sha256')) || ...
         isfile(fullfile(run_dir, 'publication_readiness.json'));
 
+    [gate_result, gate_load] = load_temporal_learning_gate_artifact(run_dir);
+
     eval_opts = struct( ...
         'cell_records', cell_records, ...
         'has_manifest', has_manifest, ...
@@ -47,11 +50,31 @@ function report = validate_publication_run(run_dir, options)
         eval_opts.expected_cfg = options.expected_cfg;
     end
 
+    gate_validation_ok = false;
+    gate_validation_detail = gate_load.detail;
+    if gate_load.ok
+        [gate_validation_ok, gate_val_report] = ...
+            validate_temporal_learning_gate_result(gate_result, cfg);
+        if gate_validation_ok
+            eval_opts.temporal_learning_gate = gate_result;
+            gate_validation_detail = 'temporal_learning_gate_independent_ok';
+        else
+            gate_validation_detail = strjoin(gate_val_report.reasons, ',');
+            if isempty(gate_validation_detail)
+                gate_validation_detail = 'temporal_learning_gate_independent_failed';
+            end
+        end
+    end
+
     report = evaluate_publication_readiness(cfg, eval_opts);
     report.source = 'validate_publication_run';
     report.run_dir = run_dir;
     report.cfg = cfg;
     report.n_cell_files = numel(cell_records);
+    report.temporal_learning_gate_load = gate_load;
+    if gate_load.ok
+        report.temporal_learning_gate = gate_result;
+    end
 
     % Explicit path immutability reminder for callers.
     report.checks(end+1) = struct( ...
@@ -59,15 +82,81 @@ function report = validate_publication_run(run_dir, options)
         'pass', ~isempty(run_dir) && isfolder(run_dir), ...
         'detail', run_dir);
 
-    % Recompute publication_ready with the appended check.
+    report.checks(end+1) = struct( ...
+        'name', 'temporal_learning_gate_artifact_present', ...
+        'pass', gate_load.ok, ...
+        'detail', gate_load.detail);
+
+    report.checks(end+1) = struct( ...
+        'name', 'temporal_learning_gate_independent_validation', ...
+        'pass', gate_validation_ok, ...
+        'detail', gate_validation_detail);
+
+    % Recompute publication_ready with the appended checks (fail closed).
     names = {report.checks.name};
     pass = [report.checks.pass];
+    artifact_ok = all(pass(strcmp(names, 'result_path_explicit'))) && ...
+        all(pass(strcmp(names, 'temporal_learning_gate_artifact_present'))) && ...
+        all(pass(strcmp(names, 'temporal_learning_gate_independent_validation')));
+    report.all_qa_checks_pass = report.all_qa_checks_pass && artifact_ok;
     report.publication_ready = report.publication_protocol_complete && ...
         report.structurally_complete && ...
         report.all_primary_endpoints_finite && ...
         report.all_qa_checks_pass && ...
-        report.artifact_package_complete && ...
-        all(pass(strcmp(names, 'result_path_explicit')));
+        report.artifact_package_complete;
+end
+
+function [gate_result, info] = load_temporal_learning_gate_artifact(run_dir)
+    info = struct('ok', false, 'detail', '', 'path', '');
+    gate_result = [];
+
+    val_dir = fullfile(run_dir, 'validation');
+    if ~isfolder(val_dir)
+        info.detail = 'temporal_learning_gate_validation_dir_missing';
+        return;
+    end
+
+    matches = dir(fullfile(val_dir, 'temporal_learning_gate*.mat'));
+    if isempty(matches)
+        info.detail = 'temporal_learning_gate_artifact_missing';
+        return;
+    end
+    if numel(matches) > 1
+        info.detail = sprintf('temporal_learning_gate_artifact_duplicated_n=%d', numel(matches));
+        return;
+    end
+
+    path = fullfile(val_dir, matches(1).name);
+    info.path = path;
+    if ~strcmp(matches(1).name, 'temporal_learning_gate.mat')
+        info.detail = sprintf('temporal_learning_gate_unexpected_name=%s', matches(1).name);
+        return;
+    end
+
+    try
+        S = load(path);
+    catch ME
+        info.detail = sprintf('temporal_learning_gate_unreadable:%s', ME.identifier);
+        return;
+    end
+
+    if isfield(S, 'temporal_learning_gate')
+        gate_result = S.temporal_learning_gate;
+    elseif isfield(S, 'gate_result')
+        gate_result = S.gate_result;
+    else
+        info.detail = 'temporal_learning_gate_malformed_missing_variable';
+        return;
+    end
+
+    if ~isstruct(gate_result) || numel(gate_result) ~= 1
+        info.detail = 'temporal_learning_gate_malformed_not_scalar_struct';
+        gate_result = [];
+        return;
+    end
+
+    info.ok = true;
+    info.detail = 'temporal_learning_gate_artifact_loaded';
 end
 
 function cfg = load_run_cfg(run_dir)

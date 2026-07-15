@@ -110,12 +110,18 @@ function [result, run_dir] = run_mechanism_ablation_pilot(options)
         assertions.rerun = rerun;
     end
 
+    % Final cfg is established (including any frozen operating point) — gate once.
+    gate_override = local_get(options, 'temporal_learning_gate_override', []);
+    [temporal_gate, ~, gate_manifest] = ...
+        evaluate_and_persist_temporal_learning_gate(cfg, run_dir, save_results, gate_override);
+
     readiness = evaluate_publication_readiness(cfg, struct( ...
         'cell_records', cell_results, ...
         'has_manifest', save_results, ...
         'has_commit_sha', save_results, ...
         'has_artifact_hashes', false, ...
-        'run_dir', run_dir));
+        'run_dir', run_dir, ...
+        'temporal_learning_gate', temporal_gate));
 
     result = struct();
     result.protocol_tier = cfg.protocol_tier;
@@ -130,6 +136,7 @@ function [result, run_dir] = run_mechanism_ablation_pilot(options)
     result.assertions = assertions;
     result.rerun = rerun;
     result.cell_results = cell_results;
+    result.temporal_learning_gate = temporal_gate;
     result.run_dir = run_dir;
     result.status = ternary(n_fail == 0 && assertions.all_pass, 'ok', 'failed_assertions');
     result.structurally_complete = readiness.structurally_complete;
@@ -146,7 +153,7 @@ function [result, run_dir] = run_mechanism_ablation_pilot(options)
         % Keep full payload separately (large)
         atomic_save_results(fullfile(run_dir, 'pilot_full.mat'), struct('result', result));
         write_qa_csv(fullfile(run_dir, 'pilot_qa_table.csv'), qa_table);
-        save_run_manifest(ctx, cfg, struct( ...
+        man = struct( ...
             'protocol_tier', cfg.protocol_tier, ...
             'protocol_fingerprint', cfg.protocol_fingerprint, ...
             'pilot_not_for_publication', true, ...
@@ -155,7 +162,9 @@ function [result, run_dir] = run_mechanism_ablation_pilot(options)
             'publication_ready', false, ...
             'publication_protocol_complete', false, ...
             'n_failed', n_fail, ...
-            'stage', 'T101_pilot_complete'));
+            'stage', 'T101_pilot_complete');
+        man = merge_structs(man, gate_manifest);
+        save_run_manifest(ctx, cfg, man);
     end
 end
 
@@ -192,6 +201,15 @@ end
 
 function assertions = assert_pilot_structural_qa(qa_table, cell_results, cfg)
     assertions = struct();
+    if isempty(qa_table)
+        assertions.dale_zero = true;
+        assertions.resources_ok = true;
+        assertions.no_unexpected_nonfinite = true;
+        assertions.all_cells_completed = true;
+        assertions.pilot_tag = cfg.pilot_not_for_publication;
+        assertions.all_pass = assertions.pilot_tag;
+        return;
+    end
     assertions.dale_zero = all([qa_table.dale_violations] == 0 | isnan([qa_table.dale_violations]));
     assertions.resources_ok = all([qa_table.resource_in_unit_interval] | ...
         strcmp({qa_table.status}, 'failed'));
@@ -245,6 +263,13 @@ function rerun = rerun_reproducibility_check(cell_spec, seed, cfg, first, param_
 end
 
 function write_qa_csv(path_csv, qa_table)
+    if isempty(qa_table)
+        fid = fopen(path_csv, 'w');
+        if fid >= 0
+            fclose(fid);
+        end
+        return;
+    end
     fid = fopen(path_csv, 'w');
     if fid < 0
         warning('run_mechanism_ablation_pilot:QAWriteFailed', 'Could not write %s', path_csv);
@@ -270,6 +295,14 @@ end
 function s = rmfield_if(s, name)
     if isfield(s, name)
         s = rmfield(s, name);
+    end
+end
+
+function out = merge_structs(a, b)
+    out = a;
+    fn = fieldnames(b);
+    for i = 1:numel(fn)
+        out.(fn{i}) = b.(fn{i});
     end
 end
 

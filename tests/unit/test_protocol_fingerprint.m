@@ -89,6 +89,7 @@ function testThirtySmokeSeedsFailPublicationReadiness(testCase)
     cfg.lengths = smoke.lengths;
     cfg.base.n = smoke.base.n;
     cfg.secondary_enabled = false;
+    cfg.temporal_learning_gate = smoke.temporal_learning_gate;
     cfg = force_smoke_protocol(cfg, ...
         'reduced_lengths_for_compute_feasibility_not_publication_inference');
     cfg.seeds = pub.full_seeds;  % keep 30 seeds

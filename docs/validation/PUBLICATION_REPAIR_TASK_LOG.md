@@ -189,9 +189,18 @@ Phase 4B+ (temporal learning gate, conventional ESN baseline, NARMA/MG redesign,
 | Ridge | Phase 4A SVD absolute-λ; diagnostics retained per fit |
 | Targeted tests | `test_temporal_learning_gate` 14/14; integration 2/2; pipeline 2/2; fingerprint 14/14 |
 | Full suite | 302/302 pass (~1389 s wall) |
-| Actual smoke gate | **failed** (no threshold change): median MESN NRMSE≈0.975 > 0.90; median R²≈0.04 < 0.15; median Δ vs current≈0.028 < 0.10; fraction beat current=3/3; Δ vs no-recurrence OK; shuffled & exact-history OK |
+| Actual smoke gate | **failed** (no threshold change): median MESN NRMSE≈0.9796 > 0.90; median R²≈0.04 < 0.15; median Δ vs current≈0.0236 < 0.10; fraction beat current=3/3; Δ vs no-recurrence OK; shuffled & exact-history OK. (Do not call a mean delta a median.) |
 | Publication gate | not executed in-suite (lengths reserved); same thresholds apply |
 
 ### Remaining blockers
 
 Phase 4C+ (matched benchmarks / MG rollout, aggregation redesign, calibration, artifact export, figures). Scientific review of the failed temporal gate (implementation verified; MESN memory on this IID lag task is weak under preregistered thresholds).
+
+## Phase 4B-R checklist (before edits)
+
+- [x] Confirm branch/SHA `5e2a5aa` clean
+- [x] Integrate gate into smoke/pilot/full runners; persist artifact; manifest fields
+- [x] Fix reduced-via-full temporal-gate rebuild before fingerprint
+- [x] `validate_temporal_learning_gate_result` + immutable-run load (fail closed)
+- [x] Compact lambda tables + `selected_at_grid_boundary`; real controls/diagnostics checks
+- [x] Tests (runner readiness, revalidation, fail-closed mutations, smoke docs); commit; stop (no 4C)
