@@ -223,7 +223,52 @@ Ridge fits use Phase 4A economy-SVD solvers with absolute λ (not λ/n) and
 deterministic larger-λ tie-break (`tie_tolerance=1e-12`).
 
 This gate is **not** a confirmatory paper endpoint. Matched NARMA / Mackey–Glass
-baselines remain Phase 4C.
+one-step baselines are Phase **4C-A** (below). Autonomous Mackey–Glass rollout
+repair is Phase **4C-B**. Aggregation/statistics remain later.
+
+### 9.2 Matched one-step benchmark baselines (Phase 4C-A)
+
+Protocol version: `matched_task_baselines_v1` (`cfg.benchmark_baselines`,
+fingerprinted).
+
+**Conventional leaky tanh ESN** (not Dale-only MESN; never labeled “standard
+ESN” interchangeably):
+
+```
+h(t) = (1-α) h(t-1) + α tanh(W_res h(t-1) + W_in u(t))
+```
+
+- `α` = leak rate; `W_res` dense unconstrained Gaussian; spectral radius set to
+  the candidate value; zero initial state; readout features = reservoir only
+  (`include_input=false`).
+- Candidate grids (listed order): spectral radius `{0.5, 0.9, 1.2}` × leak
+  `{0.1, 0.3, 1.0}` × input scaling `{0.25, 0.5, 1.0}`.
+- Within-candidate λ via Phase 4A absolute ridge + larger-λ tie-break
+  (`1e-12`). Across candidates: lowest finite validation NRMSE; ties within
+  `1e-12` take the earliest enumerated candidate.
+- Reservoir seed = `base_seed + 2000` (distinct from task seeds).
+- Input: reuse MESN `W_in` nonzero support and direction; normalize by mean
+  absolute nonzero; then apply candidate input scaling.
+
+**NARMA baselines:** training-target mean (train only); linear input-history
+(Phase 4A ridge, history length = NARMA order); conventional leaky ESN;
+Dale-only MESN paired-cell reference (metric pending aggregation).
+
+**Mackey–Glass one-step baselines:** persistence `y_hat(t)=u(t)`; linear AR
+(Phase 4A ridge, frozen `ar_lags`); conventional leaky ESN (selected
+independently of NARMA); Dale-only MESN reference.
+
+**Comparison convention:**
+`improvement_nrmse = baseline_nrmse - model_nrmse` (>0 ⇒ MESN better);
+`ratio_nrmse = model_nrmse / baseline_nrmse` (<1 ⇒ MESN better).
+
+Dale-only reference keys:
+`adapt-off__std-off__delay-ode_off__feat-x` /
+`adapt-off__std-off__delay-ode_off__feat-r`. Status
+`pending_paired_aggregation` — not fabricated inside non-control cells.
+
+No benchmark-superiority claim yet. Smoke/pilot results are pipeline evidence
+only and never publication-ready. Autonomous rollout unchanged in 4C-A.
 
 Do not generate manuscript figures from pilot data. Figures require explicit
 validated result paths (no “latest file” lookup).

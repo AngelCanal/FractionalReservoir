@@ -91,13 +91,21 @@ function cell_result = run_ablation_cell(cell_spec, base_seed, cfg, options)
             'train_ratio', L.train_ratio, ...
             'val_ratio', L.val_ratio, ...
             'seed', base_seed + 20, ...
-            'feature_mode', cell_spec.which_states);
+            'base_seed', base_seed, ...
+            'feature_mode', cell_spec.which_states, ...
+            'cfg', cfg, ...
+            'benchmark_baselines', local_get(cfg, 'benchmark_baselines', struct()));
         if isfield(L, 'lambda_grid') && ~isempty(L.lambda_grid)
             narma_opts.lambda_grid = L.lambda_grid;
         end
         narma_opts = merge_structs(narma_opts, solver_train_opts);
         narma = narma_benchmark(esn, narma_opts);
         cell_result.narma = compact_bench(narma);
+        if strcmp(narma.status, 'failed_required_baseline')
+            cell_result.status = 'failed_primary_endpoint';
+            cell_result.failure_status = local_field(narma, 'failure_status', ...
+                'narma_required_baseline_failed');
+        end
 
         %% Primary: Mackey-Glass one-step
         mg_opts = struct( ...
@@ -107,10 +115,16 @@ function cell_result = run_ablation_cell(cell_spec, base_seed, cfg, options)
             'train_ratio', L.train_ratio, ...
             'val_ratio', L.val_ratio, ...
             'seed', base_seed + 30, ...
+            'base_seed', base_seed, ...
             'feature_mode', cell_spec.which_states, ...
-            'do_rollout', L.mg_do_rollout && strcmp(cell_spec.mode, 'ODE'));
+            'do_rollout', L.mg_do_rollout && strcmp(cell_spec.mode, 'ODE'), ...
+            'cfg', cfg, ...
+            'benchmark_baselines', local_get(cfg, 'benchmark_baselines', struct()));
         if isfield(L, 'lambda_grid') && ~isempty(L.lambda_grid)
             mg_opts.lambda_grid = L.lambda_grid;
+        end
+        if isfield(L, 'mg_ar_lags')
+            mg_opts.ar_lags = L.mg_ar_lags;
         end
         if strcmp(cell_spec.mode, 'DDE')
             mg_opts.do_rollout = false;
@@ -122,6 +136,12 @@ function cell_result = run_ablation_cell(cell_spec, base_seed, cfg, options)
         if strcmp(cell_spec.mode, 'DDE')
             cell_result.mackey_glass.autonomous_status = cfg.unsupported_status.dde_autonomous;
             cell_result.mackey_glass.autonomous_nrmse = NaN;
+        end
+        if strcmp(mg.status, 'failed_required_baseline') && ...
+                ~strcmp(cell_result.status, 'failed')
+            cell_result.status = 'failed_primary_endpoint';
+            cell_result.failure_status = local_field(mg, 'failure_status', ...
+                'mackey_glass_required_baseline_failed');
         end
 
         %% Primary: empirical convergence
@@ -330,14 +350,64 @@ function s = compact_bench(b)
     s.train_nrmse = extract_nrmse(b, 'train');
     s.selected_lambda = local_field(b, 'selected_lambda', NaN);
     if isfield(b, 'baselines')
-        s.baselines = b.baselines;
+        s.baselines = compact_baselines(b.baselines);
+    end
+    if isfield(b, 'configuration') && isfield(b.configuration, 'resolved_lambda_grid')
+        s.resolved_lambda_grid = b.configuration.resolved_lambda_grid;
+    end
+    if isfield(b, 'base_seed')
+        s.base_seed = b.base_seed;
+    end
+    if isfield(b, 'failure_status')
+        s.failure_status = b.failure_status;
     end
     if isfield(b, 'rollout') || isfield(b, 'autonomous')
         if isfield(b, 'rollout')
             s.autonomous_nrmse = extract_nested_nrmse(b.rollout);
+            if isfield(b.rollout, 'status')
+                s.autonomous_status = b.rollout.status;
+            end
         else
             s.autonomous_nrmse = extract_nested_nrmse(b.autonomous);
         end
+    end
+end
+
+function b = compact_baselines(baselines)
+% Preserve canonical matched-task baseline schema when present.
+    b = baselines;
+    if ~(isfield(b, 'protocol_version') && ...
+            strcmp(char(b.protocol_version), 'matched_task_baselines_v1')) && ...
+            ~isfield(b, 'conventional_leaky_esn')
+        return;
+    end
+    required = {'conventional_leaky_esn', 'dale_mesn_control'};
+    for i = 1:numel(required)
+        if ~isfield(b, required{i})
+            error('compact_bench:MissingBaseline', ...
+                'Required baseline %s dropped before compaction.', required{i});
+        end
+    end
+    if isfield(b, 'conventional_leaky_esn')
+        ce = b.conventional_leaky_esn;
+        keep = {'name','status','role','protocol_version','model_family', ...
+            'feature_dimension','include_input','train_rows','validation_rows', ...
+            'test_rows','metrics','metrics_train','metrics_val','metrics_test', ...
+            'selected_lambda','ridge_diagnostics','lambda_selection_table', ...
+            'hyperparameters','provenance','reservoir_seed','spectral_radius', ...
+            'achieved_spectral_radius','leak_rate','input_scaling', ...
+            'input_support_indices','input_nonzero_count', ...
+            'candidate_selection_table','selected_candidate_index', ...
+            'selected_at_candidate_boundary','finite_state_trajectory', ...
+            'recurrent_dale_constrained','has_sfa','has_std','has_delay', ...
+            'comparison'};
+        ce2 = struct();
+        for k = 1:numel(keep)
+            if isfield(ce, keep{k})
+                ce2.(keep{k}) = ce.(keep{k});
+            end
+        end
+        b.conventional_leaky_esn = ce2;
     end
 end
 

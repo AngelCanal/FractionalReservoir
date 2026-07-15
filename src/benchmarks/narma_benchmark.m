@@ -85,7 +85,27 @@ function bench = narma_benchmark(esn_or_params, options)
     metrics_val = compute_metrics(y_pred_val, y_val);
     metrics_test = compute_metrics(y_pred_test, y_test);
 
-    baselines = narma_baselines(u, y, split, washout_steps, order);
+    lambda_grid = resolve_baseline_lambda_grid(options, []);
+    if isfield(options, 'cfg')
+        lambda_grid = resolve_baseline_lambda_grid(options, options.cfg);
+    end
+    base_seed = getFieldOrDefault(options, 'base_seed', seed);
+    if isfield(options, 'benchmark_baselines') && ~isempty(options.benchmark_baselines)
+        bb = options.benchmark_baselines;
+    else
+        bb = build_matched_task_baselines_config(struct('base', struct('n', size(esn.W_in, 1))));
+    end
+    baseline_opts = struct( ...
+        'task', 'narma', ...
+        'mesn_Win', esn.W_in, ...
+        'base_seed', base_seed, ...
+        'seed', seed, ...
+        'feature_mode', feature_mode, ...
+        'lambda_grid', lambda_grid, ...
+        'narma_order', order, ...
+        'model_test_nrmse', metrics_test.nrmse, ...
+        'benchmark_baselines', bb);
+    baselines = compute_matched_onestep_baselines(u, y, split, washout_steps, baseline_opts);
 
     config = struct( ...
         'order', order, ...
@@ -94,8 +114,11 @@ function bench = narma_benchmark(esn_or_params, options)
         'train_ratio', train_ratio, ...
         'val_ratio', val_ratio, ...
         'seed', seed, ...
+        'base_seed', base_seed, ...
         'u_range', u_range, ...
-        'feature_mode', feature_mode);
+        'feature_mode', feature_mode, ...
+        'resolved_lambda_grid', lambda_grid(:), ...
+        'matched_baselines_protocol', bb.protocol_version);
     if isfield(options, 'lambda_grid')
         config.lambda_grid = options.lambda_grid;
     end
@@ -114,63 +137,17 @@ function bench = narma_benchmark(esn_or_params, options)
     bench.y_pred_test = y_pred_test;
     bench.baselines = baselines;
     bench.seed = seed;
+    bench.base_seed = base_seed;
     bench.order = order;
     bench.u = u;
     bench.y = y;
     bench.prediction_mode = 'reset_with_context';
     bench.status = 'ok';
-end
-
-function baselines = narma_baselines(u, y, split, washout_steps, order)
-    train_fit_idx = split.train_idx(washout_steps+1:end);
-    y_train = y(train_fit_idx);
-    y_val = y(split.val_idx);
-    y_test = y(split.test_idx);
-
-    mu = mean(y_train);
-    mean_pred_train = mu * ones(size(y_train));
-    mean_pred_val = mu * ones(size(y_val));
-    mean_pred_test = mu * ones(size(y_test));
-
-    baselines = struct();
-    baselines.target_mean = struct( ...
-        'metrics_train', compute_metrics(mean_pred_train, y_train), ...
-        'metrics_val', compute_metrics(mean_pred_val, y_val), ...
-        'metrics_test', compute_metrics(mean_pred_test, y_test));
-
-    n_lags = order;
-    [Phi, valid] = input_lag_features(u, n_lags);
-    fit_mask = false(size(u));
-    fit_mask(train_fit_idx) = true;
-    fit_mask = fit_mask & valid;
-
-    X_fit = Phi(fit_mask, :);
-    y_fit = y(fit_mask);
-    X_design = [X_fit, ones(size(X_fit, 1), 1)];
-    w = X_design \ y_fit;
-
-    ar_pred = nan(size(y));
-    ar_pred(valid) = [Phi(valid, :), ones(nnz(valid), 1)] * w;
-
-    baselines.linear_input_ar = struct( ...
-        'n_lags', n_lags, ...
-        'metrics_train', metrics_on_valid(ar_pred, y, train_fit_idx, valid), ...
-        'metrics_val', metrics_on_valid(ar_pred, y, split.val_idx, valid), ...
-        'metrics_test', metrics_on_valid(ar_pred, y, split.test_idx, valid));
-end
-
-function metrics = metrics_on_valid(pred, y, idx, valid)
-    keep = idx(valid(idx));
-    metrics = compute_metrics(pred(keep), y(keep));
-end
-
-function [Phi, valid] = input_lag_features(u, n_lags)
-    T = size(u, 1);
-    Phi = zeros(T, n_lags);
-    valid = false(T, 1);
-    for t = n_lags:T
-        Phi(t, :) = u(t:-1:(t-n_lags+1), 1)';
-        valid(t) = true;
+    if isfield(baselines, 'conventional_leaky_esn') && ...
+            ~strcmp(char(baselines.conventional_leaky_esn.status), 'computed')
+        bench.status = 'failed_required_baseline';
+        bench.failure_status = sprintf('conventional_leaky_esn:%s', ...
+            char(baselines.conventional_leaky_esn.status));
     end
 end
 

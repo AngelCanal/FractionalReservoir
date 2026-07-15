@@ -17,12 +17,18 @@ function params = smoke_params()
 end
 
 function opts = smoke_split_opts(extra)
+    bb = build_matched_task_baselines_config(struct('base', struct('n', 8)));
+    bb.conventional_leaky_esn.spectral_radius_candidates = 0.9;
+    bb.conventional_leaky_esn.leak_rate_candidates = 1.0;
+    bb.conventional_leaky_esn.input_scaling_candidates = 0.5;
     opts = struct( ...
         'train_ratio', 0.5, ...
         'val_ratio', 0.25, ...
         'washout_steps', 10, ...
         'seed', 1729, ...
-        'lambda_grid', [0, 1e-4, 1e-2]);
+        'base_seed', 1700, ...
+        'lambda_grid', [0, 1e-4, 1e-2], ...
+        'benchmark_baselines', bb);
     if nargin >= 1 && ~isempty(extra)
         f = fieldnames(extra);
         for i = 1:numel(f)
@@ -58,8 +64,11 @@ function testNarmaSmoke(testCase)
     testCase.verifyEqual(size(bench.predictions.test, 1), bench.split.n_test);
     testCase.verifyTrue(isfield(bench.baselines, 'target_mean'));
     testCase.verifyTrue(isfield(bench.baselines, 'linear_input_ar'));
+    testCase.verifyTrue(isfield(bench.baselines, 'conventional_leaky_esn'));
+    testCase.verifyTrue(isfield(bench.baselines, 'dale_mesn_control'));
     testCase.verifyTrue(isfinite(bench.baselines.target_mean.metrics_test.nrmse));
     testCase.verifyTrue(isfinite(bench.baselines.linear_input_ar.metrics_test.nrmse));
+    testCase.verifyEqual(bench.baselines.conventional_leaky_esn.status, 'computed');
 end
 
 function testMackeyGlassSmoke(testCase)
@@ -70,7 +79,9 @@ function testMackeyGlassSmoke(testCase)
     testCase.verifyTrue(isfinite(bench.metrics_test.nrmse));
     testCase.verifyTrue(isfield(bench.baselines, 'persistence'));
     testCase.verifyTrue(isfield(bench.baselines, 'linear_ar'));
+    testCase.verifyTrue(isfield(bench.baselines, 'conventional_leaky_esn'));
     testCase.verifyTrue(isfinite(bench.baselines.persistence.metrics_test.nrmse));
+    testCase.verifyEqual(bench.baselines.conventional_leaky_esn.status, 'computed');
     testCase.verifyTrue(isfield(bench, 'rollout'));
     testCase.verifyTrue(ismember(bench.rollout.status, {'computed', 'skipped'}));
     testCase.verifyEqual(bench.rollout.prediction_mode, 'ode_autonomous');

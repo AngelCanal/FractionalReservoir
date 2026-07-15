@@ -314,6 +314,9 @@ function cfg = mechanism_ablation_config(mode, analysis_set)
     %% Temporal learning gate (Phase 4B) — implementation validity, not a paper endpoint
     cfg.temporal_learning_gate = build_temporal_learning_gate(cfg, mode_in);
 
+    %% Matched one-step task baselines (Phase 4C-A)
+    cfg.benchmark_baselines = build_matched_task_baselines_config(cfg);
+
     %% Deterministic protocol identity (after all frozen fields are set)
     cfg.protocol_fingerprint = compute_protocol_fingerprint(cfg);
 end

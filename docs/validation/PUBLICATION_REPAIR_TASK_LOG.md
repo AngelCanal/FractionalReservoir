@@ -204,3 +204,12 @@ Phase 4C+ (matched benchmarks / MG rollout, aggregation redesign, calibration, a
 - [x] `validate_temporal_learning_gate_result` + immutable-run load (fail closed)
 - [x] Compact lambda tables + `selected_at_grid_boundary`; real controls/diagnostics checks
 - [x] Tests (runner readiness, revalidation, fail-closed mutations, smoke docs); commit; stop (no 4C)
+
+## Phase 4C-A checklist
+
+- [x] Confirm branch/SHA `9e2c18b` clean
+- [x] Add `cfg.benchmark_baselines` (`matched_task_baselines_v1`) to fingerprint
+- [x] Dedicated conventional leaky tanh ESN (not SRNN_ESN / not Dale-only)
+- [x] NARMA/MG one-step baselines with Phase 4A ridge; Dale reference pending aggregation
+- [x] Preserve baselines through `compact_bench`; cell fails if required baseline fails
+- [x] Unit/integration tests + docs; commit; stop before 4C-B (autonomous rollout)

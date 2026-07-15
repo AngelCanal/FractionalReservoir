@@ -92,7 +92,27 @@ function bench = mackey_glass_benchmark(esn_or_params, options)
     metrics_val = compute_metrics(y_pred_val, y_val);
     metrics_test = compute_metrics(y_pred_test, y_test);
 
-    baselines = onestep_baselines(u, y, split, washout_steps, ar_lags);
+    lambda_grid = resolve_baseline_lambda_grid(options, []);
+    if isfield(options, 'cfg')
+        lambda_grid = resolve_baseline_lambda_grid(options, options.cfg);
+    end
+    base_seed = getFieldOrDefault(options, 'base_seed', seed);
+    if isfield(options, 'benchmark_baselines') && ~isempty(options.benchmark_baselines)
+        bb = options.benchmark_baselines;
+    else
+        bb = build_matched_task_baselines_config(struct('base', struct('n', size(esn.W_in, 1))));
+    end
+    baseline_opts = struct( ...
+        'task', 'mackey_glass_onestep', ...
+        'mesn_Win', esn.W_in, ...
+        'base_seed', base_seed, ...
+        'seed', seed, ...
+        'feature_mode', feature_mode, ...
+        'lambda_grid', lambda_grid, ...
+        'ar_lags', ar_lags, ...
+        'model_test_nrmse', metrics_test.nrmse, ...
+        'benchmark_baselines', bb);
+    baselines = compute_matched_onestep_baselines(u, y, split, washout_steps, baseline_opts);
 
     config = struct( ...
         'tau', tau, ...
@@ -103,10 +123,13 @@ function bench = mackey_glass_benchmark(esn_or_params, options)
         'train_ratio', train_ratio, ...
         'val_ratio', val_ratio, ...
         'seed', seed, ...
+        'base_seed', base_seed, ...
         'feature_mode', feature_mode, ...
         'do_rollout', do_rollout, ...
         'rollout_steps', rollout_steps, ...
-        'ar_lags', ar_lags);
+        'ar_lags', ar_lags, ...
+        'resolved_lambda_grid', lambda_grid(:), ...
+        'matched_baselines_protocol', bb.protocol_version);
     if isfield(options, 'lambda_grid')
         config.lambda_grid = options.lambda_grid;
     end
@@ -126,10 +149,17 @@ function bench = mackey_glass_benchmark(esn_or_params, options)
     bench.y_test = y_test;
     bench.baselines = baselines;
     bench.seed = seed;
+    bench.base_seed = base_seed;
     bench.t = t;
     bench.x = x;
     bench.prediction_mode = 'reset_with_context';
     bench.status = 'ok';
+    if isfield(baselines, 'conventional_leaky_esn') && ...
+            ~strcmp(char(baselines.conventional_leaky_esn.status), 'computed')
+        bench.status = 'failed_required_baseline';
+        bench.failure_status = sprintf('conventional_leaky_esn:%s', ...
+            char(baselines.conventional_leaky_esn.status));
+    end
 
     teacher_forced_ok = isempty(esn.lags) ...
         && esn.n_inputs == 1 ...
@@ -164,52 +194,6 @@ function bench = mackey_glass_benchmark(esn_or_params, options)
             'status', 'skipped', ...
             'reason', 'Autonomous rollout requires ODE mode, scalar I/O, and finite one-step test metrics.', ...
             'prediction_mode', 'ode_autonomous');
-    end
-end
-
-function baselines = onestep_baselines(u, y, split, washout_steps, ar_lags)
-    train_fit_idx = split.train_idx(washout_steps+1:end);
-    y_train = y(train_fit_idx);
-    y_val = y(split.val_idx);
-    y_test = y(split.test_idx);
-
-    % Persistence: predict x(t+1) with x(t) == u(t)
-    baselines = struct();
-    baselines.persistence = struct( ...
-        'metrics_train', compute_metrics(u(train_fit_idx), y_train), ...
-        'metrics_val', compute_metrics(u(split.val_idx), y_val), ...
-        'metrics_test', compute_metrics(u(split.test_idx), y_test));
-
-    [Phi, valid] = input_lag_features(u, ar_lags);
-    fit_mask = false(size(u));
-    fit_mask(train_fit_idx) = true;
-    fit_mask = fit_mask & valid;
-
-    X_fit = Phi(fit_mask, :);
-    y_fit = y(fit_mask);
-    w = [X_fit, ones(size(X_fit, 1), 1)] \ y_fit;
-    ar_pred = nan(size(y));
-    ar_pred(valid) = [Phi(valid, :), ones(nnz(valid), 1)] * w;
-
-    baselines.linear_ar = struct( ...
-        'n_lags', ar_lags, ...
-        'metrics_train', metrics_on_valid(ar_pred, y, train_fit_idx, valid), ...
-        'metrics_val', metrics_on_valid(ar_pred, y, split.val_idx, valid), ...
-        'metrics_test', metrics_on_valid(ar_pred, y, split.test_idx, valid));
-end
-
-function metrics = metrics_on_valid(pred, y, idx, valid)
-    keep = idx(valid(idx));
-    metrics = compute_metrics(pred(keep), y(keep));
-end
-
-function [Phi, valid] = input_lag_features(u, n_lags)
-    T = size(u, 1);
-    Phi = zeros(T, n_lags);
-    valid = false(T, 1);
-    for t = n_lags:T
-        Phi(t, :) = u(t:-1:(t-n_lags+1), 1)';
-        valid(t) = true;
     end
 end
 
