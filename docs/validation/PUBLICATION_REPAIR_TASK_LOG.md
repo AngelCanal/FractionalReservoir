@@ -257,6 +257,48 @@ Phase 4C+ (matched benchmarks / MG rollout, aggregation redesign, calibration, a
 
 Aggregation; calibration; figures.
 
+## Phase 5A checklist (before edits)
+
+- [x] Confirm branch/SHA `6431644` clean
+- [x] Document defects in current `aggregate_ablation_results` (below)
+- [x] Repair B2 defensive failure path (`first_step_alignment` missing-field crash)
+- [x] Freeze `cfg.aggregation_plan` (`matched_seed_contrasts_v1`) + contrast registries
+- [x] Rewrite aggregation: expected matrix from cfg; seed-level matched contrasts; no inference
+- [x] Dale resolution; unique seed baselines; autonomous/ODE restrictions
+- [x] Runner + readiness gates (`matched_seed_contrast_structure_complete`; inference deferred)
+- [x] Focused + full tests; commit; stop before Phase 5B
+
+### Phase 5A defects in current `aggregate_ablation_results` (documented before rewrite)
+
+| Defect | Evidence |
+|---|---|
+| One global feat-x ODE/off/off control | Hardcoded `control_cell_key = adapt-off__std-off__delay-ode_off__feat-x`; every non-control cell contrasted against it |
+| Factors changed simultaneously | Contrasts confound adaptation, STD, delay, and feature vs the single global control |
+| Feature-r cells vs feat-x control | `feat-r` cells share the same feat-x control; no feature-matched pairing |
+| No matched three-timescale vs moment-matched SFA contrast | No factorial A/S/D/F registry; no within-seed stratum averaging |
+| Expected seeds/keys inferred from observed files | `unique([T.seed])` and `unique({T.cell_key})` from loaded cells only |
+| Missing seed or condition can escape Cartesian check | Completeness is `numel(T) == n_obs_seeds * n_obs_keys` (self-consistent partial runs pass) |
+| Repeated `rng` reset inside each bootstrap call | `bootstrap_ci` calls `rng(1729)` every invocation |
+| Mislabeled Cliff’s delta | `cliff_delta` on paired diffs vs zeros, not two independent groups |
+| No autonomous-control aggregation | Raw rows omit MG autonomous metrics and shared autonomous controls |
+| No Dale-reference resolution | Dale remains `pending_paired_aggregation` with no paired-cell resolution |
+| No analysis-set separation | Single aggregation path; no confirmatory vs SFA-sensitivity registries |
+| Inference performed in Phase 5A scope | Bootstrap CIs, Cliff’s delta, effect summaries computed before matched contrasts exist |
+
+## Phase 5A after edits
+
+| Field | Value |
+|---|---|
+| Status | complete |
+| Starting SHA | `6431644ef550f4825f83d4ae8711d1bc964d269e` |
+| Aggregation protocol | `matched_seed_contrasts_v1` |
+| Independent unit | `base_seed` |
+| Inference | deferred (`aggregation_inference_complete=false`; `publication_ready` remains false) |
+| Targeted tests | 154/154 (registry, seed aggregation, estimands, artifacts, fingerprint, B2/baselines/rollout/shared) |
+| Full suite | 483/483 pass |
+| Scientific behavior changed | no model equations; aggregation estimands/contrasts frozen; B2 defensive fail-closed only |
+| Remaining blockers | Phase 5B (seed-level inference, multiplicity, aggregation validation) |
+
 ## Phase 4C-B2 checklist (matched MG autonomous controls)
 
 - [x] Confirm branch/SHA `cddf46d` clean

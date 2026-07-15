@@ -150,13 +150,23 @@ rank, and ODE autonomous horizon. Secondary family uses Holm–Bonferroni at
 
 ## 8. Analysis plan (T103)
 
-- Per-seed paired differences vs mechanism-matched control.
-- Report median, mean, 95% bootstrap CI over seeds, and individual seed points.
-- Effect sizes, not only p-values.
+- Independent inferential unit: **base seed**.
+- Phase 5A (`matched_seed_contrasts_v1`): build flat seed-level matched contrast
+  tables from immutable cell artifacts; freeze estimands in
+  `cfg.aggregation_plan` before outcomes; **no inference**.
+- Factor-matched contrasts isolate SFA distribution, STD, and delay effects
+  within seed (equal stratum weights); never use one global off-control to
+  attribute individual mechanisms.
+- Feature-x and feature-r are strata, not independent seeds; shared baselines
+  are deduplicated to one row per base seed.
+- Dale-only references resolve from paired same-seed, same-feature control cells
+  (never conventional ESN; never cross-feature).
+- Phase 5B: bootstrap CIs, sign-flip / effect sizes, Holm correction, and
+  final inference validation on the Phase 5A tables.
 - Keep ODE and DDE stability evidence separate; never attach an ODE LLE to a
-  delayed task result.
+  delayed task result. DDE autonomous rollout remains unsupported.
 - Aggregate tables by reading immutable per-seed result files; never silently
-  recompute missing cells.
+  recompute or impute missing cells. Missing seeds/conditions fail closed.
 
 ---
 
@@ -167,6 +177,8 @@ rank, and ODE autonomous horizon. Secondary family uses Holm–Bonferroni at
 | Temporal learning gate (`temporal_learning_gate_v1`) | Reconstruct `y(t)=u(t-k)` from MESN features with `include_input=false`; beat current-input and no-recurrence controls; shuffled high NRMSE; exact-history near zero (see §9.1) |
 | Instantaneous readout pipeline check (legacy G5) | Ridge plumbing with direct input — **not** reservoir memory evidence; never satisfies publication readiness |
 | G6 | Three-seed pilot completes; structural assertions pass |
+| Matched seed contrast structure (Phase 5A) | Exact expected seed × cell matrix; seed-level contrast tables; no inference |
+| Aggregation inference (Phase 5B) | Required before `publication_ready` |
 | G7 | Full ≥30-seed paired table with provenance and CI from raw cells |
 
 ### 9.1 Temporal learning gate (Phase 4B; implementation validity)

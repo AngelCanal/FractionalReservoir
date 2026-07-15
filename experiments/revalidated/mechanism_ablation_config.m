@@ -320,6 +320,9 @@ function cfg = mechanism_ablation_config(mode, analysis_set)
     %% Mackey–Glass autonomous ODE rollout (Phase 4C-B1; secondary endpoint)
     cfg.mg_autonomous_rollout = build_mg_autonomous_rollout_config(mode_in);
 
+    %% Matched seed-level aggregation plan (Phase 5A; inference deferred to 5B)
+    cfg.aggregation_plan = build_matched_aggregation_plan(analysis_set);
+
     %% Deterministic protocol identity (after all frozen fields are set)
     cfg.protocol_fingerprint = compute_protocol_fingerprint(cfg);
 end

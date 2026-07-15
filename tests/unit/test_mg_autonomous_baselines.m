@@ -697,7 +697,102 @@ function testRejectInvalidDdeComparison(testCase)
     testCase.verifyTrue(any(contains(rep.reasons, 'dde_has_computed_comparison')));
 end
 
+%% I. B2 defensive failure path (missing first_step_alignment must not throw)
+function testPersistenceRolloutFailureNoMissingFieldCrash(testCase)
+    [task, baselines, rollout_cfg, ~, cfg] = mg_baseline_setup();
+    stub_dir = make_b2_rollout_stubs(struct('persistence', true));
+    cleanup = onCleanup(@() cleanup_b2_stubs(stub_dir)); %#ok<NASGU>
+    controls = compute_mg_autonomous_baseline_controls( ...
+        task, baselines, rollout_cfg, cfg.seeds(1), 'executed_shared_seed_bundle');
+    testCase.verifyEqual(controls.status, 'failed_required_autonomous_baseline');
+    testCase.verifyTrue(any(contains(controls.failure_reasons, 'persistence')));
+    testCase.verifyEqual(controls.persistence.status, 'failed');
+    testCase.verifyFalse(isfield(controls.persistence, 'first_step_alignment'));
+end
+
+function testLinearArRolloutFailureNoMissingFieldCrash(testCase)
+    [task, baselines, rollout_cfg, ~, cfg] = mg_baseline_setup();
+    stub_dir = make_b2_rollout_stubs(struct('linear_ar', true));
+    cleanup = onCleanup(@() cleanup_b2_stubs(stub_dir)); %#ok<NASGU>
+    controls = compute_mg_autonomous_baseline_controls( ...
+        task, baselines, rollout_cfg, cfg.seeds(1), 'executed_shared_seed_bundle');
+    testCase.verifyEqual(controls.status, 'failed_required_autonomous_baseline');
+    testCase.verifyTrue(any(contains(controls.failure_reasons, 'linear_autoregression')));
+    testCase.verifyEqual(controls.linear_autoregression.status, 'failed');
+    testCase.verifyFalse(isfield(controls.linear_autoregression, 'first_step_alignment'));
+end
+
+function testConventionalRolloutFailureNoMissingFieldCrash(testCase)
+    [task, baselines, rollout_cfg, ~, cfg] = mg_baseline_setup();
+    stub_dir = make_b2_rollout_stubs(struct('conventional', true));
+    cleanup = onCleanup(@() cleanup_b2_stubs(stub_dir)); %#ok<NASGU>
+    controls = compute_mg_autonomous_baseline_controls( ...
+        task, baselines, rollout_cfg, cfg.seeds(1), 'executed_shared_seed_bundle');
+    testCase.verifyEqual(controls.status, 'failed_required_autonomous_baseline');
+    testCase.verifyTrue(any(contains(controls.failure_reasons, 'conventional_leaky_esn')));
+    testCase.verifyEqual(controls.conventional_leaky_esn.status, 'failed');
+    testCase.verifyFalse(isfield(controls.conventional_leaky_esn, 'first_step_alignment'));
+end
+
+function testCombinedRolloutFailuresNoMissingFieldCrash(testCase)
+    [task, baselines, rollout_cfg, ~, cfg] = mg_baseline_setup();
+    stub_dir = make_b2_rollout_stubs(struct( ...
+        'persistence', true, 'linear_ar', true, 'conventional', true));
+    cleanup = onCleanup(@() cleanup_b2_stubs(stub_dir)); %#ok<NASGU>
+    controls = compute_mg_autonomous_baseline_controls( ...
+        task, baselines, rollout_cfg, cfg.seeds(1), 'executed_shared_seed_bundle');
+    testCase.verifyEqual(controls.status, 'failed_required_autonomous_baseline');
+    testCase.verifyTrue(any(contains(controls.failure_reasons, 'persistence')));
+    testCase.verifyTrue(any(contains(controls.failure_reasons, 'linear_autoregression')));
+    testCase.verifyTrue(any(contains(controls.failure_reasons, 'conventional_leaky_esn')));
+end
+
 %% helpers
+function stub_dir = make_b2_rollout_stubs(which_fail)
+    stub_dir = fullfile(tempname, 'b2_stubs');
+    mkdir(stub_dir);
+    if isfield(which_fail, 'persistence') && which_fail.persistence
+        write_stub_m(fullfile(stub_dir, 'rollout_mg_autonomous_persistence.m'), ...
+            'rollout_mg_autonomous_persistence', 'Test:FailPersistence');
+    end
+    if isfield(which_fail, 'linear_ar') && which_fail.linear_ar
+        write_stub_m(fullfile(stub_dir, 'rollout_mg_autonomous_linear_ar.m'), ...
+            'rollout_mg_autonomous_linear_ar', 'Test:FailLinearAR');
+    end
+    if isfield(which_fail, 'conventional') && which_fail.conventional
+        write_stub_m(fullfile(stub_dir, 'rollout_mg_autonomous_conventional_esn.m'), ...
+            'rollout_mg_autonomous_conventional_esn', 'Test:FailConventional');
+    end
+    addpath(stub_dir, '-begin');
+    clear rollout_mg_autonomous_persistence rollout_mg_autonomous_linear_ar ...
+        rollout_mg_autonomous_conventional_esn
+end
+
+function write_stub_m(path_out, fname, err_id)
+    fid = fopen(path_out, 'w');
+    if fid < 0
+        error('test_mg_autonomous_baselines:StubWriteFailed', 'Cannot write %s', path_out);
+    end
+    fprintf(fid, 'function varargout = %s(varargin)\n', fname);
+    fprintf(fid, '    error(''%s'', ''intentional B2 stub failure'');\n', err_id);
+    fprintf(fid, 'end\n');
+    fclose(fid);
+end
+
+function cleanup_b2_stubs(stub_dir)
+    if contains(path, stub_dir)
+        rmpath(stub_dir);
+    end
+    clear rollout_mg_autonomous_persistence rollout_mg_autonomous_linear_ar ...
+        rollout_mg_autonomous_conventional_esn
+    parent = fileparts(stub_dir);
+    if isfolder(parent)
+        rmdir(parent, 's');
+    elseif isfolder(stub_dir)
+        rmdir(stub_dir, 's');
+    end
+end
+
 function baselines = baselines_from_task(task, cfg)
     seed = cfg.seeds(1);
     L = cfg.lengths;

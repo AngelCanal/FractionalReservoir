@@ -115,6 +115,30 @@ function [result, run_dir] = run_mechanism_ablation_smoke(options)
         end
     end
 
+    aggregate = struct('status', 'not_computed', ...
+        'inference_status', 'deferred_to_phase_5b', ...
+        'matched_seed_contrast_structure_complete', false, ...
+        'aggregation_inference_complete', false);
+    if save_results && n_fail == 0 && ~isempty(cell_results)
+        allow_incomplete = numel(seeds) < numel(cfg.seeds) || ...
+            n_cells < numel(cfg.cells);
+        agg_opts = struct('save', true, 'allow_incomplete_diagnostic', true);
+        if ~allow_incomplete
+            agg_opts.allow_incomplete_diagnostic = false;
+        end
+        try
+            aggregate = aggregate_ablation_results(run_dir, agg_opts);
+        catch ME
+            aggregate = struct( ...
+                'status', 'diagnostic_incomplete_not_for_inference', ...
+                'inference_status', 'deferred_to_phase_5b', ...
+                'matched_seed_contrast_structure_complete', false, ...
+                'aggregation_inference_complete', false, ...
+                'error_id', ME.identifier, ...
+                'error_message', ME.message);
+        end
+    end
+
     % Final cfg is established (including any frozen operating point) — gate once.
     persist_opts = build_temporal_gate_persist_opts(options, 'run_mechanism_ablation_smoke');
     [temporal_gate, ~, gate_manifest] = ...
@@ -126,7 +150,9 @@ function [result, run_dir] = run_mechanism_ablation_smoke(options)
         'has_commit_sha', save_results, ...
         'has_artifact_hashes', false, ...
         'run_dir', run_dir, ...
-        'temporal_learning_gate', temporal_gate));
+        'temporal_learning_gate', temporal_gate, ...
+        'aggregation', aggregate, ...
+        'aggregation_inference_complete', false));
 
     if isfield(temporal_gate, 'evaluation_provenance') && ...
             strcmp(char(temporal_gate.evaluation_provenance.mode), 'injected_test_fixture')
@@ -146,6 +172,7 @@ function [result, run_dir] = run_mechanism_ablation_smoke(options)
     result.cell_index = cell_index;
     result.cell_results = cell_results;
     result.seed_baseline_index = seed_baseline_index;
+    result.aggregate = aggregate;
     result.temporal_learning_gate = temporal_gate;
     result.run_dir = run_dir;
     result.status = ternary(n_fail == 0, 'ok', 'failed_cells');
@@ -181,6 +208,13 @@ function result = attach_readiness_fields(result, readiness)
     else
         result.all_required_secondary_endpoints_complete = false;
     end
+    if isfield(readiness, 'matched_seed_contrast_structure_complete')
+        result.matched_seed_contrast_structure_complete = ...
+            readiness.matched_seed_contrast_structure_complete;
+    else
+        result.matched_seed_contrast_structure_complete = false;
+    end
+    result.aggregation_inference_complete = false;
     result.artifact_package_complete = readiness.artifact_package_complete;
     result.publication_ready = readiness.publication_ready;
     result.readiness = readiness;

@@ -214,6 +214,32 @@ function testReducedFullPathForcesSmokeFields(testCase)
     testCase.verifyNotEqual(cfg.protocol_fingerprint, pub.protocol_fingerprint);
 end
 
+function testAggregationPlanStrataChangeFingerprint(testCase)
+    cfg_a = mechanism_ablation_config('smoke', 'confirmatory');
+    cfg_b = cfg_a;
+    % Mutate a frozen contrast stratum count inside aggregation_plan
+    c = cfg_b.aggregation_plan.contrasts{1};
+    if isnan(c.expected_strata_nonautonomous)
+        c.expected_strata_autonomous = c.expected_strata_autonomous + 1;
+    else
+        c.expected_strata_nonautonomous = c.expected_strata_nonautonomous + 1;
+    end
+    cfg_b.aggregation_plan.contrasts{1} = c;
+    fp_b = compute_protocol_fingerprint(cfg_b);
+    testCase.verifyNotEqual(cfg_a.protocol_fingerprint, fp_b);
+end
+
+function testRuntimeOutputPathFieldsDoNotChangeFingerprint(testCase)
+    cfg_a = mechanism_ablation_config('smoke', 'confirmatory');
+    cfg_b = cfg_a;
+    cfg_b.run_dir = 'C:\tmp\synthetic_run_path_should_be_ignored';
+    cfg_b.output_root = '/ignored/output/root';
+    cfg_b.results_path = fullfile(tempdir, 'ignored_results');
+    cfg_b.host_name = 'testhost-ignored';
+    fp_b = compute_protocol_fingerprint(cfg_b);
+    testCase.verifyEqual(cfg_a.protocol_fingerprint, fp_b);
+end
+
 %% --- helpers ---
 
 function tf = check_pass(report, name)

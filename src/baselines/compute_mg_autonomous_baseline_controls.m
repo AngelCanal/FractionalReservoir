@@ -88,22 +88,28 @@ function controls = compute_mg_autonomous_baseline_controls(task, one_step_basel
         normalization_scale = NaN;
     end
 
-    required_ok = strcmp(local_get(persistence, 'status', ''), 'computed') && ...
-        strcmp(local_get(linear_ar, 'status', ''), 'computed') && ...
-        strcmp(local_get(conventional, 'status', ''), 'computed') && ...
-        logical(local_get(persistence.first_step_alignment, 'verified', false)) && ...
-        logical(local_get(linear_ar.first_step_alignment, 'verified', false)) && ...
-        logical(local_get(conventional.first_step_alignment, 'verified', false));
+    [p_status, p_align] = control_status_and_alignment(persistence);
+    [a_status, a_align] = control_status_and_alignment(linear_ar);
+    [c_status, c_align] = control_status_and_alignment(conventional);
+
+    required_ok = strcmp(p_status, 'computed') && strcmp(a_status, 'computed') && ...
+        strcmp(c_status, 'computed') && p_align && a_align && c_align;
 
     if ~required_ok
-        if ~strcmp(local_get(persistence, 'status', ''), 'computed')
+        if ~strcmp(p_status, 'computed')
             failure_reasons{end+1} = 'persistence_not_computed'; %#ok<AGROW>
+        elseif ~p_align
+            failure_reasons{end+1} = 'persistence_first_step_alignment_unverified'; %#ok<AGROW>
         end
-        if ~strcmp(local_get(linear_ar, 'status', ''), 'computed')
+        if ~strcmp(a_status, 'computed')
             failure_reasons{end+1} = 'linear_autoregression_not_computed'; %#ok<AGROW>
+        elseif ~a_align
+            failure_reasons{end+1} = 'linear_autoregression_first_step_alignment_unverified'; %#ok<AGROW>
         end
-        if ~strcmp(local_get(conventional, 'status', ''), 'computed')
+        if ~strcmp(c_status, 'computed')
             failure_reasons{end+1} = 'conventional_leaky_esn_not_computed'; %#ok<AGROW>
+        elseif ~c_align
+            failure_reasons{end+1} = 'conventional_leaky_esn_first_step_alignment_unverified'; %#ok<AGROW>
         end
     end
 
@@ -165,6 +171,17 @@ function controls = compute_mg_autonomous_baseline_controls(task, one_step_basel
     controls.failure_reasons = unique(failure_reasons(:), 'stable');
     controls.content_hash = content_hash;
     controls.content_identity = content_identity;
+end
+
+function [status, alignment_verified] = control_status_and_alignment(ctrl)
+% Safe nested read: failed controls may lack first_step_alignment entirely.
+    status = char(local_get(ctrl, 'status', 'failed'));
+    alignment_verified = false;
+    if ~isstruct(ctrl) || ~isfield(ctrl, 'first_step_alignment') || ...
+            ~isstruct(ctrl.first_step_alignment)
+        return;
+    end
+    alignment_verified = logical(local_get(ctrl.first_step_alignment, 'verified', false));
 end
 
 function lar = resolve_ar(baselines)

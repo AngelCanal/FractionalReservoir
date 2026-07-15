@@ -123,6 +123,16 @@ function report = evaluate_publication_readiness(cfg, options)
     [mg_ctrl_ok, mg_ctrl_detail] = check_mg_autonomous_matched_controls_complete(cell_records, cfg);
     checks{end+1} = make_check('mg_autonomous_matched_controls_complete', mg_ctrl_ok, mg_ctrl_detail);
 
+    [agg_struct_ok, agg_struct_detail] = check_matched_seed_contrast_structure(options, cfg);
+    checks{end+1} = make_check('matched_seed_contrast_structure_complete', ...
+        agg_struct_ok, agg_struct_detail);
+
+    % Phase 5A: inference is never complete; Phase 5B flips this gate.
+    agg_inf_ok = logical(local_get(options, 'aggregation_inference_complete', false));
+    checks{end+1} = make_check('aggregation_inference_complete', agg_inf_ok, ...
+        sprintf('aggregation_inference_complete=%d (deferred_to_phase_5b until Phase 5B)', ...
+            agg_inf_ok));
+
     has_manifest = logical(local_get(options, 'has_manifest', false));
     has_commit_sha = logical(local_get(options, 'has_commit_sha', false));
     has_artifact_hashes = logical(local_get(options, 'has_artifact_hashes', false));
@@ -156,13 +166,18 @@ function report = evaluate_publication_readiness(cfg, options)
     all_required_secondary_endpoints_complete = ...
         check_named(check_arr, 'mg_autonomous_protocol_complete') && ...
         check_named(check_arr, 'mg_autonomous_matched_controls_complete');
+    matched_seed_contrast_structure_complete = ...
+        check_named(check_arr, 'matched_seed_contrast_structure_complete');
+    aggregation_inference_complete = ...
+        check_named(check_arr, 'aggregation_inference_complete');
     artifact_package_complete = check_named(check_arr, 'manifest_present') && ...
         check_named(check_arr, 'commit_sha_present') && ...
         check_named(check_arr, 'artifact_hashes_present');
 
     publication_ready = publication_protocol_complete && structurally_complete && ...
         all_primary_endpoints_finite && all_qa_checks_pass && ...
-        all_required_secondary_endpoints_complete && artifact_package_complete;
+        all_required_secondary_endpoints_complete && artifact_package_complete && ...
+        matched_seed_contrast_structure_complete && aggregation_inference_complete;
 
     report = struct();
     report.cfg_protocol_tier = tier;
@@ -175,6 +190,8 @@ function report = evaluate_publication_readiness(cfg, options)
     report.all_primary_endpoints_finite = all_primary_endpoints_finite;
     report.all_qa_checks_pass = all_qa_checks_pass;
     report.all_required_secondary_endpoints_complete = all_required_secondary_endpoints_complete;
+    report.matched_seed_contrast_structure_complete = matched_seed_contrast_structure_complete;
+    report.aggregation_inference_complete = aggregation_inference_complete;
     report.artifact_package_complete = artifact_package_complete;
     report.publication_ready = publication_ready;
     report.n_cells_observed = numel(pair_keys);
@@ -601,6 +618,51 @@ function rollout = extract_cell_rollout(r)
             end
         end
     end
+end
+
+function [ok, detail] = check_matched_seed_contrast_structure(options, cfg)
+% Phase 5A structural aggregation gate (no inference).
+    agg = local_get(options, 'aggregation', struct());
+    if isempty(agg) || ~isstruct(agg)
+        % Fall back to explicit option or artifact presence under run_dir.
+        if isfield(options, 'matched_seed_contrast_structure_complete')
+            ok = logical(options.matched_seed_contrast_structure_complete);
+            detail = sprintf('option_flag=%d', ok);
+            return;
+        end
+        run_dir = char(local_get(options, 'run_dir', ''));
+        if ~isempty(run_dir)
+            art = fullfile(run_dir, 'aggregation', 'aggregate_seed_contrasts.mat');
+            if isfile(art)
+                try
+                    S = load(art, 'aggregate');
+                    if isfield(S, 'aggregate') && isfield(S.aggregate, ...
+                            'matched_seed_contrast_structure_complete')
+                        ok = logical(S.aggregate.matched_seed_contrast_structure_complete);
+                        detail = sprintf('artifact_flag=%d', ok);
+                        return;
+                    end
+                catch
+                end
+            end
+        end
+        ok = false;
+        detail = 'aggregation_missing';
+        return;
+    end
+    ok = isfield(agg, 'matched_seed_contrast_structure_complete') && ...
+        logical(agg.matched_seed_contrast_structure_complete) && ...
+        strcmp(char(local_get(agg, 'status', '')), 'ok') && ...
+        strcmp(char(local_get(agg, 'inference_status', '')), 'deferred_to_phase_5b');
+    % Partial publication runs cannot satisfy this gate
+    if isfield(cfg, 'protocol_tier') && strcmp(char(cfg.protocol_tier), 'publication')
+        if isfield(agg, 'status') && ...
+                strcmp(char(agg.status), 'diagnostic_incomplete_not_for_inference')
+            ok = false;
+        end
+    end
+    detail = sprintf('status=%s structure_complete=%d', ...
+        char(local_get(agg, 'status', '')), ok);
 end
 
 function options = collapse_options_struct(options)
