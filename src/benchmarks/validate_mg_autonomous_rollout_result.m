@@ -103,16 +103,46 @@ function [ok, reasons] = validate_ode(result, rollout_cfg)
     end
     if ~isfield(result, 'origin_schedule') || ~isstruct(result.origin_schedule)
         reasons{end+1} = 'missing_origin_schedule'; %#ok<AGROW>
-    else
-        sch = result.origin_schedule;
-        if ~(isfield(sch, 'n_forecast_origins') && ...
-                sch.n_forecast_origins == rollout_cfg.n_forecast_origins)
-            reasons{end+1} = 'origin_count_mismatch'; %#ok<AGROW>
+        ok = false;
+        return;
+    end
+
+    sch = result.origin_schedule;
+    if isfield(sch, 'test_idx_first') && isfield(sch, 'test_idx_last')
+        expected = reconstruct_expected_schedule(result, rollout_cfg);
+        for fn = {'origin_indices', 'origin_test_relative_indices'}
+            if ~isfield(sch, fn{1})
+                reasons{end+1} = sprintf('missing_schedule_field_%s', fn{1}); %#ok<AGROW>
+            elseif ~isequal(double(sch.(fn{1})(:)), double(expected.(fn{1})(:)))
+                reasons{end+1} = sprintf('schedule_%s_mismatch', fn{1}); %#ok<AGROW>
+            end
         end
+        for fn = {'first_origin', 'last_origin', 'test_idx_first', 'test_idx_last', ...
+                'n_test', 'forecast_horizon_steps', 'n_forecast_origins'}
+            if ~isfield(sch, fn{1})
+                reasons{end+1} = sprintf('missing_schedule_field_%s', fn{1}); %#ok<AGROW>
+            elseif ~isequal(double(sch.(fn{1})), double(expected.(fn{1})))
+                reasons{end+1} = sprintf('schedule_%s_mismatch', fn{1}); %#ok<AGROW>
+            end
+        end
+        if ~isfield(sch, 'origin_policy') || ...
+                ~strcmp(char(sch.origin_policy), char(expected.origin_policy))
+            reasons{end+1} = 'schedule_origin_policy_mismatch'; %#ok<AGROW>
+        end
+        if ~isfield(sch, 'protocol_version') || ...
+                ~strcmp(char(sch.protocol_version), char(expected.protocol_version))
+            reasons{end+1} = 'schedule_protocol_version_mismatch'; %#ok<AGROW>
+        end
+    else
+        % Legacy/minimal fixtures: require at least origin count and indices.
         if ~(isfield(sch, 'origin_indices') && ...
                 numel(sch.origin_indices) == rollout_cfg.n_forecast_origins)
             reasons{end+1} = 'origin_indices_count_mismatch'; %#ok<AGROW>
         end
+    end
+    if ~(isfield(sch, 'n_forecast_origins') && ...
+            sch.n_forecast_origins == rollout_cfg.n_forecast_origins)
+        reasons{end+1} = 'origin_count_mismatch'; %#ok<AGROW>
     end
     if ~isfield(result, 'fixed_report_horizons') || ...
             ~isequal(result.fixed_report_horizons(:), rollout_cfg.fixed_report_horizons(:))
@@ -130,8 +160,24 @@ function [ok, reasons] = validate_ode(result, rollout_cfg)
         reasons{end+1} = 'missing_per_origin'; %#ok<AGROW>
     else
         H = rollout_cfg.forecast_horizon_steps;
-        for o = 1:numel(result.per_origin)
+        n_exp = rollout_cfg.n_forecast_origins;
+        if numel(result.per_origin) ~= n_exp
+            reasons{end+1} = 'per_origin_count_mismatch'; %#ok<AGROW>
+        end
+        for o = 1:min(numel(result.per_origin), n_exp)
             po = result.per_origin(o);
+            if isfield(sch, 'origin_indices') && ...
+                    local_get(po, 'origin_global_index', NaN) ~= sch.origin_indices(o)
+                reasons{end+1} = sprintf('per_origin_%d_global_index_mismatch', o); %#ok<AGROW>
+            end
+            if isfield(sch, 'origin_test_relative_indices') && ...
+                    local_get(po, 'origin_test_relative_index', NaN) ~= ...
+                    sch.origin_test_relative_indices(o)
+                reasons{end+1} = sprintf('per_origin_%d_relative_index_mismatch', o); %#ok<AGROW>
+            end
+            if local_get(po, 'horizon', NaN) ~= H
+                reasons{end+1} = sprintf('per_origin_%d_horizon_mismatch', o); %#ok<AGROW>
+            end
             if isfield(po, 'predictions') && isfield(po, 'targets')
                 if any(~isfinite(po.predictions(:))) || any(~isfinite(po.targets(:)))
                     reasons{end+1} = 'nonfinite_pred_or_target'; %#ok<AGROW>
@@ -153,6 +199,13 @@ function [ok, reasons] = validate_ode(result, rollout_cfg)
         if ~isfield(m, 'pooled_nrmse_at_fixed_horizons') || ...
                 any(~isfinite(m.pooled_nrmse_at_fixed_horizons(:)))
             reasons{end+1} = 'nonfinite_fixed_horizon_metrics'; %#ok<AGROW>
+        elseif numel(m.pooled_nrmse_at_fixed_horizons) ~= ...
+                numel(rollout_cfg.fixed_report_horizons)
+            reasons{end+1} = 'fixed_horizon_metric_count_mismatch'; %#ok<AGROW>
+        end
+        if ~isfield(m, 'fixed_report_horizons') || ...
+                ~isequal(m.fixed_report_horizons(:), rollout_cfg.fixed_report_horizons(:))
+            reasons{end+1} = 'metrics_fixed_horizons_mismatch'; %#ok<AGROW>
         end
         if ~isfield(m, 'pooled_nrmse_full_horizon') || ...
                 ~isfinite(m.pooled_nrmse_full_horizon)
@@ -189,6 +242,13 @@ function [ok, reasons] = validate_ode(result, rollout_cfg)
         end
     end
     ok = isempty(reasons);
+end
+
+function expected = reconstruct_expected_schedule(result, rollout_cfg)
+    sch = result.origin_schedule;
+    split = struct();
+    split.test_idx = (double(sch.test_idx_first):double(sch.test_idx_last))';
+    expected = build_mg_autonomous_origin_schedule(split, rollout_cfg);
 end
 
 function tf = has_finite_numeric_fields(s)

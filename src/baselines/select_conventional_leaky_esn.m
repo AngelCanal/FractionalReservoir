@@ -139,12 +139,14 @@ function result = select_conventional_leaky_esn(U, Y, split, washout_steps, mesn
 
     result = pack_conventional_result(table_rows, selected_idx, payload, ...
         m_tr, m_va, m_te, train_idx, val_idx, test_idx, ...
-        reservoir_seed, base_seed, lambda_grid, boundary, tie_tol);
+        reservoir_seed, base_seed, lambda_grid, boundary, tie_tol, ...
+        Yhat_tr, Yhat_va, Yhat_te);
 end
 
 function result = pack_conventional_result(table_rows, selected_idx, payload, ...
         m_tr, m_va, m_te, train_idx, val_idx, test_idx, ...
-        reservoir_seed, base_seed, lambda_grid, boundary, tie_tol)
+        reservoir_seed, base_seed, lambda_grid, boundary, tie_tol, ...
+        Yhat_tr, Yhat_va, Yhat_te)
     sel = payload.selection;
     model = sel.selected_model;
     winin = payload.win_info;
@@ -198,6 +200,26 @@ function result = pack_conventional_result(table_rows, selected_idx, payload, ..
     result.has_sfa = false;
     result.has_std = false;
     result.has_delay = false;
+    % Full-seed retention of the selected model only (no rejected reservoirs).
+    n = size(payload.Wres, 1);
+    fitted = struct();
+    fitted.W_res = payload.Wres;
+    fitted.W_in = payload.Win;
+    fitted.leak_rate = row.leak_rate;
+    fitted.spectral_radius = row.spectral_radius;
+    fitted.achieved_spectral_radius = row.achieved_spectral_radius;
+    fitted.input_scaling = row.input_scaling;
+    fitted.reservoir_seed = reservoir_seed;
+    fitted.readout_model = model;
+    fitted.selected_candidate_index = selected_idx;
+    fitted.zero_initial_state = zeros(n, 1);
+    fitted.fitted_model_hash = hash_conventional_esn_fitted_model(fitted);
+    result.fitted_model = fitted;
+    result.fitted_model_hash = fitted.fitted_model_hash;
+    result.train_prediction_hash = hash_numeric_array(Yhat_tr);
+    result.validation_prediction_hash = hash_numeric_array(Yhat_va);
+    result.test_prediction_hash = hash_numeric_array(Yhat_te);
+    result.predictions = struct('train', Yhat_tr, 'validation', Yhat_va, 'test', Yhat_te);
 end
 
 function result = failed_result(table_rows, reservoir_seed, base_seed, lambda_grid)

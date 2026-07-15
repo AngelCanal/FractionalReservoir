@@ -255,4 +255,16 @@ Phase 4C+ (matched benchmarks / MG rollout, aggregation redesign, calibration, a
 
 ### Remaining blockers
 
-Phase 4C-B2 matched autonomous controls; aggregation; calibration; figures.
+Aggregation; calibration; figures.
+
+## Phase 4C-B2 checklist (matched MG autonomous controls)
+
+- [x] Confirm branch/SHA `cddf46d` clean
+- [x] Harden B1 origin/scoring validation (exact schedule; targets in test block)
+- [x] Fingerprint `matched_mg_autonomous_controls_v1` (separate from one-step v1)
+- [x] Retain frozen one-step fitted models + hashes in seed bundle v2
+- [x] Recursive persistence / linear-AR / conventional ESN autonomous rollouts
+- [x] Central compute + attach + validate helpers; shared per base seed
+- [x] ODE cell comparisons; DDE non-applicability; Dale pending per feature
+- [x] Publication gate `mg_autonomous_matched_controls_complete`
+- [x] Unit/scientific/smoke tests + docs; stop before Phase 5 aggregation

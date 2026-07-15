@@ -354,9 +354,46 @@ publication ODE cell to have a validated `computed` result and every DDE cell a
 validated `unsupported_not_computed` result. Exposed as
 `all_required_secondary_endpoints_complete` in `publication_ready`.
 
-Phase **4C-B2** will add matched autonomous persistence, linear-AR, and
-conventional ESN controls. Do not interpret ODE autonomous forecasts as proof of
-echo-state, stability, chaos reproduction, or mechanism superiority.
+### 9.4 Matched Mackey–Glass autonomous controls (Phase 4C-B2)
+
+Protocol version: `matched_mg_autonomous_controls_v1`
+(`cfg.benchmark_baselines.mackey_glass_autonomous_controls`, fingerprinted via
+`benchmark_baselines`). Shared seed bundle schema:
+`seed_matched_baseline_bundle_v2`.
+
+**Controls (computed once per base seed).**
+
+1. **Recursive persistence:** at origin `i`, `prediction(k)=U(i)` for all
+   `k=1…H` (constant last observation; never `U(i+k-1)`).
+2. **Recursive linear AR:** frozen Phase 4A ridge on
+   `[U(t),…,U(t-L+1)]`; history updates with predictions only.
+3. **Conventional leaky ESN:** teacher-forced `h(i)` once per seed; step 1 =
+   frozen readout; steps `2…H` feed prior predictions as input.
+4. **Dale-only MESN reference:** feature-specific key; status
+   `pending_paired_aggregation` (no per-cell superiority metrics).
+
+**Selection invariant.** All fitted models, λ, and conventional-ESN candidates
+come from frozen one-step train/validation selection. Autonomous metrics never
+retune, reselect λ/candidates, or change origins/horizons.
+
+**Comparisons (descriptive; pending paired seed-level aggregation).**
+
+- `improvement_nrmse = baseline_nrmse - model_nrmse` (positive ⇒ MESN lower error)
+- `ratio_nrmse = model_nrmse / baseline_nrmse` (<1 ⇒ MESN lower error)
+- `difference_restricted_valid_horizon = model_vh - baseline_vh` (positive ⇒ MESN
+  retains useful prediction longer). Valid horizons at `H` without threshold
+  crossing are **right-censored**, not known uncensored failure times.
+
+**DDE.** Model autonomous rollout remains `unsupported_not_computed`; control
+applicability `not_applicable_dde_model_rollout_unsupported`; no numerical
+model-vs-control comparisons on DDE cells.
+
+**Publication readiness.** Gate `mg_autonomous_matched_controls_complete`
+requires every publication ODE cell to have shared-bundle autonomous controls
+with finite metrics and validated comparison arithmetic; DDE cells must have
+explicit non-applicability without computed comparisons. Included in
+`all_required_secondary_endpoints_complete`.
+
 
 Do not generate manuscript figures from pilot data. Figures require explicit
 validated result paths (no “latest file” lookup).

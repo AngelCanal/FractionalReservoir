@@ -231,7 +231,54 @@ function bench = mackey_glass_benchmark(esn_or_params, options)
                 bench.failure_status = 'failed_required_autonomous_endpoint';
             end
         end
+        bench.rollout = attach_mg_controls_to_rollout( ...
+            bench.rollout, shared, baselines, u, y, split, task, ...
+            feature_mode, bb, base_seed, rollout_cfg, options);
     end
+end
+
+function rollout = attach_mg_controls_to_rollout(rollout, shared, baselines, u, y, split, task, ...
+        feature_mode, bb, base_seed, rollout_cfg, options)
+    if isfield(options, 'mg_autonomous_controls_override') && ...
+            ~isempty(options.mg_autonomous_controls_override)
+        error('mackey_glass_benchmark:InjectedAutonomousControls', ...
+            'Caller-injected autonomous-control overrides are rejected.');
+    end
+    if ~isempty(shared) && isfield(shared, 'mackey_glass_autonomous')
+        controls = attach_shared_mg_autonomous_controls_for_cell( ...
+            shared.mackey_glass_autonomous, rollout, feature_mode, ...
+            shared.bundle_id, rollout_cfg, bb);
+        controls.evaluation_provenance.bundle_id = shared.bundle_id;
+        controls.base_seed = shared.base_seed;
+        controls.task_seed = shared.mackey_glass_task_seed;
+        controls.task_data_hash = shared.mackey_glass_task_data_hash;
+        controls.split_hash = shared.mackey_glass_split_hash;
+        if isfield(shared.mackey_glass_autonomous, 'origin_schedule')
+            controls.origin_schedule = shared.mackey_glass_autonomous.origin_schedule;
+        end
+        rollout.controls = controls;
+        return;
+    end
+    % Standalone local path: reuse fitted one-step models; not publication provenance.
+    task_local = task;
+    task_local.U = u;
+    task_local.Y = y;
+    task_local.split = split;
+    shared_local = compute_mg_autonomous_baseline_controls( ...
+        task_local, baselines, rollout_cfg, base_seed, 'executed_cell_local', ...
+        struct('autonomous_controls_config', bb.mackey_glass_autonomous_controls));
+    controls = attach_shared_mg_autonomous_controls_for_cell( ...
+        shared_local, rollout, feature_mode, '', rollout_cfg, bb);
+    controls.evaluation_provenance.mode = 'executed_cell_local';
+    controls.evaluation_provenance.publication_shared_bundle = false;
+    controls.base_seed = base_seed;
+    controls.task_seed = task.seed;
+    controls.task_data_hash = task.task_data_hash;
+    controls.split_hash = task.split_hash;
+    if isfield(shared_local, 'origin_schedule')
+        controls.origin_schedule = shared_local.origin_schedule;
+    end
+    rollout.controls = controls;
 end
 
 function rollout = evaluate_mg_autonomous_rollout(esn, u, y, split, y_pred_test, ...

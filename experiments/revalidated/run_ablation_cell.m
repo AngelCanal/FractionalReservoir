@@ -414,7 +414,8 @@ function r = compact_mg_rollout(rollout)
     keep = {'status', 'protocol_version', 'role', 'mode', 'reason', ...
         'origin_schedule', 'forecast_horizon_steps', 'fixed_report_horizons', ...
         'normalization_reference', 'normalization_scale', 'per_origin', ...
-        'metrics', 'evaluation_provenance', 'failure_reasons', 'error_id'};
+        'metrics', 'evaluation_provenance', 'failure_reasons', 'error_id', ...
+        'controls'};
     for i = 1:numel(keep)
         if isfield(rollout, keep{i})
             r.(keep{i}) = rollout.(keep{i});
@@ -472,7 +473,8 @@ function b = compact_baselines(baselines)
             'input_nonzero_count','selected_candidate_index', ...
             'selected_at_candidate_boundary','finite_state_trajectory', ...
             'recurrent_dale_constrained','has_sfa','has_std','has_delay', ...
-            'comparison'};
+            'comparison','fitted_model_hash','train_prediction_hash', ...
+            'validation_prediction_hash','test_prediction_hash'};
         ce2 = struct();
         for k = 1:numel(keep)
             if isfield(ce, keep{k})
@@ -495,11 +497,11 @@ function b = compact_baselines(baselines)
             'target_mean'}
         if isfield(b, nm{1}) && isstruct(b.(nm{1}))
             bi = b.(nm{1});
-            if isfield(bi, 'candidate_selection_table')
-                bi = rmfield(bi, 'candidate_selection_table');
-            end
-            if isfield(bi, 'lambda_selection_table')
-                bi = rmfield(bi, 'lambda_selection_table');
+            for drop = {'candidate_selection_table','lambda_selection_table', ...
+                    'fitted_model','predictions','W_res','W_in'}
+                if isfield(bi, drop{1})
+                    bi = rmfield(bi, drop{1});
+                end
             end
             if isfield(bi, 'ridge_diagnostics') && isstruct(bi.ridge_diagnostics)
                 rd = bi.ridge_diagnostics;

@@ -7,6 +7,9 @@ function bundle = compute_seed_matched_baseline_bundle(cfg, base_seed, reference
 % matched W_in + shared candidate/lambda grids. Independent of adaptation/STD/
 % delay/feature mechanism cells. Dale-only references remain feature-specific
 % and are attached later per cell.
+%
+% Schema seed_matched_baseline_bundle_v2 also stores matched MG autonomous
+% controls computed once from frozen one-step models.
 
     if nargin < 3 || isempty(reference_W_in)
         error('compute_seed_matched_baseline_bundle:MissingWin', ...
@@ -106,8 +109,24 @@ function bundle = compute_seed_matched_baseline_bundle(cfg, base_seed, reference
         failure_reasons = [failure_reasons, prepend_task(mg_report.reasons, 'mackey_glass')]; %#ok<AGROW>
     end
 
+    % Matched MG autonomous controls (once per base seed; frozen one-step models).
+    rollout_cfg = local_get(cfg, 'mg_autonomous_rollout', ...
+        build_mg_autonomous_rollout_config(local_get(cfg, 'protocol_tier', 'smoke')));
+    ac_cfg = local_get(bb, 'mackey_glass_autonomous_controls', struct());
+    mg_autonomous = compute_mg_autonomous_baseline_controls( ...
+        mg_task, mg_baselines, rollout_cfg, base_seed, 'executed_shared_seed_bundle', ...
+        struct('autonomous_controls_config', ac_cfg));
+    if ~strcmp(char(mg_autonomous.status), 'computed')
+        status = 'failed_required_autonomous_baseline';
+        failure_reasons = [failure_reasons, prepend_task( ...
+            mg_autonomous.failure_reasons, 'mg_autonomous')]; %#ok<AGROW>
+    end
+
+    lar = mg_baselines.linear_autoregression;
+    ce = mg_baselines.conventional_leaky_esn;
+
     identity = struct();
-    identity.schema_version = 'seed_matched_baseline_bundle_v1';
+    identity.schema_version = 'seed_matched_baseline_bundle_v2';
     identity.protocol_version = char(bb.protocol_version);
     identity.protocol_tier = char(cfg.protocol_tier);
     identity.protocol_fingerprint = char(cfg.protocol_fingerprint);
@@ -126,6 +145,14 @@ function bundle = compute_seed_matched_baseline_bundle(cfg, base_seed, reference
     identity.narma_split_hash = narma_task.split_hash;
     identity.mackey_glass_task_data_hash = mg_task.task_data_hash;
     identity.mackey_glass_split_hash = mg_task.split_hash;
+    identity.autonomous_controls_protocol_version = 'matched_mg_autonomous_controls_v1';
+    identity.rollout_protocol_version = char(rollout_cfg.protocol_version);
+    identity.origin_schedule_hash = char(mg_autonomous.origin_schedule_hash);
+    identity.normalization_definition = 'std(Y(train_after_washout union val), 1)';
+    identity.normalization_scale = mg_autonomous.normalization_scale;
+    identity.linear_ar_fitted_model_hash = char(local_get(lar, 'fitted_model_hash', ''));
+    identity.conventional_esn_fitted_model_hash = char(local_get(ce, 'fitted_model_hash', ''));
+    identity.autonomous_control_content_hash = char(mg_autonomous.content_hash);
 
     bundle = identity;
     bundle.W_in = reference_W_in;
@@ -138,6 +165,7 @@ function bundle = compute_seed_matched_baseline_bundle(cfg, base_seed, reference
         'baselines', mg_baselines, ...
         'validation', mg_report, ...
         'ar_lags', mg_ar_lags);
+    bundle.mackey_glass_autonomous = mg_autonomous;
     bundle.baseline_result_status = status;
     bundle.failure_reasons = failure_reasons;
     bundle.evaluation_provenance = struct( ...

@@ -66,12 +66,35 @@ function scored = score_mg_autonomous_forecasts(predictions, Y, origins, split, 
             'Autonomous predictions contain non-finite values.');
     end
 
+    test_idx = split.test_idx(:);
     test_rel = zeros(n_origins, 1);
     per_origin = repmat(struct(), n_origins, 1);
     err_mat = nan(n_origins, H);
     for o = 1:n_origins
         i = origins(o);
-        tgt = Y_score(i:(i + H - 1));
+        target_idx = i:(i + H - 1);
+        if ~ismember(i, test_idx)
+            error('score_mg_autonomous_forecasts:OriginNotInTest', ...
+                'Origin %d is not a member of split.test_idx.', i);
+        end
+        if numel(target_idx) ~= H
+            error('score_mg_autonomous_forecasts:TargetLengthMismatch', ...
+                'Origin %d target window length %d ~= H=%d.', i, numel(target_idx), H);
+        end
+        if any(diff(target_idx(:)) ~= 1)
+            error('score_mg_autonomous_forecasts:NoncontiguousTargets', ...
+                'Origin %d target window is not contiguous.', i);
+        end
+        if target_idx(end) > test_idx(end)
+            error('score_mg_autonomous_forecasts:TargetBeyondTestEnd', ...
+                'Origin %d target window ends at %d beyond test end %d.', ...
+                i, target_idx(end), test_idx(end));
+        end
+        if ~all(ismember(target_idx(:), test_idx))
+            error('score_mg_autonomous_forecasts:TargetOutsideTest', ...
+                'Origin %d has a target index outside split.test_idx.', i);
+        end
+        tgt = Y_score(target_idx);
         if any(~isfinite(tgt))
             error('score_mg_autonomous_forecasts:NonfiniteTargets', ...
                 'Targets for origin %d contain non-finite values.', i);
@@ -94,11 +117,7 @@ function scored = score_mg_autonomous_forecasts(predictions, Y, origins, split, 
                 'right_censored', cens_t);
         end
 
-        rel = find(split.test_idx(:) == i, 1);
-        if isempty(rel)
-            error('score_mg_autonomous_forecasts:OriginNotInTest', ...
-                'Origin %d is not in split.test_idx.', i);
-        end
+        rel = find(test_idx == i, 1);
         test_rel(o) = rel;
 
         rmse = sqrt(mean(err.^2));

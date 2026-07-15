@@ -70,6 +70,15 @@ function result = fit_phase4a_lag_baseline(U, Y, split, washout_steps, n_lags, l
     result.ridge_diagnostics = extract_ridge_diag(sel.selected_model);
     result.lambda_selection_table = compact_lambda_table(sel);
     result.n_lags = n_lags;
+    % Full-seed retention for autonomous recursion (compact cell records strip these).
+    result.fitted_model = sel.selected_model;
+    result.fitted_model_hash = hash_fitted_ridge_model(sel.selected_model);
+    result.train_prediction_hash = hash_numeric_array(yhat_tr);
+    result.validation_prediction_hash = hash_numeric_array(yhat_va);
+    result.test_prediction_hash = hash_numeric_array(yhat_te);
+    result.predictions = struct('train', yhat_tr, 'validation', yhat_va, 'test', yhat_te);
+    result.feature_definition = result.provenance.feature_definition;
+    result.lag_count = n_lags;
 end
 
 function [X, Yout, n_used] = lag_design(U, Y, idx, n_lags)

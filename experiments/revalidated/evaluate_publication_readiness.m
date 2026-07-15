@@ -120,6 +120,9 @@ function report = evaluate_publication_readiness(cfg, options)
     [mg_auto_ok, mg_auto_detail] = check_mg_autonomous_protocol_complete(cell_records, cfg);
     checks{end+1} = make_check('mg_autonomous_protocol_complete', mg_auto_ok, mg_auto_detail);
 
+    [mg_ctrl_ok, mg_ctrl_detail] = check_mg_autonomous_matched_controls_complete(cell_records, cfg);
+    checks{end+1} = make_check('mg_autonomous_matched_controls_complete', mg_ctrl_ok, mg_ctrl_detail);
+
     has_manifest = logical(local_get(options, 'has_manifest', false));
     has_commit_sha = logical(local_get(options, 'has_commit_sha', false));
     has_artifact_hashes = logical(local_get(options, 'has_artifact_hashes', false));
@@ -151,7 +154,8 @@ function report = evaluate_publication_readiness(cfg, options)
         check_named(check_arr, 'no_unsupported_dde_metric_as_computed') && ...
         check_named(check_arr, 'temporal_learning_gate_passed');
     all_required_secondary_endpoints_complete = ...
-        check_named(check_arr, 'mg_autonomous_protocol_complete');
+        check_named(check_arr, 'mg_autonomous_protocol_complete') && ...
+        check_named(check_arr, 'mg_autonomous_matched_controls_complete');
     artifact_package_complete = check_named(check_arr, 'manifest_present') && ...
         check_named(check_arr, 'commit_sha_present') && ...
         check_named(check_arr, 'artifact_hashes_present');
@@ -497,6 +501,78 @@ function [ok, detail] = check_mg_autonomous_protocol_complete(records, cfg)
     end
     ok = bad == 0;
     detail = sprintf('n_mg_autonomous_bad=%d / %d', bad, numel(records));
+end
+
+function [ok, detail] = check_mg_autonomous_matched_controls_complete(records, cfg)
+% Matched autonomous controls: shared-bundle provenance for ODE; DDE N/A.
+    if isempty(records)
+        ok = false;
+        detail = 'no_records';
+        return;
+    end
+    rollout_cfg = local_get(cfg, 'mg_autonomous_rollout', []);
+    bb = local_get(cfg, 'benchmark_baselines', []);
+    if isempty(rollout_cfg) || isempty(bb)
+        ok = false;
+        detail = 'missing_rollout_or_baseline_cfg';
+        return;
+    end
+    bad = 0;
+    for i = 1:numel(records)
+        r = records(i);
+        mode = char(local_get(r, 'mode', ''));
+        rollout = extract_cell_rollout(r);
+        if isempty(rollout) || ~isfield(rollout, 'controls')
+            bad = bad + 1;
+            continue;
+        end
+        ctrl = rollout.controls;
+        feature_mode = char(local_get(r, 'which_states', ...
+            local_get(r, 'feature_mode', 'x')));
+        if strcmp(mode, 'DDE')
+            [vok, ~] = validate_mg_autonomous_baseline_controls(ctrl, struct( ...
+                'cell_mode', 'DDE', ...
+                'require_production_provenance', false));
+            if ~vok
+                bad = bad + 1;
+            end
+            continue;
+        end
+        % ODE
+        if ~strcmp(char(local_get(ctrl, 'status', '')), 'computed')
+            bad = bad + 1;
+            continue;
+        end
+        bundle_id = '';
+        if isfield(r, 'matched_baseline_bundle_id')
+            bundle_id = char(r.matched_baseline_bundle_id);
+        elseif isfield(ctrl, 'bundle_id')
+            bundle_id = char(ctrl.bundle_id);
+        end
+        exp = struct( ...
+            'cell_mode', 'ODE', ...
+            'require_production_provenance', true, ...
+            'rollout_cfg', rollout_cfg, ...
+            'feature_mode', feature_mode, ...
+            'dale_keys', bb.dale_mesn_control_keys, ...
+            'model_metrics', local_get(rollout, 'metrics', struct()), ...
+            'bundle_id', bundle_id, ...
+            'require_bundle_id', true);
+        if isfield(r, 'base_seed')
+            exp.base_seed = r.base_seed;
+        end
+        [vok, ~] = validate_mg_autonomous_baseline_controls(ctrl, exp);
+        if ~vok
+            bad = bad + 1;
+            continue;
+        end
+        if isfield(ctrl, 'bundle_id') && ~isempty(bundle_id) && ...
+                ~strcmp(char(ctrl.bundle_id), bundle_id)
+            bad = bad + 1;
+        end
+    end
+    ok = bad == 0;
+    detail = sprintf('n_mg_autonomous_controls_bad=%d / %d', bad, numel(records));
 end
 
 function rollout = extract_cell_rollout(r)

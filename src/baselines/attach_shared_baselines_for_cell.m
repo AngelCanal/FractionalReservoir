@@ -81,7 +81,8 @@ function baselines = attach_shared_baselines_for_cell(bundle_task, model_nrmse, 
 end
 
 function b = compact_baseline_for_cell(b, model_nrmse)
-    drop = {'candidate_selection_table', 'lambda_selection_table'};
+    drop = {'candidate_selection_table', 'lambda_selection_table', ...
+        'fitted_model', 'predictions', 'W_res', 'W_in'};
     for i = 1:numel(drop)
         if isfield(b, drop{i})
             b = rmfield(b, drop{i});
