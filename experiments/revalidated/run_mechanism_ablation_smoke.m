@@ -27,6 +27,8 @@ function [result, run_dir] = run_mechanism_ablation_smoke(options)
     save_results = local_get(options, 'save_results', true);
     param_overrides = local_get(options, 'param_overrides', struct());
 
+    reject_baseline_overrides(options, 'run_mechanism_ablation_smoke');
+
     if isfield(options, 'frozen_operating_point')
         cfg.frozen_operating_point = options.frozen_operating_point;
         cfg.protocol_fingerprint = compute_protocol_fingerprint(cfg);
@@ -70,17 +72,33 @@ function [result, run_dir] = run_mechanism_ablation_smoke(options)
     cell_results = {};
     cell_index = {};
     n_fail = 0;
+    seed_baseline_index = {};
     for iseed = 1:numel(seeds)
         seed = seeds(iseed);
+        bundle = [];
+        if n_cells > 0
+            prep_opts = struct('param_overrides', param_overrides);
+            [bundle, bundle_path] = prepare_seed_matched_baselines( ...
+                cfg, seed, cells, run_dir, save_results, prep_opts);
+            seed_baseline_index{end+1} = struct( ...
+                'seed', seed, ...
+                'bundle_id', bundle.bundle_id, ...
+                'file', bundle_path, ...
+                'status', bundle.baseline_result_status); %#ok<AGROW>
+        end
         for ic = 1:n_cells
             cell_spec = cells{ic};
             if verbose
                 fprintf('Smoke %d/%d seed=%d cell=%s\n', ...
                     (iseed-1)*n_cells + ic, numel(seeds)*n_cells, seed, cell_spec.cell_key);
             end
-            cr = run_ablation_cell(cell_spec, seed, cfg, struct( ...
+            cell_opts = struct( ...
                 'verbose', verbose, 'run_secondary', false, ...
-                'param_overrides', param_overrides));
+                'param_overrides', param_overrides);
+            if ~isempty(bundle)
+                cell_opts.shared_baseline_bundle = bundle;
+            end
+            cr = run_ablation_cell(cell_spec, seed, cfg, cell_opts);
             cell_results{end+1} = cr; %#ok<AGROW>
             if ~strcmp(cr.status, 'ok')
                 n_fail = n_fail + 1;
@@ -92,7 +110,8 @@ function [result, run_dir] = run_mechanism_ablation_smoke(options)
             end
             cell_index{end+1} = struct( ...
                 'file', fname, 'seed', seed, 'cell_key', cell_spec.cell_key, ...
-                'status', cr.status, 'wall_time_seconds', cr.wall_time_seconds); %#ok<AGROW>
+                'status', cr.status, 'wall_time_seconds', cr.wall_time_seconds, ...
+                'matched_baseline_bundle_id', local_get(cr, 'matched_baseline_bundle_id', '')); %#ok<AGROW>
         end
     end
 
@@ -126,6 +145,7 @@ function [result, run_dir] = run_mechanism_ablation_smoke(options)
     result.n_failed = n_fail;
     result.cell_index = cell_index;
     result.cell_results = cell_results;
+    result.seed_baseline_index = seed_baseline_index;
     result.temporal_learning_gate = temporal_gate;
     result.run_dir = run_dir;
     result.status = ternary(n_fail == 0, 'ok', 'failed_cells');
@@ -205,5 +225,20 @@ function out = ternary(cond, a, b)
         out = a;
     else
         out = b;
+    end
+end
+
+function reject_baseline_overrides(options, runner_id)
+    forbidden = { ...
+        'baseline_bundle_override', ...
+        'matched_baseline_bundles', ...
+        'precomputed_baseline_bundles', ...
+        'shared_baseline_bundle_override'};
+    for i = 1:numel(forbidden)
+        if isfield(options, forbidden{i}) && ~isempty(options.(forbidden{i}))
+            error(sprintf('%s:BaselineOverrideForbidden', runner_id), ...
+                '%s is forbidden; shared baselines must be computed internally.', ...
+                forbidden{i});
+        end
     end
 end

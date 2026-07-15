@@ -23,6 +23,8 @@ function baselines = compute_matched_onestep_baselines(U, Y, split, washout_step
     feature_mode = char(local_get(opts, 'feature_mode', 'x'));
     mesn_Win = local_get(opts, 'mesn_Win', []);
     base_seed = local_get(opts, 'base_seed', local_get(opts, 'seed', 1));
+    skip_dale = logical(local_get(opts, 'skip_dale', false));
+    skip_comparisons = logical(local_get(opts, 'skip_comparisons', false));
 
     train_idx = split.train_idx(washout_steps+1:end);
     y_train = Y(train_idx, :);
@@ -49,7 +51,9 @@ function baselines = compute_matched_onestep_baselines(U, Y, split, washout_step
             tm.selected_lambda = NaN;
             tm.ridge_diagnostics = struct();
             tm.lambda_selection_table = [];
-            tm.comparison = baseline_model_comparison(model_nrmse, tm.metrics_test.nrmse);
+            if ~skip_comparisons
+                tm.comparison = baseline_model_comparison(model_nrmse, tm.metrics_test.nrmse);
+            end
             baselines.training_target_mean = tm;
             baselines.target_mean = tm; % backward-compatible alias
 
@@ -58,8 +62,10 @@ function baselines = compute_matched_onestep_baselines(U, Y, split, washout_step
             lin = fit_phase4a_lag_baseline(U, Y, split, washout_steps, n_lags, ...
                 lambda_grid, struct('name', 'linear_input_history', ...
                 'model_family', 'linear_input_history'));
-            lin.comparison = baseline_model_comparison(model_nrmse, ...
-                local_nrmse(lin));
+            if ~skip_comparisons
+                lin.comparison = baseline_model_comparison(model_nrmse, ...
+                    local_nrmse(lin));
+            end
             baselines.linear_input_history = lin;
             baselines.linear_input_ar = lin; % backward-compatible alias
 
@@ -76,7 +82,9 @@ function baselines = compute_matched_onestep_baselines(U, Y, split, washout_step
             pers.selected_lambda = NaN;
             pers.ridge_diagnostics = struct();
             pers.lambda_selection_table = [];
-            pers.comparison = baseline_model_comparison(model_nrmse, pers.metrics_test.nrmse);
+            if ~skip_comparisons
+                pers.comparison = baseline_model_comparison(model_nrmse, pers.metrics_test.nrmse);
+            end
             baselines.persistence = pers;
 
             % 2) Linear autoregression
@@ -84,7 +92,9 @@ function baselines = compute_matched_onestep_baselines(U, Y, split, washout_step
             lar = fit_phase4a_lag_baseline(U, Y, split, washout_steps, ar_lags, ...
                 lambda_grid, struct('name', 'linear_autoregression', ...
                 'model_family', 'linear_autoregression'));
-            lar.comparison = baseline_model_comparison(model_nrmse, local_nrmse(lar));
+            if ~skip_comparisons
+                lar.comparison = baseline_model_comparison(model_nrmse, local_nrmse(lar));
+            end
             baselines.linear_autoregression = lar;
             baselines.linear_ar = lar; % backward-compatible alias
 
@@ -103,40 +113,50 @@ function baselines = compute_matched_onestep_baselines(U, Y, split, washout_step
         'base_seed', base_seed, ...
         'validation_tie_tolerance', bb.validation_tie_tolerance);
     conv = select_conventional_leaky_esn(U, Y, split, washout_steps, mesn_Win, ce_opts);
-    conv.comparison = baseline_model_comparison(model_nrmse, local_nrmse(conv));
+    if ~skip_comparisons
+        conv.comparison = baseline_model_comparison(model_nrmse, local_nrmse(conv));
+    end
     baselines.conventional_leaky_esn = conv;
 
-    % 4) Dale-only MESN paired-cell reference (not computed here)
-    dale_key = dale_mesn_control_reference_key(feature_mode, bb.dale_mesn_control_keys);
-    dale = struct();
-    dale.name = 'dale_mesn_control';
-    dale.status = 'pending_paired_aggregation';
-    dale.role = 'paired_cell_reference';
-    dale.protocol_version = 'matched_task_baselines_v1';
-    dale.model_family = 'dale_mesn_control';
-    dale.feature_dimension = NaN;
-    dale.include_input = false;
-    dale.train_rows = NaN;
-    dale.validation_rows = NaN;
-    dale.test_rows = NaN;
-    dale.metrics = struct();
-    dale.selected_lambda = NaN;
-    dale.ridge_diagnostics = struct();
-    dale.lambda_selection_table = [];
-    dale.hyperparameters = struct();
-    dale.provenance = struct( ...
-        'dale_mesn_control_reference', dale_key, ...
-        'note', 'Metric resolved from paired cell table in aggregation phase.', ...
-        'not_conventional_esn', true);
-    dale.dale_mesn_control_reference = dale_key;
-    dale.comparison = struct( ...
-        'status', 'pending_paired_aggregation', ...
-        'dale_mesn_control_reference', dale_key);
-    baselines.dale_mesn_control = dale;
+    % 4) Dale-only MESN paired-cell reference (not computed here; feature-specific)
+    if ~skip_dale
+        dale_key = dale_mesn_control_reference_key(feature_mode, bb.dale_mesn_control_keys);
+        dale = struct();
+        dale.name = 'dale_mesn_control';
+        dale.status = 'pending_paired_aggregation';
+        dale.role = 'paired_cell_reference';
+        dale.protocol_version = 'matched_task_baselines_v1';
+        dale.model_family = 'dale_mesn_control';
+        dale.feature_dimension = NaN;
+        dale.include_input = false;
+        dale.train_rows = NaN;
+        dale.validation_rows = NaN;
+        dale.test_rows = NaN;
+        dale.metrics = struct();
+        dale.selected_lambda = NaN;
+        dale.ridge_diagnostics = struct();
+        dale.lambda_selection_table = [];
+        dale.hyperparameters = struct();
+        dale.provenance = struct( ...
+            'dale_mesn_control_reference', dale_key, ...
+            'note', 'Metric resolved from paired cell table in aggregation phase.', ...
+            'not_conventional_esn', true);
+        dale.dale_mesn_control_reference = dale_key;
+        dale.comparison = struct( ...
+            'status', 'pending_paired_aggregation', ...
+            'dale_mesn_control_reference', dale_key);
+        baselines.dale_mesn_control = dale;
+    end
 
     baselines.protocol_version = 'matched_task_baselines_v1';
     baselines.resolved_lambda_grid = lambda_grid(:);
     baselines.model_test_nrmse = model_nrmse;
+    if isfield(opts, 'task_data_hash')
+        baselines.task_data_hash = opts.task_data_hash;
+    end
+    if isfield(opts, 'split_hash')
+        baselines.split_hash = opts.split_hash;
+    end
 end
 
 function b = pack_simple_baseline(name, family, m_tr, m_va, m_te, n_tr, n_va, n_te)

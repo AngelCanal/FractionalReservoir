@@ -38,6 +38,7 @@ function [result, run_dir] = run_mechanism_ablation_full(options)
     cfg.protocol_fingerprint = compute_protocol_fingerprint(cfg);
 
     reject_temporal_gate_override(options, 'run_mechanism_ablation_full');
+    reject_baseline_overrides(options, 'run_mechanism_ablation_full');
 
     verbose = local_get(options, 'verbose', true);
     save_results = local_get(options, 'save_results', true);
@@ -80,8 +81,19 @@ function [result, run_dir] = run_mechanism_ablation_full(options)
     cell_index = {};
     cell_results = {};
     n_fail = 0;
+    seed_baseline_index = {};
     for iseed = 1:numel(seeds)
         seed = seeds(iseed);
+        bundle = [];
+        if numel(cells) > 0
+            [bundle, bundle_path] = prepare_seed_matched_baselines( ...
+                cfg, seed, cells, run_dir, save_results, struct());
+            seed_baseline_index{end+1} = struct( ...
+                'seed', seed, ...
+                'bundle_id', bundle.bundle_id, ...
+                'file', bundle_path, ...
+                'status', bundle.baseline_result_status); %#ok<AGROW>
+        end
         for ic = 1:numel(cells)
             cell_spec = cells{ic};
             if verbose
@@ -89,9 +101,13 @@ function [result, run_dir] = run_mechanism_ablation_full(options)
                     (iseed-1)*numel(cells)+ic, numel(seeds)*numel(cells), ...
                     seed, cell_spec.cell_key);
             end
-            cr = run_ablation_cell(cell_spec, seed, cfg, struct( ...
+            cell_opts = struct( ...
                 'verbose', verbose, ...
-                'run_secondary', run_secondary));
+                'run_secondary', run_secondary);
+            if ~isempty(bundle)
+                cell_opts.shared_baseline_bundle = bundle;
+            end
+            cr = run_ablation_cell(cell_spec, seed, cfg, cell_opts);
             cell_results{end+1} = cr; %#ok<AGROW>
             if ~strcmp(cr.status, 'ok')
                 n_fail = n_fail + 1;
@@ -106,7 +122,8 @@ function [result, run_dir] = run_mechanism_ablation_full(options)
                 'seed', seed, ...
                 'cell_key', cell_spec.cell_key, ...
                 'status', cr.status, ...
-                'wall_time_seconds', cr.wall_time_seconds); %#ok<AGROW>
+                'wall_time_seconds', cr.wall_time_seconds, ...
+                'matched_baseline_bundle_id', local_get(cr, 'matched_baseline_bundle_id', '')); %#ok<AGROW>
         end
     end
 
@@ -146,6 +163,7 @@ function [result, run_dir] = run_mechanism_ablation_full(options)
     result.n_failed = n_fail;
     result.cell_index = cell_index;
     result.aggregate = aggregate;
+    result.seed_baseline_index = seed_baseline_index;
     result.temporal_learning_gate = temporal_gate;
     result.frozen_operating_point = cfg.frozen_operating_point;
     result.run_dir = run_dir;
@@ -200,6 +218,21 @@ function reject_temporal_gate_override(options, runner_id)
     if logical(local_get(options, 'allow_injected_test_fixture', false))
         error(sprintf('%s:InjectedFixtureForbidden', runner_id), ...
             'allow_injected_test_fixture is forbidden for publication runners.');
+    end
+end
+
+function reject_baseline_overrides(options, runner_id)
+    forbidden = { ...
+        'baseline_bundle_override', ...
+        'matched_baseline_bundles', ...
+        'precomputed_baseline_bundles', ...
+        'shared_baseline_bundle_override'};
+    for i = 1:numel(forbidden)
+        if isfield(options, forbidden{i}) && ~isempty(options.(forbidden{i}))
+            error(sprintf('%s:BaselineOverrideForbidden', runner_id), ...
+                '%s is forbidden; shared baselines must be computed internally.', ...
+                forbidden{i});
+        end
     end
 end
 

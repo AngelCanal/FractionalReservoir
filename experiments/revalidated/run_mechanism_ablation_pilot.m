@@ -31,6 +31,8 @@ function [result, run_dir] = run_mechanism_ablation_pilot(options)
     do_rerun_check = local_get(options, 'do_rerun_check', true);
     param_overrides = local_get(options, 'param_overrides', struct());
 
+    reject_baseline_overrides(options, 'run_mechanism_ablation_pilot');
+
     % Optional frozen operating point from T102
     if isfield(options, 'frozen_operating_point')
         cfg.frozen_operating_point = options.frozen_operating_point;
@@ -74,9 +76,21 @@ function [result, run_dir] = run_mechanism_ablation_pilot(options)
     qa_rows = {};
     cell_results = {};
     n_fail = 0;
+    seed_baseline_index = {};
 
     for iseed = 1:numel(seeds)
         seed = seeds(iseed);
+        bundle = [];
+        if n_cells > 0
+            prep_opts = struct('param_overrides', param_overrides);
+            [bundle, bundle_path] = prepare_seed_matched_baselines( ...
+                cfg, seed, cells, run_dir, save_results, prep_opts);
+            seed_baseline_index{end+1} = struct( ...
+                'seed', seed, ...
+                'bundle_id', bundle.bundle_id, ...
+                'file', bundle_path, ...
+                'status', bundle.baseline_result_status); %#ok<AGROW>
+        end
         for ic = 1:n_cells
             cell_spec = cells{ic};
             if verbose
@@ -85,6 +99,9 @@ function [result, run_dir] = run_mechanism_ablation_pilot(options)
             end
             cell_opts = struct('verbose', verbose, 'run_secondary', false, ...
                 'param_overrides', param_overrides);
+            if ~isempty(bundle)
+                cell_opts.shared_baseline_bundle = bundle;
+            end
             cr = run_ablation_cell(cell_spec, seed, cfg, cell_opts);
             cell_results{end+1} = cr; %#ok<AGROW>
 
@@ -104,9 +121,11 @@ function [result, run_dir] = run_mechanism_ablation_pilot(options)
     assertions = assert_pilot_structural_qa(qa_table, cell_results, cfg);
 
     rerun = struct('performed', false);
-    if do_rerun_check && ~isempty(cell_results)
+    if do_rerun_check && ~isempty(cell_results) && n_cells > 0
+        [bundle_rerun, ~] = prepare_seed_matched_baselines( ...
+            cfg, seeds(1), cells, '', false, struct('param_overrides', param_overrides));
         rerun = rerun_reproducibility_check(cells{1}, seeds(1), cfg, ...
-            cell_results{1}, param_overrides, verbose);
+            cell_results{1}, param_overrides, verbose, bundle_rerun);
         assertions.rerun = rerun;
     end
 
@@ -142,6 +161,7 @@ function [result, run_dir] = run_mechanism_ablation_pilot(options)
     result.assertions = assertions;
     result.rerun = rerun;
     result.cell_results = cell_results;
+    result.seed_baseline_index = seed_baseline_index;
     result.temporal_learning_gate = temporal_gate;
     result.run_dir = run_dir;
     result.status = ternary(n_fail == 0 && assertions.all_pass, 'ok', 'failed_assertions');
@@ -244,13 +264,15 @@ function assertions = assert_pilot_structural_qa(qa_table, cell_results, cfg)
         assertions.pilot_tag;
 end
 
-function rerun = rerun_reproducibility_check(cell_spec, seed, cfg, first, param_overrides, verbose)
+function rerun = rerun_reproducibility_check(cell_spec, seed, cfg, first, param_overrides, verbose, shared_bundle)
     rerun = struct();
     rerun.performed = true;
     rerun.cell_key = cell_spec.cell_key;
     rerun.seed = seed;
     second = run_ablation_cell(cell_spec, seed, cfg, struct( ...
-        'verbose', verbose, 'run_secondary', false, 'param_overrides', param_overrides));
+        'verbose', verbose, 'run_secondary', false, ...
+        'param_overrides', param_overrides, ...
+        'shared_baseline_bundle', shared_bundle));
     if ~strcmp(first.status, 'ok') || ~strcmp(second.status, 'ok')
         rerun.pass = false;
         rerun.reason = 'original_or_rerun_failed';
@@ -343,5 +365,20 @@ function out = ternary(cond, a, b)
         out = a;
     else
         out = b;
+    end
+end
+
+function reject_baseline_overrides(options, runner_id)
+    forbidden = { ...
+        'baseline_bundle_override', ...
+        'matched_baseline_bundles', ...
+        'precomputed_baseline_bundles', ...
+        'shared_baseline_bundle_override'};
+    for i = 1:numel(forbidden)
+        if isfield(options, forbidden{i}) && ~isempty(options.(forbidden{i}))
+            error(sprintf('%s:BaselineOverrideForbidden', runner_id), ...
+                '%s is forbidden; shared baselines must be computed internally.', ...
+                forbidden{i});
+        end
     end
 end

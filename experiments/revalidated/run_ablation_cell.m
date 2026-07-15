@@ -10,6 +10,7 @@ function cell_result = run_ablation_cell(cell_spec, base_seed, cfg, options)
     verbose = local_get(options, 'verbose', true);
     run_secondary = local_get(options, 'run_secondary', cfg.secondary_enabled);
     param_overrides = local_get(options, 'param_overrides', struct());
+    shared_baseline_bundle = local_get(options, 'shared_baseline_bundle', []);
 
     t_wall0 = tic;
     cell_result = struct();
@@ -43,6 +44,20 @@ function cell_result = run_ablation_cell(cell_spec, base_seed, cfg, options)
         cell_result.dale_violations_E = meta.sign_violations_E;
         cell_result.dale_violations_I = meta.sign_violations_I;
         cell_result.dale_violations = meta.sign_violations_E + meta.sign_violations_I;
+
+        if ~isempty(shared_baseline_bundle)
+            [ok_b, b_report] = validate_seed_matched_baseline_bundle( ...
+                shared_baseline_bundle, cfg, base_seed, params.W_in);
+            if ~ok_b
+                error('run_ablation_cell:SharedBaselineRejected', ...
+                    'Shared seed baseline bundle rejected for cell %s: %s', ...
+                    cell_spec.cell_key, strjoin(b_report.reasons, ','));
+            end
+            cell_result.matched_baseline_bundle_id = shared_baseline_bundle.bundle_id;
+        else
+            cell_result.matched_baseline_bundle_id = '';
+            cell_result.matched_baseline_provenance = 'executed_cell_local';
+        end
 
         esn = SRNN_ESN(params);
         L = cfg.lengths;
@@ -98,6 +113,9 @@ function cell_result = run_ablation_cell(cell_spec, base_seed, cfg, options)
         if isfield(L, 'lambda_grid') && ~isempty(L.lambda_grid)
             narma_opts.lambda_grid = L.lambda_grid;
         end
+        if ~isempty(shared_baseline_bundle)
+            narma_opts.shared_baseline_bundle = shared_baseline_bundle;
+        end
         narma_opts = merge_structs(narma_opts, solver_train_opts);
         narma = narma_benchmark(esn, narma_opts);
         cell_result.narma = compact_bench(narma);
@@ -125,6 +143,9 @@ function cell_result = run_ablation_cell(cell_spec, base_seed, cfg, options)
         end
         if isfield(L, 'mg_ar_lags')
             mg_opts.ar_lags = L.mg_ar_lags;
+        end
+        if ~isempty(shared_baseline_bundle)
+            mg_opts.shared_baseline_bundle = shared_baseline_bundle;
         end
         if strcmp(cell_spec.mode, 'DDE')
             mg_opts.do_rollout = false;
@@ -374,7 +395,8 @@ function s = compact_bench(b)
 end
 
 function b = compact_baselines(baselines)
-% Preserve canonical matched-task baseline schema when present.
+% Keep aggregation-facing baseline fields; full candidate tables live in the
+% seed baseline artifact only.
     b = baselines;
     if ~(isfield(b, 'protocol_version') && ...
             strcmp(char(b.protocol_version), 'matched_task_baselines_v1')) && ...
@@ -393,11 +415,10 @@ function b = compact_baselines(baselines)
         keep = {'name','status','role','protocol_version','model_family', ...
             'feature_dimension','include_input','train_rows','validation_rows', ...
             'test_rows','metrics','metrics_train','metrics_val','metrics_test', ...
-            'selected_lambda','ridge_diagnostics','lambda_selection_table', ...
-            'hyperparameters','provenance','reservoir_seed','spectral_radius', ...
-            'achieved_spectral_radius','leak_rate','input_scaling', ...
-            'input_support_indices','input_nonzero_count', ...
-            'candidate_selection_table','selected_candidate_index', ...
+            'selected_lambda','ridge_diagnostics','hyperparameters','provenance', ...
+            'reservoir_seed','spectral_radius','achieved_spectral_radius', ...
+            'leak_rate','input_scaling','input_support_indices', ...
+            'input_nonzero_count','selected_candidate_index', ...
             'selected_at_candidate_boundary','finite_state_trajectory', ...
             'recurrent_dale_constrained','has_sfa','has_std','has_delay', ...
             'comparison'};
@@ -407,7 +428,39 @@ function b = compact_baselines(baselines)
                 ce2.(keep{k}) = ce.(keep{k});
             end
         end
+        if isfield(ce2, 'ridge_diagnostics') && isstruct(ce2.ridge_diagnostics)
+            rd = ce2.ridge_diagnostics;
+            for f = {'coefficients','feature_mean','feature_scale'}
+                if isfield(rd, f{1})
+                    rd = rmfield(rd, f{1});
+                end
+            end
+            ce2.ridge_diagnostics = rd;
+        end
         b.conventional_leaky_esn = ce2;
+    end
+    for nm = {'linear_input_history','linear_autoregression', ...
+            'linear_input_ar','linear_ar','training_target_mean','persistence', ...
+            'target_mean'}
+        if isfield(b, nm{1}) && isstruct(b.(nm{1}))
+            bi = b.(nm{1});
+            if isfield(bi, 'candidate_selection_table')
+                bi = rmfield(bi, 'candidate_selection_table');
+            end
+            if isfield(bi, 'lambda_selection_table')
+                bi = rmfield(bi, 'lambda_selection_table');
+            end
+            if isfield(bi, 'ridge_diagnostics') && isstruct(bi.ridge_diagnostics)
+                rd = bi.ridge_diagnostics;
+                for f = {'coefficients','feature_mean','feature_scale'}
+                    if isfield(rd, f{1})
+                        rd = rmfield(rd, f{1});
+                    end
+                end
+                bi.ridge_diagnostics = rd;
+            end
+            b.(nm{1}) = bi;
+        end
     end
 end
 

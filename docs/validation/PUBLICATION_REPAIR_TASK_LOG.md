@@ -213,3 +213,13 @@ Phase 4C+ (matched benchmarks / MG rollout, aggregation redesign, calibration, a
 - [x] NARMA/MG one-step baselines with Phase 4A ridge; Dale reference pending aggregation
 - [x] Preserve baselines through `compact_bench`; cell fails if required baseline fails
 - [x] Unit/integration tests + docs; commit; stop before 4C-B (autonomous rollout)
+
+## Phase 4C-A-R checklist (share matched baselines per seed)
+
+- [x] Confirm branch/SHA `df49839` clean
+- [x] Shared seed baseline bundle (`executed_shared_seed_bundle`) with identity hashes
+- [x] Identical NARMA/MG task+split helpers for benchmarks and shared baselines
+- [x] Compute/persist once per seed before cell loop; reject W_in / fingerprint mismatches
+- [x] Compact cell payloads; recompute cell-specific comparisons; Dale remains feature-specific
+- [x] Central fail-closed `validate_matched_task_baselines`; publication rejects overrides
+- [x] Focused shared-bundle / fail-closed tests + docs; stop before 4C-B

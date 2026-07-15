@@ -231,6 +231,39 @@ repair is Phase **4C-B**. Aggregation/statistics remain later.
 Protocol version: `matched_task_baselines_v1` (`cfg.benchmark_baselines`,
 fingerprinted).
 
+**Shared seed baseline unit (Phase 4C-A-R).** Simple and conventional baselines
+are a scientific unit of (final protocol + protocol fingerprint + base seed +
+task + deterministic task seed + task data/split + matched `W_in` + reservoir
+size + candidate grids + ridge-λ grid). They are computed **once per base seed**
+into an immutable artifact
+
+`baselines/seed_<seed>_matched_task_baselines.mat`
+
+and reused by all paired mechanism cells for that seed. Sharing is valid because
+these baselines do **not** depend on adaptation on/off, STD on/off, delay mode,
+or MESN feature mode `x`/`r`. Cell results store a bundle id, compact test
+metrics, and **cell-specific** model-vs-baseline comparisons recomputed from
+that cell’s MESN NRMSE. Full conventional candidate tables and heavy ridge
+diagnostics live only in the seed artifact.
+
+Dale-only MESN references remain **feature-specific** (`feat-x` / `feat-r`
+keys) with status `pending_paired_aggregation`. Pending references are never
+counted as computed baselines and must not produce superiority claims.
+Publication reuse requires provenance `executed_shared_seed_bundle`. Injected,
+fixture, override, mutated, or cell-local provenance fails closed for shared
+publication validation. Standalone `run_ablation_cell` may compute
+`executed_cell_local` baselines for diagnostics only (never publication shared).
+
+Identity gates before reuse: protocol fingerprint, base/task seeds, `W_in`
+hash, task-data hash, and split hash. Mismatch rejects the bundle; runners do
+not silently recompute. If any required baseline is failed, missing, or
+nonfinite, the benchmark status is `failed_required_baseline` with machine-
+readable reasons; publication readiness cannot pass; values are never replaced
+by means/zeros/Inf/other baselines. Negative finite R² is allowed.
+
+This repair changes execution/storage/provenance only — not MESN equations,
+conventional ESN equations, or preregistered baseline grids.
+
 **Conventional leaky tanh ESN** (not Dale-only MESN; never labeled “standard
 ESN” interchangeably):
 
@@ -268,7 +301,8 @@ Dale-only reference keys:
 `pending_paired_aggregation` — not fabricated inside non-control cells.
 
 No benchmark-superiority claim yet. Smoke/pilot results are pipeline evidence
-only and never publication-ready. Autonomous rollout unchanged in 4C-A.
+only and never publication-ready. Autonomous rollout unchanged in 4C-A
+(deferred to Phase 4C-B).
 
 Do not generate manuscript figures from pilot data. Figures require explicit
 validated result paths (no “latest file” lookup).
