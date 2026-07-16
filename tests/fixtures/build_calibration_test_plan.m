@@ -1,0 +1,19 @@
+function plan = build_calibration_test_plan(cfg, probe_keys, cal_fp, base_fp)
+    op = cfg.operating_point;
+    plan = struct();
+    plan.protocol_version = op.protocol_version;
+    plan.calibration_protocol_fingerprint = cal_fp;
+    plan.base_publication_config_fingerprint = base_fp;
+    plan.network_size = op.network_size;
+    plan.n_inputs = cfg.base.n_inputs;
+    plan.dt = op.dt;
+    plan.calibration_seeds = op.calibration_seeds(:)';
+    plan.probe_cell_keys = probe_keys;
+    plan.candidate_order = op.candidate_order;
+    plan.input_min = op.input_min;
+    plan.input_max = op.input_max;
+    plan.input_seed_offset = op.input_seed_offset;
+    plan.washout_steps = op.washout_steps;
+    plan.evaluation_steps = op.evaluation_steps;
+    plan.total_steps = op.total_steps;
+end

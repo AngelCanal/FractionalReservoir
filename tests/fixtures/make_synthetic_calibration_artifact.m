@@ -69,6 +69,7 @@ function run_dir = make_synthetic_calibration_artifact(opts)
                 if isfield(opts, 'tamper_pass_row') && opts.tamper_pass_row == row_idx
                     passes.row_pass = ~passes.row_pass;
                 end
+                packed_dim = synthetic_packed_dimension(cell_key, cfg.base.n);
                 trial_rows{row_idx} = struct( ...
                     'protocol_version', op.protocol_version, ...
                     'calibration_protocol_fingerprint', cal_fp, ...
@@ -95,6 +96,10 @@ function run_dir = make_synthetic_calibration_artifact(opts)
                     'saturation_fraction', sat_frac, ...
                     'silent_fraction', sil_frac, ...
                     'dale_violations', dale_v, ...
+                    'n_eval_time_points', op.evaluation_steps, ...
+                    'n_neurons', cfg.base.n, ...
+                    'n_rate_observations', op.evaluation_steps * cfg.base.n, ...
+                    'packed_state_dimension', packed_dim, ...
                     'mean_rate_pass', passes.mean_rate_pass, ...
                     'saturation_pass', passes.saturation_pass, ...
                     'silent_pass', passes.silent_pass, ...
@@ -169,35 +174,79 @@ function run_dir = make_synthetic_calibration_artifact(opts)
     manifest.provenance_mode = 'executed_publication_geometry_calibration';
     manifest.scientific_overrides_used = false;
     manifest.global_rng_mutated = false;
+    manifest.global_rng_restored = true;
     manifest.creation_code_commit_sha = 'synthetic_fixture';
     manifest.created_utc = '2026-07-16T00:00:00Z';
-    manifest.configuration_hash = canonical_sha256(manifest_for_config_hash(manifest));
-    manifest.artifact_content_hash = canonical_sha256(manifest_for_content_hash(manifest));
 
-    if isfield(opts, 'tamper_hash') && opts.tamper_hash
-        manifest.artifact_content_hash = 'deadbeef';
-    end
     if isfield(opts, 'overlap_seeds') && opts.overlap_seeds
         manifest.calibration_seeds = [1729, cfg.publication_seeds(1)];
     end
 
+    cfg.calibration_plan = build_synthetic_plan(cfg, probe_keys, cal_fp, base_fp);
+    config_payload = cfg;
     result = struct();
     result.status = status;
     result.frozen_operating_point = frozen_operating_point;
     result.selected_candidate_index = selected_idx;
     result.calibration_protocol_fingerprint = cal_fp;
-    result.calibration_manifest_hash = manifest.artifact_content_hash;
     result.global_rng_mutated = false;
+    result.global_rng_restored = true;
     result.scientific_overrides_used = false;
 
+    manifest.configuration_hash = canonical_sha256(manifest_for_config_hash(manifest));
+    manifest.calibration_config_content_hash = canonical_sha256(calibration_config_for_hash(config_payload));
+    manifest.calibration_result_content_hash = canonical_sha256(result_for_hash_local(result));
+    manifest.artifact_content_hash = canonical_sha256(manifest_for_content_hash(manifest));
+    result.calibration_manifest_hash = manifest.artifact_content_hash;
+
+    if isfield(opts, 'tamper_hash') && opts.tamper_hash
+        manifest.artifact_content_hash = 'deadbeef';
+    end
+    if isfield(opts, 'tamper_result') && opts.tamper_result
+        result.status = 'tampered';
+    end
+
     payload = struct( ...
-        'cfg', cfg, ...
-        'plan', struct(), ...
+        'cfg', config_payload, ...
+        'plan', cfg.calibration_plan, ...
         'trial_table', trial_table, ...
         'candidate_table', candidate_table, ...
         'result', result, ...
         'manifest', manifest);
     write_operating_point_calibration_artifacts(run_dir, payload);
+end
+
+function dim = synthetic_packed_dimension(cell_key, n)
+    if contains(cell_key, 'adapt-off') && contains(cell_key, 'std-off')
+        dim = n;
+    elseif contains(cell_key, 'dde_on')
+        dim = n + round(n * 0.5) * 3 + round(n * 0.5);
+    else
+        dim = n + round(n * 0.5) * 3 + round(n * 0.5) * 2;
+    end
+end
+
+function plan = build_synthetic_plan(cfg, probe_keys, cal_fp, base_fp)
+    op = cfg.operating_point;
+    plan = struct();
+    plan.protocol_version = op.protocol_version;
+    plan.calibration_protocol_fingerprint = cal_fp;
+    plan.base_publication_config_fingerprint = base_fp;
+    plan.calibration_seeds = op.calibration_seeds(:)';
+    plan.probe_cell_keys = probe_keys;
+    plan.candidate_order = op.candidate_order;
+    plan.input_min = op.input_min;
+    plan.input_max = op.input_max;
+    plan.input_seed_offset = op.input_seed_offset;
+    plan.total_steps = op.total_steps;
+    plan.n_inputs = cfg.base.n_inputs;
+end
+
+function r = result_for_hash_local(result)
+    r = result;
+    if isfield(r, 'calibration_manifest_hash')
+        r = rmfield(r, 'calibration_manifest_hash');
+    end
 end
 
 function passes = evaluate_activity_pass_local(mean_rate, sat_frac, sil_frac, dale_v, op)
@@ -248,7 +297,8 @@ end
 function m = manifest_for_config_hash(manifest)
     m = manifest;
     drop = {'created_utc', 'artifact_content_hash', 'creation_code_commit_sha', ...
-        'configuration_hash'};
+        'configuration_hash', 'calibration_config_content_hash', ...
+        'calibration_result_content_hash'};
     for i = 1:numel(drop)
         if isfield(m, drop{i})
             m = rmfield(m, drop{i});

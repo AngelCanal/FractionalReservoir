@@ -4,8 +4,8 @@ function [calibration, run_dir] = calibrate_operating_point(options)
 %   [calibration, run_dir] = calibrate_operating_point()
 %   [calibration, run_dir] = calibrate_operating_point(options)
 %
-% Uses publication n=40 geometry and frozen calibration protocol only.
-% Allowed options: save_results, verbose, run_id, revalidated_root_override.
+% Allowed options: save_results, verbose, run_id, revalidated_root_override,
+% resume_run_dir.
 
     if nargin < 1 || isempty(options)
         options = struct();
@@ -20,6 +20,11 @@ function [calibration, run_dir] = calibrate_operating_point(options)
 
     save_results = local_get(options, 'save_results', true);
     verbose = local_get(options, 'verbose', true);
+    resume_run_dir = char(local_get(options, 'resume_run_dir', ''));
+    if ~isempty(resume_run_dir) && ~save_results
+        error('calibrate_operating_point:ResumeRequiresSave', ...
+            'resume_run_dir requires save_results=true.');
+    end
 
     cfg = mechanism_ablation_config('publication', 'confirmatory');
     assert(cfg.base.n == 40, 'calibrate_operating_point:NetworkSize', ...
@@ -39,13 +44,19 @@ function [calibration, run_dir] = calibrate_operating_point(options)
     [probe_keys, probe_cells] = build_operating_point_calibration_probe_keys(cfg);
     cal_fp = compute_calibration_protocol_fingerprint(cfg, probe_keys);
     base_fp = compute_protocol_fingerprint(cfg);
-
-    rng_state = capture_global_rng_state();
-    global_rng_mutated = false;
+    plan = build_calibration_plan_struct(cfg, probe_keys, cal_fp, base_fp);
+    commit_sha = try_git_head();
 
     run_dir = '';
     ctx = struct();
-    if save_results
+    if ~isempty(resume_run_dir)
+        run_dir = resume_run_dir;
+        ctx = struct('run_dir', run_dir);
+        if isfile(fullfile(run_dir, 'calibration_manifest.mat'))
+            calibration = load_completed_calibration_from_disk(run_dir);
+            return;
+        end
+    elseif save_results
         ctx_opts = struct('master_seed', seeds(1));
         if isfield(options, 'run_id'); ctx_opts.run_id = options.run_id; end
         if isfield(options, 'revalidated_root_override')
@@ -60,6 +71,155 @@ function [calibration, run_dir] = calibrate_operating_point(options)
             'probe_cell_keys', {probe_keys}));
     end
 
+    input_by_seed = generate_calibration_inputs(cfg, op, seeds);
+    input_hashes_by_seed = struct();
+    for is = 1:numel(seeds)
+        seed = seeds(is);
+        input_hashes_by_seed.(seed_field(seed)) = ...
+            input_by_seed.(seed_field(seed)).input_hash;
+    end
+
+    completed_table = [];
+    completed_keys = {};
+    checkpoint_created_utc = '';
+    if ~isempty(resume_run_dir)
+        cp = load_and_validate_calibration_checkpoint(run_dir, plan, commit_sha);
+        checkpoint_created_utc = char(local_get(cp, 'created_utc', ''));
+        if istable(cp.completed_trial_rows) && height(cp.completed_trial_rows) > 0
+            completed_table = cp.completed_trial_rows;
+            completed_keys = cp.completed_trial_keys(:)';
+        end
+    end
+
+    rng_state_before = capture_global_rng_state();
+    global_rng_mutated = false;
+    global_rng_restored = false;
+
+    try
+        n_candidates = numel(op.candidate_order);
+        n_conditions = numel(probe_keys);
+        n_seeds = numel(seeds);
+
+        for icand = 1:n_candidates
+            cand = op.candidate_order{icand};
+            iscale = cand.input_scaling;
+            loc = cand.level_of_chaos;
+            for icell = 1:n_conditions
+                cell_spec = probe_cells{icell};
+                for iseed = 1:n_seeds
+                    seed = seeds(iseed);
+                    trial_key = build_calibration_trial_key(icand, cell_spec.cell_key, seed);
+                    if any(strcmp(completed_keys, trial_key))
+                        continue;
+                    end
+                    in_info = input_by_seed.(seed_field(seed));
+                    ov = struct('input_scaling', iscale, 'level_of_chaos', loc);
+                    [params, meta] = build_ablation_params(cell_spec, seed, cfg, ov);
+                    esn = SRNN_ESN(params);
+                    diag = probe_operating_point_activity(esn, in_info.U, op);
+                    dale_v = meta.sign_violations_E + meta.sign_violations_I;
+                    passes = evaluate_activity_pass(diag, dale_v, op);
+                    row = build_trial_row(op.protocol_version, cal_fp, icand, iscale, loc, ...
+                        cell_spec, seed, in_info, cfg, op, diag, dale_v, passes);
+                    if isempty(completed_table)
+                        completed_table = struct2table(row, 'AsArray', true);
+                    else
+                        completed_table = [completed_table; struct2table(row, 'AsArray', true)]; %#ok<AGROW>
+                    end
+                    completed_keys{end+1} = trial_key; %#ok<AGROW>
+
+                    if verbose
+                        fprintf(['calib cand=%02d is=%.2f loc=%.2f %s seed=%d ', ...
+                            'pass=%d rate=%.3f obs=%d\n'], ...
+                            icand, iscale, loc, cell_spec.cell_key, seed, passes.row_pass, ...
+                            diag.mean_rate, diag.n_rate_observations);
+                    end
+
+                    if save_results && ~isempty(run_dir)
+                        cp = build_checkpoint_struct(plan, commit_sha, probe_keys, ...
+                            input_hashes_by_seed, completed_table, completed_keys, ...
+                            'in_progress');
+                        if ~isempty(checkpoint_created_utc)
+                            cp.created_utc = checkpoint_created_utc;
+                        end
+                        write_calibration_checkpoint(run_dir, cp);
+                    end
+                end
+            end
+        end
+
+        global_rng_mutated = ~rng_states_equal(rng_state_before, capture_global_rng_state());
+    catch ME
+        global_rng_mutated = ~rng_states_equal(rng_state_before, capture_global_rng_state());
+        restore_global_rng_state(rng_state_before);
+        global_rng_restored = rng_states_equal(rng_state_before, capture_global_rng_state());
+        rethrow(ME);
+    end
+
+    restore_global_rng_state(rng_state_before);
+    global_rng_restored = rng_states_equal(rng_state_before, capture_global_rng_state());
+
+    expected_rows = 512;
+    if height(completed_table) ~= expected_rows
+        error('calibrate_operating_point:IncompleteTrialMatrix', ...
+            'Expected %d trial rows, got %d.', expected_rows, height(completed_table));
+    end
+
+    trial_table = completed_table;
+    [status, selected, frozen_operating_point] = ...
+        select_operating_point_from_trials(trial_table, op.candidate_order);
+    candidate_table = build_candidate_summary_table(trial_table, op.candidate_order);
+
+    calibration = finalize_calibration_artifacts(cfg, plan, probe_keys, cal_fp, base_fp, ...
+        trial_table, candidate_table, status, selected, frozen_operating_point, ...
+        input_hashes_by_seed, seeds, global_rng_mutated, global_rng_restored, commit_sha);
+
+    if save_results && ~isempty(run_dir)
+        write_operating_point_calibration_artifacts(run_dir, calibration.payload);
+        cp = build_checkpoint_struct(plan, commit_sha, probe_keys, input_hashes_by_seed, ...
+            trial_table, completed_keys, 'complete');
+        write_calibration_checkpoint(run_dir, cp);
+        save_run_manifest(ctx, cfg, struct( ...
+            'stage', 'operating_point_calibration_complete', ...
+            'status', status, ...
+            'calibration_manifest_hash', calibration.manifest.artifact_content_hash, ...
+            'selected_candidate_index', calibration.manifest.selected_candidate_index));
+    end
+
+    calibration = calibration.public;
+    calibration.run_dir = run_dir;
+end
+
+function calibration = load_completed_calibration_from_disk(run_dir)
+    report = validate_operating_point_calibration(run_dir);
+    if ~report.valid
+        error('calibrate_operating_point:InvalidCompletedArtifact', ...
+            'Existing calibration artifact failed validation.');
+    end
+    Sm = load(fullfile(run_dir, 'calibration_manifest.mat'), 'calibration_manifest');
+    St = load(fullfile(run_dir, 'calibration_trial_table.mat'), 'calibration_trial_table');
+    Sc = load(fullfile(run_dir, 'calibration_candidate_table.mat'), ...
+        'calibration_candidate_table');
+    calibration = struct();
+    calibration.schema_version = Sm.calibration_manifest.schema_version;
+    calibration.calibration_protocol_version = Sm.calibration_manifest.calibration_protocol_version;
+    calibration.calibration_protocol_fingerprint = report.calibration_protocol_fingerprint;
+    calibration.calibration_manifest_hash = report.calibration_manifest_hash;
+    calibration.calibration_seeds = Sm.calibration_manifest.calibration_seeds;
+    calibration.probe_cell_keys = Sm.calibration_manifest.probe_cell_keys;
+    calibration.trial_table = St.calibration_trial_table;
+    calibration.candidate_table = Sc.calibration_candidate_table;
+    calibration.frozen_operating_point = report.frozen_operating_point;
+    calibration.status = report.status;
+    calibration.manifest = Sm.calibration_manifest;
+    calibration.global_rng_mutated = Sm.calibration_manifest.global_rng_mutated;
+    calibration.global_rng_restored = Sm.calibration_manifest.global_rng_restored;
+    calibration.scientific_overrides_used = false;
+    calibration.no_outcome_fishing = true;
+    calibration.run_dir = run_dir;
+end
+
+function input_by_seed = generate_calibration_inputs(cfg, op, seeds)
     input_by_seed = struct();
     for iseed = 1:numel(seeds)
         seed = seeds(iseed);
@@ -71,189 +231,144 @@ function [calibration, run_dir] = calibrate_operating_point(options)
             'calibration_seed', seed, ...
             'input_seed', input_seed, ...
             'input_hash', canonical_sha256(U), ...
-            'input_length', size(U, 1), ...
-            'input_distribution', op.input_distribution, ...
-            'input_min', op.input_min, ...
-            'input_max', op.input_max, ...
             'U', U);
     end
-    global_rng_mutated = ~rng_states_equal(rng_state, capture_global_rng_state());
+end
 
-    n_candidates = numel(op.candidate_order);
-    n_conditions = numel(probe_keys);
-    n_seeds = numel(seeds);
-    expected_rows = n_candidates * n_conditions * n_seeds;
-
-    trial_rows = cell(expected_rows, 1);
-    row_idx = 0;
-    selected = struct('input_scaling', [], 'level_of_chaos', [], 'candidate_index', []);
-    status = 'no_feasible_operating_point';
-
-    for icand = 1:n_candidates
-        cand = op.candidate_order{icand};
-        iscale = cand.input_scaling;
-        loc = cand.level_of_chaos;
-        cand_pass_all = true;
-
-        for icell = 1:n_conditions
-            cell_spec = probe_cells{icell};
-            for iseed = 1:n_seeds
-                seed = seeds(iseed);
-                row_idx = row_idx + 1;
-                in_info = input_by_seed.(seed_field(seed));
-                ov = struct('input_scaling', iscale, 'level_of_chaos', loc);
-                [params, meta] = build_ablation_params(cell_spec, seed, cfg, ov);
-                esn = SRNN_ESN(params);
-                diag = probe_operating_point_activity(esn, in_info.U, op);
-                dale_v = meta.sign_violations_E + meta.sign_violations_I;
-                passes = evaluate_activity_pass(diag, dale_v, op);
-                if ~passes.row_pass
-                    cand_pass_all = false;
-                end
-
-                trial_rows{row_idx} = build_trial_row( ...
-                    op.protocol_version, cal_fp, icand, iscale, loc, cell_spec, ...
-                    seed, in_info, cfg, op, diag, dale_v, passes);
-
-                if verbose
-                    fprintf(['calib cand=%02d is=%.2f loc=%.2f %s seed=%d ', ...
-                        'pass=%d rate=%.3f sat=%.3f sil=%.3f dale=%d\n'], ...
-                        icand, iscale, loc, cell_spec.cell_key, seed, passes.row_pass, ...
-                        diag.mean_rate, diag.saturation_fraction, ...
-                        diag.silent_fraction, dale_v);
-                end
-            end
-        end
-
-        if cand_pass_all && isempty(selected.input_scaling)
-            selected = struct( ...
-                'input_scaling', iscale, ...
-                'level_of_chaos', loc, ...
-                'candidate_index', icand);
-            status = 'frozen';
-        end
+function cp = build_checkpoint_struct(plan, commit_sha, probe_keys, input_hashes, ...
+        completed_table, completed_keys, status)
+    cp = struct();
+    cp.schema_version = 'publication_operating_point_calibration_checkpoint_v1';
+    cp.calibration_protocol_version = plan.protocol_version;
+    cp.calibration_protocol_fingerprint = plan.calibration_protocol_fingerprint;
+    cp.base_publication_config_fingerprint = plan.base_publication_config_fingerprint;
+    cp.creation_code_commit_sha = commit_sha;
+    cp.candidate_order = plan.candidate_order;
+    cp.probe_cell_keys = probe_keys;
+    cp.calibration_seeds = plan.calibration_seeds;
+    cp.input_hashes_by_seed = input_hashes;
+    cp.expected_row_count = 512;
+    cp.completed_row_count = height(completed_table);
+    cp.completed_trial_rows = completed_table;
+    cp.completed_trial_keys = completed_keys(:)';
+    cp.status = status;
+    if ~isfield(cp, 'created_utc') || isempty(cp.created_utc)
+        cp.created_utc = char(datetime('now', 'TimeZone', 'UTC', ...
+            'Format', 'yyyy-MM-dd''T''HH:mm:ss''Z'''));
     end
+end
 
-    trial_table = struct2table(vertcat(trial_rows{:}), 'AsArray', true);
-    candidate_table = build_candidate_summary_table(trial_table, op.candidate_order);
-
-    frozen_operating_point = struct([]);
-    if strcmp(status, 'frozen')
-        frozen_operating_point = struct( ...
-            'input_scaling', selected.input_scaling, ...
-            'level_of_chaos', selected.level_of_chaos, ...
-            'candidate_index', selected.candidate_index);
-    end
-
-    input_hashes_by_seed = struct();
-    for iseed = 1:n_seeds
-        seed = seeds(iseed);
-        input_hashes_by_seed.(seed_field(seed)) = ...
-            input_by_seed.(seed_field(seed)).input_hash;
-    end
+function out = finalize_calibration_artifacts(cfg, plan, probe_keys, cal_fp, base_fp, ...
+        trial_table, candidate_table, status, selected, frozen_operating_point, ...
+        input_hashes_by_seed, seeds, global_rng_mutated, global_rng_restored, commit_sha)
 
     table_hashes = struct();
     table_hashes.calibration_trial_table = canonical_sha256(table_for_hash(trial_table));
     table_hashes.calibration_candidate_table = canonical_sha256(table_for_hash(candidate_table));
 
-    manifest = struct();
-    manifest.schema_version = 'publication_operating_point_calibration_artifact_v1';
-    manifest.calibration_protocol_version = op.protocol_version;
-    manifest.calibration_protocol_fingerprint = cal_fp;
-    manifest.base_publication_config_fingerprint = base_fp;
-    manifest.network_size = op.network_size;
-    manifest.dt = op.dt;
-    manifest.calibration_seeds = seeds;
-    manifest.publication_seeds_hash = canonical_sha256(cfg.publication_seeds(:)');
-    manifest.probe_cell_keys = probe_keys;
-    manifest.candidate_order = op.candidate_order;
-    manifest.expected_trial_row_count = expected_rows;
-    manifest.observed_trial_row_count = height(trial_table);
-    manifest.input_hashes_by_seed = input_hashes_by_seed;
-    manifest.bands = struct( ...
-        'mean_rate_band', op.mean_rate_band, ...
-        'saturation_fraction_max', op.saturation_fraction_max, ...
-        'silent_fraction_max', op.silent_fraction_max, ...
-        'dale_violations_max', 0);
-    manifest.washout_steps = op.washout_steps;
-    manifest.evaluation_steps = op.evaluation_steps;
-    manifest.solver_tolerances = struct( ...
-        'ode_reltol', op.ode_reltol, ...
-        'ode_abstol', op.ode_abstol, ...
-        'dde_reltol', op.dde_reltol, ...
-        'dde_abstol', op.dde_abstol);
-    manifest.selection_rule = op.selection_rule;
-    manifest.selected_candidate_index = local_selected_index(status, selected);
-    manifest.frozen_operating_point = frozen_operating_point;
-    manifest.status = status;
-    manifest.table_content_hashes = table_hashes;
-    manifest.configuration_hash = canonical_sha256(manifest_for_config_hash(manifest));
-    manifest.provenance_mode = 'executed_publication_geometry_calibration';
-    manifest.scientific_overrides_used = false;
-    manifest.global_rng_mutated = global_rng_mutated;
-    manifest.creation_code_commit_sha = try_git_head();
-    manifest.created_utc = char(datetime('now', 'TimeZone', 'UTC', ...
-        'Format', 'yyyy-MM-dd''T''HH:mm:ss''Z'''));
-    manifest.artifact_content_hash = canonical_sha256(manifest_for_content_hash(manifest));
-
+    config_payload = sanitize_calibration_cfg(cfg, probe_keys, cal_fp, base_fp);
     result = struct();
     result.status = status;
     result.frozen_operating_point = frozen_operating_point;
-    result.selected_candidate_index = manifest.selected_candidate_index;
+    result.selected_candidate_index = local_selected_index(status, selected);
     result.calibration_protocol_fingerprint = cal_fp;
-    result.calibration_manifest_hash = manifest.artifact_content_hash;
     result.global_rng_mutated = global_rng_mutated;
+    result.global_rng_restored = global_rng_restored;
     result.scientific_overrides_used = false;
 
-    calibration = struct();
-    calibration.schema_version = manifest.schema_version;
-    calibration.calibration_protocol_version = op.protocol_version;
-    calibration.calibration_protocol_fingerprint = cal_fp;
-    calibration.calibration_manifest_hash = manifest.artifact_content_hash;
-    calibration.calibration_seeds = seeds;
-    calibration.probe_cell_keys = probe_keys;
-    calibration.trial_table = trial_table;
-    calibration.candidate_table = candidate_table;
-    calibration.frozen_operating_point = frozen_operating_point;
-    calibration.status = status;
-    calibration.run_dir = run_dir;
-    calibration.manifest = manifest;
-    calibration.global_rng_mutated = global_rng_mutated;
-    calibration.scientific_overrides_used = false;
-    calibration.no_outcome_fishing = true;
+    manifest = struct();
+    manifest.schema_version = 'publication_operating_point_calibration_artifact_v1';
+    manifest.calibration_protocol_version = plan.protocol_version;
+    manifest.calibration_protocol_fingerprint = cal_fp;
+    manifest.base_publication_config_fingerprint = base_fp;
+    manifest.network_size = cfg.operating_point.network_size;
+    manifest.dt = cfg.base.dt;
+    manifest.calibration_seeds = seeds;
+    manifest.publication_seeds_hash = canonical_sha256(cfg.publication_seeds(:)');
+    manifest.probe_cell_keys = probe_keys;
+    manifest.candidate_order = plan.candidate_order;
+    manifest.expected_trial_row_count = 512;
+    manifest.observed_trial_row_count = height(trial_table);
+    manifest.input_hashes_by_seed = input_hashes_by_seed;
+    manifest.bands = plan.bands;
+    manifest.washout_steps = plan.washout_steps;
+    manifest.evaluation_steps = plan.evaluation_steps;
+    manifest.solver_tolerances = plan.solver_tolerances;
+    manifest.selection_rule = plan.selection_rule;
+    manifest.selected_candidate_index = result.selected_candidate_index;
+    manifest.frozen_operating_point = frozen_operating_point;
+    manifest.status = status;
+    manifest.table_content_hashes = table_hashes;
+    manifest.provenance_mode = 'executed_publication_geometry_calibration';
+    manifest.scientific_overrides_used = false;
+    manifest.global_rng_mutated = global_rng_mutated;
+    manifest.global_rng_restored = global_rng_restored;
+    manifest.creation_code_commit_sha = commit_sha;
+    manifest.created_utc = char(datetime('now', 'TimeZone', 'UTC', ...
+        'Format', 'yyyy-MM-dd''T''HH:mm:ss''Z'''));
+    manifest.configuration_hash = canonical_sha256(manifest_for_config_hash(manifest));
+    manifest.calibration_config_content_hash = canonical_sha256(calibration_config_for_hash(config_payload));
+    manifest.calibration_result_content_hash = canonical_sha256(result_for_hash(result));
+    manifest.artifact_content_hash = canonical_sha256(manifest_for_content_hash(manifest));
+    result.calibration_manifest_hash = manifest.artifact_content_hash;
 
-    if save_results
-        payload = struct( ...
-            'cfg', sanitize_calibration_cfg(cfg, probe_keys, cal_fp), ...
-            'plan', build_calibration_plan_struct(cfg, probe_keys, cal_fp), ...
-            'trial_table', trial_table, ...
-            'candidate_table', candidate_table, ...
-            'result', result, ...
-            'manifest', manifest);
-        write_operating_point_calibration_artifacts(run_dir, payload);
-        save_run_manifest(ctx, cfg, struct( ...
-            'stage', 'operating_point_calibration_complete', ...
-            'status', status, ...
-            'calibration_manifest_hash', manifest.artifact_content_hash, ...
-            'selected_candidate_index', manifest.selected_candidate_index));
+    public = struct();
+    public.schema_version = manifest.schema_version;
+    public.calibration_protocol_version = plan.protocol_version;
+    public.calibration_protocol_fingerprint = cal_fp;
+    public.calibration_manifest_hash = manifest.artifact_content_hash;
+    public.calibration_seeds = seeds;
+    public.probe_cell_keys = probe_keys;
+    public.trial_table = trial_table;
+    public.candidate_table = candidate_table;
+    public.frozen_operating_point = frozen_operating_point;
+    public.status = status;
+    public.manifest = manifest;
+    public.global_rng_mutated = global_rng_mutated;
+    public.global_rng_restored = global_rng_restored;
+    public.scientific_overrides_used = false;
+    public.no_outcome_fishing = true;
+
+    payload = struct( ...
+        'cfg', config_payload, ...
+        'plan', plan, ...
+        'trial_table', trial_table, ...
+        'candidate_table', candidate_table, ...
+        'result', result, ...
+        'manifest', manifest);
+
+    out = struct('public', public, 'payload', payload, 'manifest', manifest);
+end
+
+function [status, selected, frozen_operating_point] = ...
+        select_operating_point_from_trials(trial_table, candidate_order)
+    selected = struct('input_scaling', [], 'level_of_chaos', [], 'candidate_index', []);
+    status = 'no_feasible_operating_point';
+    frozen_operating_point = struct([]);
+    for ic = 1:numel(candidate_order)
+        mask = trial_table.candidate_index == ic;
+        sub = trial_table(mask, :);
+        if height(sub) == 32 && all(sub.row_pass)
+            selected = struct( ...
+                'input_scaling', candidate_order{ic}.input_scaling, ...
+                'level_of_chaos', candidate_order{ic}.level_of_chaos, ...
+                'candidate_index', ic);
+            status = 'frozen';
+            frozen_operating_point = struct( ...
+                'input_scaling', selected.input_scaling, ...
+                'level_of_chaos', selected.level_of_chaos, ...
+                'candidate_index', selected.candidate_index);
+            return;
+        end
     end
 end
 
 function reject_calibration_scientific_overrides(options)
     forbidden = { ...
-        'cfg', ...
-        'probe_cell_keys', ...
-        'calibration_seeds', ...
-        'candidate_input_scaling', ...
-        'candidate_level_of_chaos', ...
-        'mean_rate_band', ...
-        'saturation_fraction_max', ...
-        'silent_fraction_max', ...
-        'washout_steps', ...
-        'evaluation_steps', ...
-        'input_distribution', ...
-        'solver_tolerances', ...
-        'selection_rule', ...
+        'cfg', 'probe_cell_keys', 'calibration_seeds', 'candidate_input_scaling', ...
+        'candidate_level_of_chaos', 'mean_rate_band', 'saturation_fraction_max', ...
+        'silent_fraction_max', 'washout_steps', 'evaluation_steps', ...
+        'input_distribution', 'solver_tolerances', 'selection_rule', ...
         'frozen_operating_point' ...
         };
     for i = 1:numel(forbidden)
@@ -262,31 +377,6 @@ function reject_calibration_scientific_overrides(options)
                 'Option %s is forbidden for publication calibration.', forbidden{i});
         end
     end
-end
-
-function diag = probe_operating_point_activity(esn, U, op)
-    run_opts = struct( ...
-        'reset_before', true, ...
-        'update_internal_state', false, ...
-        'ode_reltol', op.ode_reltol, ...
-        'ode_abstol', op.ode_abstol, ...
-        'dde_reltol', op.dde_reltol, ...
-        'dde_abstol', op.dde_abstol);
-    [~, S_hist] = esn.runReservoir(U, run_opts);
-    eval_idx = (op.washout_steps + 1):op.total_steps;
-    n_eval = numel(eval_idx);
-    n_neurons = size(S_hist, 2);
-    rates = zeros(n_neurons, n_eval);
-    for k = 1:n_eval
-        rates(:, k) = esn.computeRates(S_hist(eval_idx(k), :)');
-    end
-    diag = struct();
-    diag.mean_rate = mean(rates(:));
-    diag.saturation_fraction = mean(rates(:) >= 0.99);
-    diag.silent_fraction = mean(rates(:) <= 0.01);
-    diag.n_eval_time_points = n_eval;
-    diag.n_neurons = n_neurons;
-    diag.n_rate_observations = numel(rates);
 end
 
 function passes = evaluate_activity_pass(diag, dale_v, op)
@@ -329,6 +419,10 @@ function row = build_trial_row(protocol_version, cal_fp, candidate_index, ...
     row.saturation_fraction = diag.saturation_fraction;
     row.silent_fraction = diag.silent_fraction;
     row.dale_violations = dale_v;
+    row.n_eval_time_points = diag.n_eval_time_points;
+    row.n_neurons = diag.n_neurons;
+    row.n_rate_observations = diag.n_rate_observations;
+    row.packed_state_dimension = diag.packed_state_dimension;
     row.mean_rate_pass = passes.mean_rate_pass;
     row.saturation_pass = passes.saturation_pass;
     row.silent_pass = passes.silent_pass;
@@ -378,12 +472,14 @@ function candidate_table = build_candidate_summary_table(trial_table, candidate_
     candidate_table = struct2table(vertcat(rows{:}), 'AsArray', true);
 end
 
-function plan = build_calibration_plan_struct(cfg, probe_keys, cal_fp)
+function plan = build_calibration_plan_struct(cfg, probe_keys, cal_fp, base_fp)
     op = cfg.operating_point;
     plan = struct();
     plan.protocol_version = op.protocol_version;
     plan.calibration_protocol_fingerprint = cal_fp;
+    plan.base_publication_config_fingerprint = base_fp;
     plan.network_size = op.network_size;
+    plan.n_inputs = cfg.base.n_inputs;
     plan.dt = op.dt;
     plan.calibration_seeds = op.calibration_seeds(:)';
     plan.probe_cell_keys = probe_keys;
@@ -408,9 +504,9 @@ function plan = build_calibration_plan_struct(cfg, probe_keys, cal_fp)
     plan.selection_rule = op.selection_rule;
 end
 
-function cfg_out = sanitize_calibration_cfg(cfg, probe_keys, cal_fp)
+function cfg_out = sanitize_calibration_cfg(cfg, probe_keys, cal_fp, base_fp)
     cfg_out = cfg;
-    cfg_out.calibration_plan = build_calibration_plan_struct(cfg, probe_keys, cal_fp);
+    cfg_out.calibration_plan = build_calibration_plan_struct(cfg, probe_keys, cal_fp, base_fp);
 end
 
 function idx = local_selected_index(status, selected)
@@ -428,7 +524,10 @@ end
 function state = capture_global_rng_state()
     state = struct();
     state.type = rng;
-    state.stream = RandStream.getGlobalStream;
+end
+
+function restore_global_rng_state(state)
+    rng(state.type);
 end
 
 function tf = rng_states_equal(a, b)
@@ -441,10 +540,18 @@ function T = table_for_hash(T)
     end
 end
 
+function r = result_for_hash(result)
+    r = result;
+    if isfield(r, 'calibration_manifest_hash')
+        r = rmfield(r, 'calibration_manifest_hash');
+    end
+end
+
 function m = manifest_for_config_hash(manifest)
     m = manifest;
     drop = {'created_utc', 'artifact_content_hash', 'creation_code_commit_sha', ...
-        'configuration_hash'};
+        'configuration_hash', 'calibration_config_content_hash', ...
+        'calibration_result_content_hash'};
     for i = 1:numel(drop)
         if isfield(m, drop{i})
             m = rmfield(m, drop{i});

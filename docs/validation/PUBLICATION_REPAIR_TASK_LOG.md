@@ -412,3 +412,37 @@ Aggregation; calibration; figures.
 - **Reference cfg:** constructed internally in readiness/validation from preregistered config + copied authority.
 - **Global RNG:** calibration input uses private `RandStream`; must not mutate global state.
 - **Task outcomes:** excluded from calibration selection and artifact payloads.
+
+## Phase 5C-A-R checklist (real-state execution repair + resumability)
+
+- [x] Integration tests: real SRNN packed states (ODE/DDE; short diagnostic trajectories)
+- [x] Neuron counting from `size(esn.W,1)`; observation-count columns + validator
+- [x] End-of-run global RNG audit + caller restoration; persist mutation/restored flags
+- [x] Atomic checkpoint helpers + `resume_run_dir` policy (no skip/tamper options)
+- [x] Strengthen artifact binding (config/result hashes; JSON/MAT consistency)
+- [x] `copy_calibration_authority` post-copy independent validation
+- [x] Unit/integration/scientific tests; full suite pass
+- [x] Docs updated; commit; push
+
+### Phase 5C-A-R starting SHA
+
+`f2ca0f12f595480601cf569e0adfe09e680c7c1b`
+
+| Field | Value |
+|---|---|
+| Status | complete (repair + resumability; no real 512-row run) |
+| Packed-state repair | neuronal rates = 40; packed width may exceed 40 |
+| Observation count | 700 × 40 = 28 000 per trial row |
+| Checkpoint schema | `publication_operating_point_calibration_checkpoint_v1` |
+| Checkpoint authorizes publication | never |
+| Real calibration executed | no |
+| `publication_ready` | false |
+| Next phase | 5C-B1 — execute and validate frozen resumable publication calibration |
+
+### Phase 5C-A-R policy notes
+
+- **Rate matrix allocation:** authoritative neuron count only (`size(esn.W,1)`).
+- **RNG:** checked after all model trials; caller state restored on return.
+- **Resume:** exact protocol fingerprint, commit SHA, and input-hash match required.
+- **CSV artifacts:** export views; MAT manifest remains authoritative.
+- **Temporal gate / real calibration:** not executed in this phase.

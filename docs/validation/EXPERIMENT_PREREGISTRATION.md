@@ -223,6 +223,45 @@ Scientific overrides (`cfg`, probe lists, bands, seeds, etc.) are forbidden on
 the calibration entrypoint. Global RNG must remain unchanged after calibration input
 generation.
 
+### Phase 5C-A-R execution repairs (frozen geometry unchanged)
+
+**Neuronal rate dimension.** Activity metrics use `n_neurons = size(esn.W, 1) = 40`.
+The packed-state width `size(S_history, 2)` may exceed 40 when SFA/STD states are
+present; `computeRates(packed_state)` always returns exactly 40 neuronal rates.
+Rate matrices must be allocated as `zeros(40, n_eval)` — never from packed-state
+width.
+
+**Observation counts (per trial row).** Persist and validate:
+`n_eval_time_points = 700`, `n_neurons = 40`, `n_rate_observations = 28 000`,
+`packed_state_dimension ≥ 40`. Require
+`n_rate_observations = n_eval_time_points × n_neurons`. Packed-state dimensions may
+differ across mechanism conditions.
+
+**Global RNG audit.** Capture global RNG before scientific execution; use private
+`RandStream` for calibration inputs; compare global RNG only after all candidate /
+condition / seed trials complete; restore caller RNG before return (including error
+paths where feasible). Persist `global_rng_mutated` and `global_rng_restored`.
+Publication authority requires `global_rng_mutated=false` and
+`global_rng_restored=true`. Do not persist RNG state arrays or `RandStream` handles.
+
+**Resumable checkpoints.** Schema
+`publication_operating_point_calibration_checkpoint_v1`; identity binds protocol
+version/fingerprint, base publication fingerprint, commit SHA, candidate order,
+probe-cell order, seeds, input hashes, and expected row count 512. Unique trial key:
+`candidate_index|cell_key|calibration_seed`. Write atomically after every completed
+row. Option `resume_run_dir` (requires `save_results=true`) reloads checkpoint,
+validates fingerprints/commit/input hashes/trial keys, and continues only missing
+combinations. **Checkpoints never authorize publication**; partial checkpoints are
+rejected by `validate_operating_point_calibration`. Completed final artifacts short-
+circuit resume without recomputation.
+
+**Artifact binding.** `calibration_config.mat`, `calibration_result.mat`, and both
+manifests are content-hashed and cross-validated (`calibration_config_content_hash`,
+`calibration_result_content_hash`). JSON manifest must be semantically identical to
+MAT manifest (MAT authoritative). CSV exports are informational views only.
+`copy_calibration_authority` revalidates source and destination before publication
+cells run.
+
 ---
 
 ## 8. Analysis plan (T103)

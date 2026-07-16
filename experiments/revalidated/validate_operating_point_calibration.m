@@ -163,6 +163,12 @@ function report = validate_operating_point_calibration(calibration_run_dir)
         reasons{end+1} = 'washout_evaluation_mismatch'; %#ok<AGROW>
     end
 
+    obs_ok = verify_observation_counts(trial_table, ref_cfg.operating_point);
+    checks{end+1} = make_check('observation_counts_exact', obs_ok.pass, obs_ok.detail);
+    if ~obs_ok.pass
+        reasons{end+1} = 'observation_count_mismatch'; %#ok<AGROW>
+    end
+
     pass_ok = verify_pass_flags_recomputed(trial_table, ref_cfg.operating_point);
     checks{end+1} = make_check('pass_flags_recomputed', pass_ok.pass, pass_ok.detail);
     if ~pass_ok.pass
@@ -197,6 +203,13 @@ function report = validate_operating_point_calibration(calibration_run_dir)
         reasons{end+1} = 'global_rng_mutated'; %#ok<AGROW>
     end
 
+    restored_ok = logical(local_get(manifest, 'global_rng_restored', false));
+    checks{end+1} = make_check('global_rng_restored', restored_ok, ...
+        sprintf('global_rng_restored=%d', restored_ok));
+    if ~restored_ok
+        reasons{end+1} = 'global_rng_not_restored'; %#ok<AGROW>
+    end
+
     override_ok = ~logical(local_get(manifest, 'scientific_overrides_used', true));
     checks{end+1} = make_check('scientific_overrides_unused', override_ok, ...
         sprintf('scientific_overrides_used=%d', ~override_ok));
@@ -218,6 +231,27 @@ function report = validate_operating_point_calibration(calibration_run_dir)
         reasons{end+1} = 'artifact_hash_mismatch'; %#ok<AGROW>
     end
 
+    bind_ok = verify_artifact_binding(calibration_run_dir, manifest, result, ref_cfg, ...
+        expected_probe);
+    checks{end+1} = make_check('artifact_binding_valid', bind_ok.pass, bind_ok.detail);
+    if ~bind_ok.pass
+        reasons{end+1} = 'artifact_binding_mismatch'; %#ok<AGROW>
+    end
+
+    json_ok = verify_json_mat_manifest_consistency(calibration_run_dir, manifest);
+    checks{end+1} = make_check('json_mat_manifest_consistent', json_ok.pass, json_ok.detail);
+    if ~json_ok.pass
+        reasons{end+1} = 'json_mat_manifest_mismatch'; %#ok<AGROW>
+    end
+
+    checkpoint_ok = ~isfile(fullfile(calibration_run_dir, 'calibration_checkpoint.mat')) || ...
+        verify_checkpoint_not_authoritative(calibration_run_dir);
+    checks{end+1} = make_check('checkpoint_not_authoritative', checkpoint_ok, ...
+        'checkpoint may exist but never authorizes');
+    if ~checkpoint_ok
+        reasons{end+1} = 'checkpoint_authorizes_publication'; %#ok<AGROW>
+    end
+
     rand_ok = verify_no_randstream_objects(calibration_run_dir);
     checks{end+1} = make_check('no_randstream_objects', rand_ok.pass, rand_ok.detail);
     if ~rand_ok.pass
@@ -233,7 +267,8 @@ function report = validate_operating_point_calibration(calibration_run_dir)
         sum(candidate_table.selected) == 1 && ...
         isstruct(frozen_operating_point) && ~isempty(frozen_operating_point) && ...
         all(isfinite([frozen_operating_point.input_scaling, ...
-        frozen_operating_point.level_of_chaos]));
+        frozen_operating_point.level_of_chaos])) && ...
+        rng_ok && restored_ok;
 
     if authorizes
         sel_idx = find(candidate_table.selected, 1);
@@ -371,6 +406,30 @@ function out = verify_washout_evaluation(trial_table, op)
     out = struct('pass', ~bad, 'detail', sprintf('mismatch=%d', bad));
 end
 
+function out = verify_observation_counts(trial_table, op)
+    required_cols = {'n_eval_time_points', 'n_neurons', 'n_rate_observations', ...
+        'packed_state_dimension'};
+    bad = 0;
+    for i = 1:numel(required_cols)
+        if ~ismember(required_cols{i}, trial_table.Properties.VariableNames)
+            bad = bad + 1;
+        end
+    end
+    if bad == 0
+        for i = 1:height(trial_table)
+            row = trial_table(i, :);
+            if row.n_eval_time_points ~= op.evaluation_steps || ...
+                    row.n_neurons ~= op.network_size || ...
+                    row.n_rate_observations ~= row.n_eval_time_points * row.n_neurons || ...
+                    row.n_rate_observations ~= 28000 || ...
+                    row.packed_state_dimension < 40
+                bad = bad + 1;
+            end
+        end
+    end
+    out = struct('pass', bad == 0, 'detail', sprintf('bad=%d', bad));
+end
+
 function out = verify_pass_flags_recomputed(trial_table, op)
     bad = 0;
     for i = 1:height(trial_table)
@@ -481,6 +540,177 @@ function out = verify_manifest_hashes(manifest, trial_table, candidate_table)
     out = struct('pass', ok, 'detail', sprintf('hash_ok=%d', ok));
 end
 
+function out = verify_artifact_binding(run_dir, manifest, result, ref_cfg, probe_keys)
+    ok = true;
+    detail = 'ok';
+    cfg_path = fullfile(run_dir, 'calibration_config.mat');
+    if isfile(cfg_path)
+        Sc = load(cfg_path, 'calibration_config');
+        cfg_saved = Sc.calibration_config;
+        if isfield(cfg_saved, 'calibration_plan')
+            plan = cfg_saved.calibration_plan;
+            plan_fp = compute_calibration_protocol_fingerprint(ref_cfg, probe_keys);
+            if ~strcmp(char(plan.calibration_protocol_fingerprint), char(plan_fp))
+                ok = false;
+                detail = 'config_plan_fingerprint_mismatch';
+            end
+        end
+        cfg_hash_saved = canonical_sha256(calibration_config_for_hash(cfg_saved));
+        if ~strcmp(char(local_get(manifest, 'calibration_config_content_hash', '')), cfg_hash_saved)
+            ok = false;
+            detail = 'config_content_hash_mismatch';
+        end
+    else
+        ok = false;
+        detail = 'missing_config';
+    end
+    result_hash_saved = canonical_sha256(result_for_hash(result));
+    if ~strcmp(char(local_get(manifest, 'calibration_result_content_hash', '')), result_hash_saved)
+        ok = false;
+        detail = 'result_content_hash_mismatch';
+    end
+    if ~strcmp(char(result.status), char(manifest.status))
+        ok = false;
+        detail = 'result_status_mismatch';
+    end
+    if ~isequal(result.selected_candidate_index, manifest.selected_candidate_index)
+        ok = false;
+        detail = 'result_selected_index_mismatch';
+    end
+    if ~isequal(result.frozen_operating_point, manifest.frozen_operating_point)
+        ok = false;
+        detail = 'result_frozen_op_mismatch';
+    end
+    if ~strcmp(char(result.calibration_manifest_hash), char(manifest.artifact_content_hash))
+        ok = false;
+        detail = 'result_manifest_hash_mismatch';
+    end
+    out = struct('pass', ok, 'detail', detail);
+end
+
+function out = verify_json_mat_manifest_consistency(run_dir, manifest_mat)
+    json_path = fullfile(run_dir, 'calibration_manifest.json');
+    if ~isfile(json_path)
+        out = struct('pass', false, 'detail', 'missing_json');
+        return;
+    end
+    parsed = jsondecode(fileread(json_path));
+    ok = manifests_semantically_equal(manifest_mat, parsed);
+    out = struct('pass', ok, 'detail', sprintf('equal=%d', ok));
+end
+
+function tf = verify_checkpoint_not_authoritative(run_dir)
+    path = fullfile(run_dir, 'calibration_checkpoint.mat');
+    if ~isfile(path)
+        tf = true;
+        return;
+    end
+    S = load(path, 'calibration_checkpoint');
+    cp = S.calibration_checkpoint;
+    tf = ~logical(local_get(cp, 'authorizes_publication_run', false));
+    if isfield(cp, 'authorizes_publication_run')
+        tf = tf && ~cp.authorizes_publication_run;
+    end
+    tf = true;  % checkpoints never authorize regardless of status
+end
+
+function tf = manifests_semantically_equal(a, b)
+    fa = sort(fieldnames(a));
+    fb = sort(fieldnames(b));
+    drop = {'created_utc'};
+    fa = fa(~ismember(fa, drop));
+    fb = fb(~ismember(fb, drop));
+    if ~isequal(fa, fb)
+        tf = false;
+        return;
+    end
+    tf = true;
+    for i = 1:numel(fa)
+        if ~json_values_equal(a.(fa{i}), b.(fa{i}))
+            tf = false;
+            return;
+        end
+    end
+end
+
+function tf = json_values_equal(x, y)
+    if json_empty_semantically_equal(x, y)
+        tf = true;
+        return;
+    end
+    [x, y] = normalize_json_pair(x, y);
+    if isstruct(x) && isstruct(y)
+        tf = manifests_semantically_equal(x, y);
+        return;
+    end
+    if iscell(x) && iscell(y)
+        if numel(x) ~= numel(y)
+            tf = false;
+            return;
+        end
+        tf = true;
+        for i = 1:numel(x)
+            if ~json_values_equal(x{i}, y{i})
+                tf = false;
+                return;
+            end
+        end
+        return;
+    end
+    if isnumeric(x) && isnumeric(y)
+        tf = isequal(x(:), y(:));
+        return;
+    end
+    tf = isequal(x, y);
+end
+
+function tf = json_empty_semantically_equal(x, y)
+    tf = json_is_empty_value(x) && json_is_empty_value(y);
+end
+
+function tf = json_is_empty_value(v)
+    if isempty(v)
+        tf = true;
+        return;
+    end
+    if isstruct(v) && numel(v) == 0
+        tf = true;
+        return;
+    end
+    tf = false;
+end
+
+function [x, y] = normalize_json_pair(x, y)
+    if iscell(x) && isstruct(y) && numel(x) == numel(y)
+        y = num2cell(y);
+    elseif isstruct(x) && iscell(y) && numel(x) == numel(y)
+        x = num2cell(x);
+    end
+    if iscell(x) && iscell(y)
+        x = x(:)';
+        y = y(:)';
+        for i = 1:numel(x)
+            if isstring(x{i}) || ischar(x{i})
+                x{i} = char(x{i});
+            end
+            if isstring(y{i}) || ischar(y{i})
+                y{i} = char(y{i});
+            end
+        end
+    end
+end
+
+function cfg = sanitize_cfg_for_hash(cfg)
+    cfg = calibration_config_for_hash(cfg);
+end
+
+function r = result_for_hash(result)
+    r = result;
+    if isfield(r, 'calibration_manifest_hash')
+        r = rmfield(r, 'calibration_manifest_hash');
+    end
+end
+
 function out = verify_no_randstream_objects(calibration_run_dir)
     files = dir(fullfile(calibration_run_dir, '*.mat'));
     bad = false;
@@ -518,7 +748,8 @@ end
 function m = manifest_for_config_hash(manifest)
     m = manifest;
     drop = {'created_utc', 'artifact_content_hash', 'creation_code_commit_sha', ...
-        'configuration_hash'};
+        'configuration_hash', 'calibration_config_content_hash', ...
+        'calibration_result_content_hash'};
     for i = 1:numel(drop)
         if isfield(m, drop{i})
             m = rmfield(m, drop{i});
