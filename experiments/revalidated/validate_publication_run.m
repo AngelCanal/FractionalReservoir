@@ -119,13 +119,54 @@ function report = validate_publication_run(run_dir, options)
         'pass', inf_val.valid, ...
         'detail', inf_val.detail);
 
+    cal_val = struct('valid', false, 'detail', 'not_validated', ...
+        'authorizes_publication_run', false);
+    if strcmp(char(cfg.protocol_tier), 'publication')
+        authority_dir = fullfile(run_dir, 'calibration_authority');
+        if isfolder(authority_dir)
+            try
+                cal_report = validate_operating_point_calibration(authority_dir);
+                cal_val.valid = cal_report.valid;
+                cal_val.authorizes_publication_run = cal_report.authorizes_publication_run;
+                cal_val.detail = strjoin(cal_report.reasons, ',');
+                if isempty(cal_val.detail)
+                    cal_val.detail = 'valid';
+                end
+            catch ME
+                cal_val.detail = ME.identifier;
+            end
+        else
+            cal_val.detail = 'calibration_authority_missing';
+        end
+        cal_pass = cal_val.valid;
+        cal_auth_pass = cal_val.authorizes_publication_run;
+    else
+        cal_val.detail = 'nonpublication_tier';
+        cal_pass = true;
+        cal_auth_pass = true;
+    end
+
+    report.checks(end+1) = struct( ...
+        'name', 'calibration_authority_independent_validation', ...
+        'pass', cal_pass, ...
+        'detail', cal_val.detail);
+
+    report.checks(end+1) = struct( ...
+        'name', 'calibration_authority_authorizes_publication', ...
+        'pass', cal_auth_pass, ...
+        'detail', sprintf('authorizes=%d', cal_val.authorizes_publication_run));
+
+    report.calibration_validation = cal_val;
+
     % Recompute publication_ready with the appended checks (fail closed).
     names = {report.checks.name};
     pass = [report.checks.pass];
     artifact_ok = all(pass(strcmp(names, 'result_path_explicit'))) && ...
         all(pass(strcmp(names, 'temporal_learning_gate_artifact_present'))) && ...
         all(pass(strcmp(names, 'temporal_learning_gate_independent_validation'))) && ...
-        all(pass(strcmp(names, 'aggregation_inference_independent_validation')));
+        all(pass(strcmp(names, 'aggregation_inference_independent_validation'))) && ...
+        all(pass(strcmp(names, 'calibration_authority_independent_validation'))) && ...
+        all(pass(strcmp(names, 'calibration_authority_authorizes_publication')));
     report.all_qa_checks_pass = report.all_qa_checks_pass && artifact_ok;
     if ~isfield(report, 'all_required_secondary_endpoints_complete')
         report.all_required_secondary_endpoints_complete = false;

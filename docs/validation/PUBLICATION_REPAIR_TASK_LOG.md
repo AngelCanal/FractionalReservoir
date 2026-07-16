@@ -376,4 +376,39 @@ Aggregation; calibration; figures.
 - **Caller `expected_cfg`:** forbidden for `protocol_tier=publication`.
 - **Calibration authority (next phase):** internal reference from preregistered config +
   validated immutable calibration artifact + frozen operating point.
-- **`publication_ready`:** remains false (calibration artifact, temporal gate, etc.).
+- **`publication_ready`:** remains false (real calibration execution, temporal gate, etc.).
+
+## Phase 5C-A checklist (publication operating-point calibration authority)
+
+- [x] Confirm branch `fix/mesn-publication-repair` at starting SHA `85f975f`
+- [x] Freeze `publication_operating_point_calibration_v1` in `mechanism_ablation_config.m`
+- [x] Publication `n=40` calibration geometry; seeds `[1729, 2718]` disjoint from publication
+- [x] Programmatic 16 dynamic probe conditions (feature `x`); frozen expected-key validation
+- [x] 16 candidate pairs; 512-row flat trial matrix; washout excluded from activity metrics
+- [x] First-feasible selection after complete candidate enumeration; no task/gate outcomes
+- [x] Rewrite `calibrate_operating_point.m`; immutable artifact schema v1
+- [x] `validate_operating_point_calibration.m` (disk reload; fail-closed)
+- [x] Publication full runner requires `calibration_run_dir`; forbid raw frozen OP
+- [x] Copy `calibration_authority/`; internally constructed publication reference in readiness
+- [x] Unit/integration/scientific tests (synthetic fixtures only); full suite pass (606/606)
+- [x] Docs updated; commit; push
+
+### Phase 5C-A starting SHA
+
+`85f975fae5da96036a292c0bd9e5b92afef90af2`
+
+| Field | Value |
+|---|---|
+| Status | complete (infrastructure only) |
+| Calibration protocol | `publication_operating_point_calibration_v1` |
+| Artifact schema | `publication_operating_point_calibration_artifact_v1` |
+| Real calibration executed | no (synthetic fixtures only) |
+| `publication_ready` | false |
+| Next phase | 5C-B — execute frozen publication calibration + publication-length temporal gate |
+
+### Phase 5C-A policy notes
+
+- **Authority:** validated calibration artifact only; no raw operating-point injection.
+- **Reference cfg:** constructed internally in readiness/validation from preregistered config + copied authority.
+- **Global RNG:** calibration input uses private `RandStream`; must not mutate global state.
+- **Task outcomes:** excluded from calibration selection and artifact payloads.

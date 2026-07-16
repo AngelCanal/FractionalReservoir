@@ -35,11 +35,20 @@ function report = evaluate_publication_readiness(cfg, options)
             ['options.expected_cfg is forbidden for publication readiness; ', ...
              'the protocol reference must be constructed internally.']);
     end
+    if strcmp(tier, 'publication') && isfield(options, 'calibration_artifact_valid')
+        error('evaluate_publication_readiness:CalibrationBooleanForbidden', ...
+            'options.calibration_artifact_valid is forbidden for publication readiness.');
+    end
 
     analysis_set = char(local_get(cfg, 'active_analysis_set', 'confirmatory'));
     expected_cfg = mechanism_ablation_config('publication', analysis_set);
-    % Reference fingerprint independent of expected_cfg.created_utc.
-    % Until Phase 6 calibration, cfg with frozen_operating_point will not match.
+
+    run_dir = char(local_get(options, 'run_dir', ''));
+    cal_val = validate_calibration_authority_for_readiness(run_dir, cfg);
+    if cal_val.authorizes_publication_run
+        expected_cfg.frozen_operating_point = cal_val.frozen_operating_point;
+        expected_cfg.frozen_operating_point_provenance = cal_val.provenance;
+    end
     expected_fp = compute_protocol_fingerprint(expected_cfg);
 
     cell_records = local_get(options, 'cell_records', {});
@@ -67,6 +76,24 @@ function report = evaluate_publication_readiness(cfg, options)
     checks{end+1} = make_check('fingerprint_matches_publication_reference', ...
         strcmp(recomputed_fp, expected_fp), ...
         sprintf('cfg=%s expected=%s', recomputed_fp, expected_fp));
+
+    checks{end+1} = make_check('publication_reference_constructed_internally', ...
+        true, 'expected_cfg built from mechanism_ablation_config only');
+
+    checks{end+1} = make_check('calibration_authority_present', ...
+        cal_val.authority_present, cal_val.authority_present_detail);
+    checks{end+1} = make_check('calibration_artifact_valid', ...
+        cal_val.artifact_valid, cal_val.artifact_valid_detail);
+    checks{end+1} = make_check('calibration_authorizes_publication_run', ...
+        cal_val.authorizes_publication_run, cal_val.authorizes_detail);
+    checks{end+1} = make_check('calibration_geometry_is_publication', ...
+        cal_val.geometry_is_publication, cal_val.geometry_detail);
+    checks{end+1} = make_check('calibration_seed_sets_disjoint', ...
+        cal_val.seed_sets_disjoint, cal_val.seed_disjoint_detail);
+    checks{end+1} = make_check('calibration_selection_rule_valid', ...
+        cal_val.selection_rule_valid, cal_val.selection_detail);
+    checks{end+1} = make_check('calibration_provenance_matches_cfg', ...
+        cal_val.provenance_matches_cfg, cal_val.provenance_detail);
 
     checks{end+1} = make_check('pilot_not_for_publication_false', ...
         isfield(cfg, 'pilot_not_for_publication') && ~logical(cfg.pilot_not_for_publication), ...
@@ -192,6 +219,14 @@ function report = evaluate_publication_readiness(cfg, options)
         check_named(check_arr, 'analysis_set_is_publication_inferential') && ...
         check_named(check_arr, 'stored_fingerprint_matches_cfg') && ...
         check_named(check_arr, 'fingerprint_matches_publication_reference') && ...
+        check_named(check_arr, 'publication_reference_constructed_internally') && ...
+        check_named(check_arr, 'calibration_authority_present') && ...
+        check_named(check_arr, 'calibration_artifact_valid') && ...
+        check_named(check_arr, 'calibration_authorizes_publication_run') && ...
+        check_named(check_arr, 'calibration_geometry_is_publication') && ...
+        check_named(check_arr, 'calibration_seed_sets_disjoint') && ...
+        check_named(check_arr, 'calibration_selection_rule_valid') && ...
+        check_named(check_arr, 'calibration_provenance_matches_cfg') && ...
         check_named(check_arr, 'pilot_not_for_publication_false') && ...
         check_named(check_arr, 'exact_expected_seeds') && ...
         check_named(check_arr, 'exact_expected_condition_keys');
@@ -725,6 +760,138 @@ function options = collapse_options_struct(options)
         end
     end
     options = collapsed;
+end
+
+function cal_val = validate_calibration_authority_for_readiness(run_dir, cfg)
+    cal_val = struct();
+    cal_val.authority_present = false;
+    cal_val.authority_present_detail = 'run_dir_missing';
+    cal_val.artifact_valid = false;
+    cal_val.artifact_valid_detail = 'not_validated';
+    cal_val.authorizes_publication_run = false;
+    cal_val.authorizes_detail = 'not_validated';
+    cal_val.geometry_is_publication = false;
+    cal_val.geometry_detail = 'not_validated';
+    cal_val.seed_sets_disjoint = false;
+    cal_val.seed_disjoint_detail = 'not_validated';
+    cal_val.selection_rule_valid = false;
+    cal_val.selection_detail = 'not_validated';
+    cal_val.provenance_matches_cfg = false;
+    cal_val.provenance_detail = 'not_validated';
+    cal_val.frozen_operating_point = struct([]);
+    cal_val.provenance = struct([]);
+
+    tier = char(local_get(cfg, 'protocol_tier', ''));
+    if ~strcmp(tier, 'publication')
+        cal_val.authority_present_detail = 'nonpublication_tier';
+        cal_val.artifact_valid_detail = 'nonpublication_tier';
+        cal_val.authorizes_detail = 'nonpublication_tier';
+        cal_val.geometry_detail = 'nonpublication_tier';
+        cal_val.seed_disjoint_detail = 'nonpublication_tier';
+        cal_val.selection_detail = 'nonpublication_tier';
+        cal_val.provenance_detail = 'nonpublication_tier';
+        return;
+    end
+
+    if isempty(run_dir)
+        return;
+    end
+
+    authority_dir = fullfile(run_dir, 'calibration_authority');
+    cal_val.authority_present = isfolder(authority_dir) && ...
+        isfile(fullfile(authority_dir, 'calibration_manifest.mat'));
+    cal_val.authority_present_detail = authority_dir;
+    if ~cal_val.authority_present
+        return;
+    end
+
+    try
+        val = validate_operating_point_calibration(authority_dir);
+    catch ME
+        cal_val.artifact_valid_detail = ME.identifier;
+        return;
+    end
+
+    cal_val.artifact_valid = val.valid;
+    cal_val.artifact_valid_detail = strjoin(val.reasons, ',');
+    if isempty(cal_val.artifact_valid_detail)
+        cal_val.artifact_valid_detail = 'valid';
+    end
+    cal_val.authorizes_publication_run = val.authorizes_publication_run;
+    cal_val.authorizes_detail = sprintf('status=%s authorizes=%d', ...
+        char(val.status), val.authorizes_publication_run);
+    cal_val.frozen_operating_point = val.frozen_operating_point;
+
+    Sm = load(fullfile(authority_dir, 'calibration_manifest.mat'), 'calibration_manifest');
+    manifest = Sm.calibration_manifest;
+    cal_val.geometry_is_publication = isequal(local_get(manifest, 'network_size', NaN), 40);
+    cal_val.geometry_detail = sprintf('network_size=%g', ...
+        local_get(manifest, 'network_size', NaN));
+    cal_val.seed_sets_disjoint = isempty(intersect( ...
+        local_get(manifest, 'calibration_seeds', []), cfg.publication_seeds));
+    cal_val.seed_disjoint_detail = 'calibration vs publication seeds';
+    sel_ok = verify_selection_rule_table_only(authority_dir);
+    cal_val.selection_rule_valid = sel_ok.pass;
+    cal_val.selection_detail = sel_ok.detail;
+
+    if isfield(cfg, 'frozen_operating_point_provenance')
+        prov = cfg.frozen_operating_point_provenance;
+        exp_prov = struct( ...
+            'schema_version', 'publication_operating_point_calibration_artifact_v1', ...
+            'calibration_protocol_version', 'publication_operating_point_calibration_v1', ...
+            'calibration_protocol_fingerprint', val.calibration_protocol_fingerprint, ...
+            'calibration_manifest_hash', val.calibration_manifest_hash, ...
+            'validation_status', 'valid', ...
+            'scientific_overrides_used', false);
+        cal_val.provenance_matches_cfg = provenance_equal(prov, exp_prov);
+        cal_val.provenance = exp_prov;
+    else
+        cal_val.provenance_matches_cfg = false;
+        cal_val.provenance_detail = 'cfg missing frozen_operating_point_provenance';
+        return;
+    end
+    cal_val.provenance_detail = 'canonical provenance match';
+end
+
+function tf = provenance_equal(a, b)
+    fields = {'schema_version', 'calibration_protocol_version', ...
+        'calibration_protocol_fingerprint', 'calibration_manifest_hash', ...
+        'validation_status', 'scientific_overrides_used'};
+    tf = true;
+    for i = 1:numel(fields)
+        f = fields{i};
+        if ~isfield(a, f) || ~isfield(b, f) || ~isequal(a.(f), b.(f))
+            tf = false;
+            return;
+        end
+    end
+end
+
+function out = verify_selection_rule_table_only(authority_dir)
+    Sc = load(fullfile(authority_dir, 'calibration_candidate_table.mat'), ...
+        'calibration_candidate_table');
+    Sm = load(fullfile(authority_dir, 'calibration_manifest.mat'), ...
+        'calibration_manifest');
+    candidate_table = Sc.calibration_candidate_table;
+    manifest = Sm.calibration_manifest;
+    feasible_idx = find(candidate_table.feasible);
+    if isempty(feasible_idx)
+        ok = ~any(candidate_table.selected) && ...
+            (~isfield(manifest, 'selected_candidate_index') || ...
+            isempty(manifest.selected_candidate_index)) && ...
+            strcmp(char(local_get(manifest, 'status', '')), 'no_feasible_operating_point');
+        out = struct('pass', ok, 'detail', 'no feasible candidate');
+        return;
+    end
+    first = feasible_idx(1);
+    ok = candidate_table.selected(first) && sum(candidate_table.selected) == 1;
+    if isfield(manifest, 'selected_candidate_index') && ~isempty(manifest.selected_candidate_index)
+        ok = ok && manifest.selected_candidate_index == first;
+    end
+    if numel(feasible_idx) > 1
+        ok = ok && ~any(candidate_table.selected(feasible_idx(2:end)));
+    end
+    out = struct('pass', ok, 'detail', sprintf('first_feasible=%d', first));
 end
 
 function v = local_get(s, name, default)

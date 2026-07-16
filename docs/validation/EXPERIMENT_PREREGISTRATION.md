@@ -67,13 +67,12 @@ Only `confirmatory` and `sfa_sensitivity` are **publication-inferential**
 analysis sets. Runners accept `options.analysis_set` ∈
 `{confirmatory, sfa_sensitivity, feature_exploratory}` (default: confirmatory).
 
-**Protocol reference authority.** Callers must not supply `options.expected_cfg`
-for `protocol_tier=publication` readiness or validation. The next calibration
-phase will construct the expected publication reference internally from
-`mechanism_ablation_config('publication', analysis_set)`, a separately validated
-immutable calibration artifact, and its frozen operating point / provenance hash.
-Until that exists, publication fingerprint reference checks may correctly remain
-false for runs with `frozen_operating_point`.
+**Protocol reference authority (Phase 5C-A).** Callers must not supply `options.expected_cfg`
+for `protocol_tier=publication` readiness or validation. Publication reference cfg is
+constructed internally from `mechanism_ablation_config('publication', analysis_set)`,
+the copied `run_dir/calibration_authority/` artifact (independently validated), and
+its frozen operating point / canonical provenance hash. Raw `options.frozen_operating_point`
+injection is forbidden; `options.calibration_run_dir` is required for publication full runs.
 
 ### Explicit adaptation profiles
 
@@ -163,17 +162,66 @@ probability. **No Cliff's delta** (inappropriate for paired same-seed data).
 
 ---
 
-## 7. Operating-point calibration (T102; no outcome fishing)
+## 7. Operating-point calibration (Phase 5C-A; no outcome fishing)
 
-- Calibrate **only** on training/validation calibration seeds
-  (`1729`, `2718`), never final test seeds.
-- Acceptable bands (preregistered): mean rate ∈ `[0.05, 0.85]`;
-  saturation fraction ≤ `0.35`; silent fraction ≤ `0.35`.
-- Apply the **same** shared `(input_scaling, level_of_chaos)` rule to all
-  paired mechanism conditions.
-- Do **not** pick each mechanism’s scale from final task test performance.
-- Save every tried configuration, including failures, in the calibration
-  manifest.
+**Protocol:** `publication_operating_point_calibration_v1`  
+**Artifact schema:** `publication_operating_point_calibration_artifact_v1`
+
+### Publication geometry (frozen)
+
+| Field | Value |
+|---|---|
+| Network size | `n = 40` (publication; never pilot `n = 12`) |
+| Calibration seeds | `[1729, 2718]` only |
+| Input | i.i.d. uniform on `[-1, 1]`; `input_seed = calibration_seed + 99` |
+| Washout | `100` steps (excluded from activity metrics) |
+| Evaluation | `700` post-washout steps |
+| Rate observations | `700 × 40 = 28 000` per condition/seed/candidate |
+| ODE tolerances | RelTol `1e-6`, AbsTol `1e-8` |
+| DDE tolerances | RelTol `1e-6`, AbsTol `1e-8` |
+
+### Dynamic probe conditions (feature `x` only; 16 unique)
+
+Built programmatically from confirmatory + SFA-sensitivity analysis sets; validated
+against a frozen key list. Features do not change reservoir dynamics; `x` is the
+representative label. No `r` / `all` probes; no caller-supplied probe lists.
+
+### Candidate matrix (16 pairs; frozen order)
+
+`input_scaling` outer × `level_of_chaos` inner:
+
+- `input_scaling ∈ {0.25, 0.5, 0.75, 1.0}`
+- `level_of_chaos ∈ {0.6, 0.8, 1.0, 1.2}`
+
+**Trial rows:** `16 candidates × 16 conditions × 2 seeds = 512` flat rows (complete
+matrix persisted even after the first feasible candidate).
+
+### Selection rule
+
+First feasible candidate in frozen order after evaluating **all** 16 candidates.
+Feasible = all `32` rows pass (`16 conditions × 2 seeds`). Never select by task
+NRMSE, memory capacity, temporal-gate metrics, figures, or post-hoc targets.
+
+### Bands (unchanged)
+
+- Mean rate ∈ `[0.05, 0.85]`
+- Saturation fraction ≤ `0.35`
+- Silent fraction ≤ `0.35`
+- Dale violations = `0`
+
+### Immutable artifacts
+
+Written under the calibration run directory: `calibration_config.mat`,
+`calibration_trial_table.mat/.csv`, `calibration_candidate_table.mat/.csv`,
+`calibration_result.mat`, `calibration_manifest.mat/.json`.
+
+Independent validation: `validate_operating_point_calibration`. Publication full
+runs require `options.calibration_run_dir`; validated authority is copied to
+`run_dir/calibration_authority/` for downstream revalidation.
+
+Scientific overrides (`cfg`, probe lists, bands, seeds, etc.) are forbidden on
+the calibration entrypoint. Global RNG must remain unchanged after calibration input
+generation.
 
 ---
 

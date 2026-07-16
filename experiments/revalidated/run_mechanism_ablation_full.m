@@ -31,12 +31,40 @@ function [result, run_dir] = run_mechanism_ablation_full(options)
             'reduced_lengths_for_compute_feasibility_not_publication_inference');
     end
 
-    if ~isfield(options, 'frozen_operating_point') || isempty(options.frozen_operating_point)
-        error('run_mechanism_ablation_full:MissingOperatingPoint', ...
-            'Pass options.frozen_operating_point from T102 before full runs.');
+    if isfield(options, 'frozen_operating_point') && ~isempty(options.frozen_operating_point)
+        error('run_mechanism_ablation_full:RawOperatingPointForbidden', ...
+            'options.frozen_operating_point is forbidden; use calibration_run_dir.');
     end
-    cfg.frozen_operating_point = options.frozen_operating_point;
-    cfg.protocol_fingerprint = compute_protocol_fingerprint(cfg);
+
+    calibration_authority = struct();
+    if strcmp(cfg.protocol_tier, 'publication')
+        if ~isfield(options, 'calibration_run_dir') || isempty(options.calibration_run_dir)
+            error('run_mechanism_ablation_full:MissingCalibrationArtifact', ...
+                'Publication runs require options.calibration_run_dir.');
+        end
+        calibration_authority = validate_operating_point_calibration( ...
+            options.calibration_run_dir);
+        if ~calibration_authority.valid
+            error('run_mechanism_ablation_full:InvalidCalibrationArtifact', ...
+                'Calibration artifact failed validation: %s', ...
+                strjoin(calibration_authority.reasons, ','));
+        end
+        if ~calibration_authority.authorizes_publication_run
+            error('run_mechanism_ablation_full:CalibrationNotAuthorizing', ...
+                'Calibration artifact does not authorize publication runs.');
+        end
+        cfg.frozen_operating_point = calibration_authority.frozen_operating_point;
+        cfg.frozen_operating_point_provenance = struct( ...
+            'schema_version', 'publication_operating_point_calibration_artifact_v1', ...
+            'calibration_protocol_version', ...
+                'publication_operating_point_calibration_v1', ...
+            'calibration_protocol_fingerprint', ...
+                calibration_authority.calibration_protocol_fingerprint, ...
+            'calibration_manifest_hash', calibration_authority.calibration_manifest_hash, ...
+            'validation_status', 'valid', ...
+            'scientific_overrides_used', false);
+        cfg.protocol_fingerprint = compute_protocol_fingerprint(cfg);
+    end
 
     reject_temporal_gate_override(options, 'run_mechanism_ablation_full');
     reject_baseline_overrides(options, 'run_mechanism_ablation_full');
@@ -78,6 +106,11 @@ function [result, run_dir] = run_mechanism_ablation_full(options)
             'n_cells', numel(cells), ...
             'use_reduced_lengths', used_reduced_lengths));
         atomic_save_results(fullfile(run_dir, 'preregistered_config.mat'), struct('cfg', cfg));
+        if strcmp(cfg.protocol_tier, 'publication') && ...
+                isfield(options, 'calibration_run_dir') && ...
+                ~isempty(options.calibration_run_dir)
+            copy_calibration_authority(options.calibration_run_dir, run_dir);
+        end
     end
 
     cell_index = {};
@@ -194,7 +227,7 @@ function [result, run_dir] = run_mechanism_ablation_full(options)
     result.aggregate = aggregate;
     result.seed_baseline_index = seed_baseline_index;
     result.temporal_learning_gate = temporal_gate;
-    result.frozen_operating_point = cfg.frozen_operating_point;
+    result.frozen_operating_point = local_get(cfg, 'frozen_operating_point', struct([]));
     result.run_dir = run_dir;
     result.structurally_complete = readiness.structurally_complete;
     result.publication_protocol_complete = readiness.publication_protocol_complete;

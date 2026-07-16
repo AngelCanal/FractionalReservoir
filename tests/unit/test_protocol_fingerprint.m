@@ -194,7 +194,8 @@ function testValidatePublicationRunOnSyntheticDirectory(testCase)
     cleaner = onCleanup(@() rmdir(fileparts(run_dir), 's')); %#ok<NASGU>
 
     report = validate_publication_run(run_dir);
-    testCase.verifyTrue(report.publication_protocol_complete);
+    testCase.verifyFalse(check_pass(report, 'calibration_authority_present'));
+    testCase.verifyFalse(report.publication_protocol_complete);
     testCase.verifyTrue(report.structurally_complete);
     testCase.verifyTrue(report.all_primary_endpoints_finite);
     % Artifact hashes intentionally absent until Phase 9 export.

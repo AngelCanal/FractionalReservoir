@@ -245,8 +245,12 @@ function cfg = mechanism_ablation_config(mode, analysis_set)
             end
     end
 
-    %% Operating-point bands (T102); frozen before full experiment
+    %% Operating-point calibration protocol (Phase 5C-A); frozen before full experiment
     cfg.operating_point = struct();
+    cfg.operating_point.protocol_version = ...
+        'publication_operating_point_calibration_v1';
+    cfg.operating_point.network_size = 40;
+    cfg.operating_point.dt = cfg.base.dt;
     cfg.operating_point.mean_rate_band = [0.05, 0.85];
     cfg.operating_point.saturation_fraction_max = 0.35;
     cfg.operating_point.silent_fraction_max = 0.35;
@@ -256,10 +260,36 @@ function cfg = mechanism_ablation_config(mode, analysis_set)
         'publication_seeds must not overlap calibration_seeds.');
     cfg.operating_point.candidate_input_scaling = [0.25, 0.5, 0.75, 1.0];
     cfg.operating_point.candidate_level_of_chaos = [0.6, 0.8, 1.0, 1.2];
-    cfg.operating_point.rule = [ ...
-        'Shared calibration: pick the first (input_scaling, level_of_chaos) pair ', ...
-        'that keeps mean rate and saturation within bands on ALL paired mechanism ', ...
-        'conditions for calibration seeds. Never select by final task test score.'];
+    cfg.operating_point.input_distribution = 'iid_uniform';
+    cfg.operating_point.input_min = -1;
+    cfg.operating_point.input_max = 1;
+    cfg.operating_point.input_seed_offset = 99;
+    cfg.operating_point.washout_steps = 100;
+    cfg.operating_point.evaluation_steps = 700;
+    cfg.operating_point.total_steps = 800;
+    cfg.operating_point.ode_reltol = 1e-6;
+    cfg.operating_point.ode_abstol = 1e-8;
+    cfg.operating_point.dde_reltol = 1e-6;
+    cfg.operating_point.dde_abstol = 1e-8;
+    cfg.operating_point.selection_rule = [ ...
+        'Evaluate all 16 candidates in frozen order (input_scaling outer, ', ...
+        'level_of_chaos inner). Select the first candidate feasible on all ', ...
+        '16 dynamic conditions x 2 calibration seeds. Continue evaluating ', ...
+        'remaining candidates after the first feasible candidate. Never select ', ...
+        'by task performance, temporal memory, NRMSE, figures, or post-hoc targets.'];
+    cfg.operating_point.rule = cfg.operating_point.selection_rule;  % legacy alias
+    candidate_order = {};
+    for isc = 1:numel(cfg.operating_point.candidate_input_scaling)
+        for ilc = 1:numel(cfg.operating_point.candidate_level_of_chaos)
+            candidate_order{end+1} = struct( ... %#ok<AGROW>
+                'input_scaling', cfg.operating_point.candidate_input_scaling(isc), ...
+                'level_of_chaos', cfg.operating_point.candidate_level_of_chaos(ilc));
+        end
+    end
+    cfg.operating_point.candidate_order = candidate_order;
+    assert(numel(candidate_order) == 16, ...
+        'mechanism_ablation_config:CandidateCount', ...
+        'Operating-point calibration requires exactly 16 candidate pairs.');
 
     %% Build cell tables per analysis set (using current base.n for feature dims)
     n = cfg.base.n;
