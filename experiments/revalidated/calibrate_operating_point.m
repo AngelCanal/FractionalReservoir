@@ -20,8 +20,8 @@ function [calibration, run_dir] = calibrate_operating_point(options)
     end
     op = cfg.operating_point;
     seeds = op.calibration_seeds;
-    assert(~any(ismember(seeds, setdiff(cfg.full_seeds, cfg.pilot_seeds))), ...
-        'Calibration seeds must not include held-out full-experiment-only seeds.');
+    assert(isempty(intersect(seeds, cfg.publication_seeds)), ...
+        'Calibration seeds must not overlap publication inference seeds.');
 
     save_results = local_get(options, 'save_results', true);
     verbose = local_get(options, 'verbose', true);

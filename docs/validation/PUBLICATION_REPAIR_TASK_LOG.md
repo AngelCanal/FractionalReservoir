@@ -310,3 +310,18 @@ Aggregation; calibration; figures.
 - [x] ODE cell comparisons; DDE non-applicability; Dale pending per feature
 - [x] Publication gate `mg_autonomous_matched_controls_complete`
 - [x] Unit/scientific/smoke tests + docs; stop before Phase 5 aggregation
+
+## Phase 5B-A checklist (before edits)
+
+- [x] Confirm branch `fix/mesn-publication-repair` at starting SHA `6251c68`
+- [x] Separate publication / development / calibration seeds (30 untouched publication seeds)
+- [x] Remove Cliff's delta; freeze paired effect quantities
+- [x] Create `build_seed_inference_plan.m` (`seed_level_inference_v1`)
+- [x] Freeze hypothesis registry (12 + 4 + 27 + 25 families)
+- [x] Implement inference primitives under `experiments/revalidated/inference/`
+- [x] Fingerprint includes `aggregation_inference_plan`
+- [x] Unit tests + Phase 5A regression; commit; stop before Phase 5B-B
+
+### Phase 5B-A starting SHA
+
+`6251c68d78d4510ec8cbb1133438944125d4cdee`

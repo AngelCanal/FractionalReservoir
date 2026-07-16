@@ -96,13 +96,21 @@ equivalence at every frequency.
 
 ## 3. Seeds
 
-| Stage | Seeds | Tag |
+| Role | Seeds | Inference use |
 |---|---|---|
-| Pilot (G6) | exactly `1729`, `2718`, `31415` | `pilot_not_for_publication=true` |
-| Full (G7) | at least **30** independent base seeds (pilot seeds first, then the fixed list in `mechanism_ablation_config`) | publication candidate only after G7 |
+| Development / pilot | exactly `1729`, `2718`, `31415` | `pilot_not_for_publication=true`; pipeline QA only |
+| Operating-point calibration | `1729`, `2718` | train/validation calibration only; never publication inference |
+| Publication inference | **30** untouched base seeds in `cfg.publication_seeds` | sole independent sample for confirmatory / sensitivity inference |
 
-Pilot uses **reduced** sequence lengths sufficient for pipeline QA, not
-publication inference.
+Publication inference seeds (frozen, no overlap with development or calibration):
+
+`10007, 10009, 10037, 10039, 10061, 10067, 10069, 10079, 10091, 10093,
+10099, 10103, 10111, 10133, 10139, 10141, 10151, 10159, 10163, 10169,
+10177, 10181, 10193, 10211, 10223, 10243, 10247, 10253, 10259, 10267`
+
+Pilot and development seeds are **never** included in publication inference.
+Calibration seeds are **never** included in publication inference.
+Smoke/pilot runs remain diagnostic pipeline evidence only.
 
 ---
 
@@ -120,7 +128,10 @@ publication inference.
 
 Nonlinear capacity, frequency discrimination, stimulus counting, effective
 rank, and ODE autonomous horizon. Secondary family uses Holm–Bonferroni at
-α=0.05 with paired effect sizes (median difference and Cliff’s δ).
+α=0.05 with paired seed-level quantities: oriented mean effect (primary),
+median oriented effect (robust sensitivity), matched-pairs rank-biserial
+correlation, paired standardized mean effect dz, and common-language favorable
+probability. **No Cliff's delta** (inappropriate for paired same-seed data).
 
 ## 6. Explicit exclusions
 
@@ -154,6 +165,20 @@ rank, and ODE autonomous horizon. Secondary family uses Holm–Bonferroni at
 - Phase 5A (`matched_seed_contrasts_v1`): build flat seed-level matched contrast
   tables from immutable cell artifacts; freeze estimands in
   `cfg.aggregation_plan` before outcomes; **no inference**.
+- Phase 5B-A (`seed_level_inference_v1`): freeze `cfg.aggregation_inference_plan`
+  — one oriented effect per base seed, paired two-sided sign-flip test,
+  seed-level percentile bootstrap (20 000 replicates), Holm–Bonferroni families,
+  local deterministic RNG (`mt19937ar` per-hypothesis stream); **inference not
+  executed until Phase 5B-B**.
+- Independent inferential unit remains **base_seed**; feature rows, strata,
+  origins, horizons, and repeated measurements are not independent.
+- Primary estimator: mean oriented seed effect; median is robustness sensitivity
+  only (not a second independent test).
+- Fixed-horizon autonomous NRMSE: descriptive pointwise estimates only — no
+  pointwise uncorrected significance tests.
+- Numerical dimension-control check (`single_moment_vs_three_identical_equivalence_check`)
+  uses absolute tolerance `1e-8` and relative tolerance `1e-6`; this is **not**
+  statistical equivalence (no TOST, no failure-to-reject-zero interpretation).
 - Factor-matched contrasts isolate SFA distribution, STD, and delay effects
   within seed (equal stratum weights); never use one global off-control to
   attribute individual mechanisms.
@@ -162,7 +187,7 @@ rank, and ODE autonomous horizon. Secondary family uses Holm–Bonferroni at
 - Dale-only references resolve from paired same-seed, same-feature control cells
   (never conventional ESN; never cross-feature).
 - Phase 5B: bootstrap CIs, sign-flip / effect sizes, Holm correction, and
-  final inference validation on the Phase 5A tables.
+  final inference validation on the Phase 5A tables (execution in Phase 5B-B).
 - Keep ODE and DDE stability evidence separate; never attach an ODE LLE to a
   delayed task result. DDE autonomous rollout remains unsupported.
 - Aggregate tables by reading immutable per-seed result files; never silently
