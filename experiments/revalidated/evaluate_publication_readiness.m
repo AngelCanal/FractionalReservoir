@@ -5,7 +5,7 @@ function report = evaluate_publication_readiness(cfg, options)
 %
 % options fields (optional):
 %   cell_records  - struct array/cell with per-cell outcomes
-%   expected_cfg  - frozen publication reference (default: mechanism_ablation_config('publication'))
+%   expected_cfg  - forbidden for protocol_tier=publication (internal reference only)
 %   has_manifest  - logical
 %   has_commit_sha - logical
 %   has_artifact_hashes - logical
@@ -25,11 +25,21 @@ function report = evaluate_publication_readiness(cfg, options)
     end
     options = collapse_options_struct(options);
 
-    expected_cfg = local_get(options, 'expected_cfg', []);
-    if isempty(expected_cfg)
-        expected_cfg = mechanism_ablation_config('publication');
+    tier = '';
+    if isfield(cfg, 'protocol_tier')
+        tier = char(cfg.protocol_tier);
     end
-    % Reference fingerprint independent of expected_cfg.created_utc
+    if strcmp(tier, 'publication') && isfield(options, 'expected_cfg') && ...
+            ~isempty(options.expected_cfg)
+        error('evaluate_publication_readiness:ExpectedCfgOverrideForbidden', ...
+            ['options.expected_cfg is forbidden for publication readiness; ', ...
+             'the protocol reference must be constructed internally.']);
+    end
+
+    analysis_set = char(local_get(cfg, 'active_analysis_set', 'confirmatory'));
+    expected_cfg = mechanism_ablation_config('publication', analysis_set);
+    % Reference fingerprint independent of expected_cfg.created_utc.
+    % Until Phase 6 calibration, cfg with frozen_operating_point will not match.
     expected_fp = compute_protocol_fingerprint(expected_cfg);
 
     cell_records = local_get(options, 'cell_records', {});
@@ -37,13 +47,14 @@ function report = evaluate_publication_readiness(cfg, options)
 
     checks = {};
 
-    tier = '';
-    if isfield(cfg, 'protocol_tier')
-        tier = char(cfg.protocol_tier);
-    end
     checks{end+1} = make_check('protocol_tier_is_publication', ...
         strcmp(tier, 'publication'), ...
         sprintf('protocol_tier=%s', tier)); %#ok<*AGROW>
+
+    analysis_set_inferential = is_publication_inferential_analysis_set(analysis_set);
+    checks{end+1} = make_check('analysis_set_is_publication_inferential', ...
+        analysis_set_inferential, ...
+        sprintf('active_analysis_set=%s', analysis_set));
 
     cfg_fp = '';
     if isfield(cfg, 'protocol_fingerprint')
@@ -178,6 +189,7 @@ function report = evaluate_publication_readiness(cfg, options)
 
     publication_protocol_complete = ...
         check_named(check_arr, 'protocol_tier_is_publication') && ...
+        check_named(check_arr, 'analysis_set_is_publication_inferential') && ...
         check_named(check_arr, 'stored_fingerprint_matches_cfg') && ...
         check_named(check_arr, 'fingerprint_matches_publication_reference') && ...
         check_named(check_arr, 'pilot_not_for_publication_false') && ...
@@ -207,6 +219,7 @@ function report = evaluate_publication_readiness(cfg, options)
 
     report = struct();
     report.cfg_protocol_tier = tier;
+    report.cfg_active_analysis_set = analysis_set;
     report.cfg_protocol_fingerprint = cfg_fp;
     report.expected_protocol_fingerprint = expected_fp;
     report.run_dir = local_get(options, 'run_dir', '');

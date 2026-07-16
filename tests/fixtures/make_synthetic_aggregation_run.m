@@ -97,6 +97,12 @@ function run_dir = make_synthetic_aggregation_run(opts)
         end
     end
 
+    if strcmp(analysis_set, 'sfa_sensitivity') || ...
+            logical(local_get(opts, 'include_dale_reference_cells', false))
+        write_dale_reference_cells(cfg, seeds, run_dir, include_autonomous, ...
+            absurd_marker, auto_by_seed, write_baselines, bundle_by_seed);
+    end
+
     % Extra / duplicate pairs after main write
     if isfield(opts, 'extra_seed') && ~isempty(opts.extra_seed)
         es = double(opts.extra_seed);
@@ -154,6 +160,51 @@ function run_dir = make_synthetic_aggregation_run(opts)
 end
 
 % =============================================================================
+function write_dale_reference_cells(cfg, seeds, run_dir, include_autonomous, ...
+        absurd_marker, auto_by_seed, write_baselines, bundle_by_seed)
+    dale_keys = cfg.benchmark_baselines.dale_mesn_control_keys;
+    ref_keys = {dale_keys.feat_x, dale_keys.feat_r};
+    ref_specs = cell(size(ref_keys));
+    for i = 1:numel(ref_keys)
+        ref_specs{i} = find_cell_spec(cfg.cells, ref_keys{i});
+        if isempty(ref_specs{i})
+            ref_specs{i} = minimal_dale_cell_spec(ref_keys{i});
+        end
+    end
+    for is = 1:numel(seeds)
+        seed = seeds(is);
+        for ic = 1:numel(ref_specs)
+            cell_spec = ref_specs{ic};
+            key = char(cell_spec.cell_key);
+            fname = fullfile(run_dir, 'cells', sprintf('seed_%d__%s.mat', seed, key));
+            if isfile(fname)
+                continue;
+            end
+            cr = build_cell_result(cfg, cell_spec, seed, include_autonomous, ...
+                absurd_marker, auto_by_seed);
+            if write_baselines && bundle_by_seed.isKey(seed)
+                cr.matched_baseline_bundle_id = char(bundle_by_seed(seed).bundle_id);
+            end
+            cell_result = cr; %#ok<NASGU>
+            save(fname, 'cell_result');
+        end
+    end
+end
+
+function spec = find_cell_spec(cells, key)
+    spec = [];
+    for i = 1:numel(cells)
+        if strcmp(char(cells{i}.cell_key), key)
+            spec = cells{i};
+            return;
+        end
+    end
+end
+
+function spec = minimal_dale_cell_spec(key)
+    spec = struct('cell_key', key, 'cell_id', 0);
+end
+
 function tf = should_omit(opts, seed, key, ~)
     tf = false;
     if isfield(opts, 'omit_seed') && ~isempty(opts.omit_seed) && ...
@@ -280,7 +331,11 @@ function cr = build_cell_result(cfg, cell_spec, seed, include_autonomous, ...
 
     ep = synthetic_endpoints(factors, seed, absurd_marker);
     horizons = fixed_horizons(cfg);
-    dale_key = dale_mesn_control_reference_key(factors.F, ...
+    dale_feature = factors.F;
+    if strcmp(dale_feature, 'all')
+        dale_feature = 'x';
+    end
+    dale_key = dale_mesn_control_reference_key(dale_feature, ...
         cfg.benchmark_baselines.dale_mesn_control_keys);
 
     cr = struct();

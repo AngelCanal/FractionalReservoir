@@ -57,6 +57,24 @@ Count: **6 × 1 × 1 × 2 = 12**. Do **not** merge sensitivity cells into the co
 They must never receive a confirmatory role. Any future training-only projection
 is deferred.
 
+**Publication inference policy (Phase 5B-B-R).** `feature_exploratory` is always
+descriptive / non-inferential: `publication_inference_complete=false`,
+`aggregation_inference_complete=false`, `inference_execution_status=
+complete_exploratory_noninferential`, every row `estimate_only`, `claim_allowed=false`.
+`publication_ready` can never become true from a feature-exploratory run.
+
+Only `confirmatory` and `sfa_sensitivity` are **publication-inferential**
+analysis sets. Runners accept `options.analysis_set` ∈
+`{confirmatory, sfa_sensitivity, feature_exploratory}` (default: confirmatory).
+
+**Protocol reference authority.** Callers must not supply `options.expected_cfg`
+for `protocol_tier=publication` readiness or validation. The next calibration
+phase will construct the expected publication reference internally from
+`mechanism_ablation_config('publication', analysis_set)`, a separately validated
+immutable calibration artifact, and its frozen operating point / provenance hash.
+Until that exists, publication fingerprint reference checks may correctly remain
+false for runs with `frozen_operating_point`.
+
 ### Explicit adaptation profiles
 
 Every publication profile stores: `label`, `n_a_E`, `n_a_I`, `tau_a_E`,
@@ -212,7 +230,7 @@ probability. **No Cliff's delta** (inappropriate for paired same-seed data).
 | Instantaneous readout pipeline check (legacy G5) | Ridge plumbing with direct input — **not** reservoir memory evidence; never satisfies publication readiness |
 | G6 | Three-seed pilot completes; structural assertions pass |
 | Matched seed contrast structure (Phase 5A) | Exact expected seed × cell matrix; seed-level contrast tables; no inference |
-| Aggregation inference (Phase 5B) | Validated artifact under `aggregation/inference/`; `publication_inference_complete` from independent reload only |
+| Aggregation inference (Phase 5B) | Validated artifact under `aggregation/inference/`; `publication_inference_complete` from independent reload only; inferential only for `confirmatory` / `sfa_sensitivity` |
 | G7 | Full ≥30-seed paired table with provenance and CI from raw cells |
 
 ### 9.1 Temporal learning gate (Phase 4B; implementation validity)

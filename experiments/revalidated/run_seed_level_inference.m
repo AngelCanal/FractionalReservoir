@@ -89,6 +89,15 @@ function result = run_seed_level_inference(run_dir, options)
     protocol_tier = char(local_get(cfg, 'protocol_tier', ''));
     analysis_set = char(local_get(cfg, 'active_analysis_set', ...
         local_get(plan, 'analysis_set', 'confirmatory')));
+    switch analysis_set
+        case {'confirmatory', 'sfa_sensitivity', 'feature_exploratory'}
+            % ok
+        otherwise
+            error('run_seed_level_inference:UnknownAnalysisSet', ...
+                ['active_analysis_set must be ''confirmatory'', ', ...
+                 '''sfa_sensitivity'', or ''feature_exploratory'', got %s.'], ...
+                analysis_set);
+    end
     is_publication = strcmp(protocol_tier, 'publication');
     is_diagnostic_tier = any(strcmp(protocol_tier, {'smoke', 'pilot'}));
 
@@ -189,7 +198,7 @@ function result = run_seed_level_inference(run_dir, options)
             row.sign_flip_method = flip.method;
             row.sign_flip_observed_statistic = flip.observed_statistic;
             row.sign_flip_assignments = flip.permutations_evaluated;
-            row.sign_flip_monte_carlo_se = flip.monte_carlo_se;
+            row.sign_flip_monte_carlo_se = local_get(flip, 'monte_carlo_se', NaN);
             row.sign_flip_rng_digest = flip_prov.digest;
             row.sign_flip_rng_seed = flip_prov.derived_seed;
         else
@@ -227,21 +236,9 @@ function result = run_seed_level_inference(run_dir, options)
     resampling_provenance_table = build_resampling_provenance_table(summaries);
     dimension_control_diagnostic = dim_control;
 
-    publication_inference_complete = false;
-    if is_publication && dim_control.overall_pass
-        publication_inference_complete = true;
-    elseif is_publication && ~strcmp(analysis_set, 'sfa_sensitivity')
-        publication_inference_complete = true;
-    end
-    if is_diagnostic_tier
-        publication_inference_complete = false;
-    end
-
-    inference_execution_status = 'complete';
-    if strcmp(analysis_set, 'sfa_sensitivity') && is_publication && ~dim_control.overall_pass
-        inference_execution_status = 'complete_dimension_control_failed';
-        publication_inference_complete = false;
-    end
+    [publication_inference_complete, aggregation_inference_complete, ...
+        inference_execution_status] = resolve_inference_completion( ...
+        analysis_set, protocol_tier, is_publication, is_diagnostic_tier, dim_control);
 
     aggregate_seed_inference = struct();
     aggregate_seed_inference.summaries = summaries;
@@ -256,7 +253,7 @@ function result = run_seed_level_inference(run_dir, options)
     result.inference_status = 'complete';
     result.inference_execution_status = inference_execution_status;
     result.publication_inference_complete = publication_inference_complete;
-    result.aggregation_inference_complete = publication_inference_complete;
+    result.aggregation_inference_complete = aggregation_inference_complete;
     result.protocol_tier = protocol_tier;
     result.analysis_set = analysis_set;
     result.inference_summary_table = inference_summary_table;

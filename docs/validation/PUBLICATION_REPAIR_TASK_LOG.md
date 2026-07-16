@@ -352,3 +352,28 @@ Aggregation; calibration; figures.
 | Publication inference executed | no (synthetic/diagnostic fixtures only) |
 | `publication_ready` | false (temporal learning gate + calibration remain) |
 | Phase 6 unblocked | no — repair temporal-learning/calibration blockers first |
+
+## Phase 5B-B-R checklist (fail-close analysis-set inference)
+
+- [x] Confirm branch `fix/mesn-publication-repair` at starting SHA `16794279`
+- [x] Regression tests reproduce feature_exploratory completion defect and expected_cfg tautology
+- [x] Explicit inferential analysis-set switch in `run_seed_level_inference.m`
+- [x] `is_publication_inferential_analysis_set.m` helper (confirmatory | sfa_sensitivity only)
+- [x] Harden `validate_aggregation_inference_artifact.m` (independent analysis-set eligibility)
+- [x] Harden `evaluate_publication_readiness.m` (`analysis_set_is_publication_inferential`; forbid `expected_cfg`)
+- [x] Forbid `expected_cfg` in `validate_publication_run.m` for publication runs
+- [x] Runner `options.analysis_set` for full / smoke / pilot
+- [x] Scientific + integration tests; full suite pass; docs; commit; push
+
+### Phase 5B-B-R starting SHA
+
+`16794279e1a978016f9890e99003069495d97915`
+
+### Phase 5B-B-R policy notes
+
+- **Publication-inferential:** `confirmatory`, `sfa_sensitivity` only.
+- **Always descriptive:** `feature_exploratory` (executable but never `publication_ready`).
+- **Caller `expected_cfg`:** forbidden for `protocol_tier=publication`.
+- **Calibration authority (next phase):** internal reference from preregistered config +
+  validated immutable calibration artifact + frozen operating point.
+- **`publication_ready`:** remains false (calibration artifact, temporal gate, etc.).

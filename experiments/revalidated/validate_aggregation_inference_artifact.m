@@ -59,6 +59,32 @@ function report = validate_aggregation_inference_artifact(run_dir, cfg)
         sprintf('manifest=%s cfg=%s', char(manifest.protocol_tier), ...
         char(cfg.protocol_tier)));
 
+    manifest_analysis_set = char(local_get(manifest, 'analysis_set', ''));
+    cfg_analysis_set = char(local_get(cfg, 'active_analysis_set', ...
+        local_get(plan, 'analysis_set', '')));
+    known_sets = {'confirmatory', 'sfa_sensitivity', 'feature_exploratory'};
+    analysis_set_known = ismember(manifest_analysis_set, known_sets);
+    checks{end+1} = make_check('analysis_set_known', analysis_set_known, ...
+        sprintf('analysis_set=%s', manifest_analysis_set));
+    if ~analysis_set_known
+        reasons{end+1} = 'unknown_analysis_set'; %#ok<AGROW>
+    end
+
+    analysis_set_cfg_match = strcmp(manifest_analysis_set, cfg_analysis_set);
+    checks{end+1} = make_check('analysis_set_cfg_match', analysis_set_cfg_match, ...
+        sprintf('manifest=%s cfg=%s', manifest_analysis_set, cfg_analysis_set));
+    if ~analysis_set_cfg_match
+        reasons{end+1} = 'analysis_set_cfg_mismatch'; %#ok<AGROW>
+    end
+
+    analysis_set_publication_inferential = ...
+        is_publication_inferential_analysis_set(manifest_analysis_set);
+    checks{end+1} = make_check('analysis_set_publication_inferential', ...
+        analysis_set_publication_inferential || ...
+        strcmp(manifest_analysis_set, 'feature_exploratory'), ...
+        sprintf('analysis_set=%s inferential=%d', manifest_analysis_set, ...
+        analysis_set_publication_inferential));
+
     plan_hash_ok = isfield(manifest, 'inference_plan_hash') && ...
         strcmp(char(manifest.inference_plan_hash), plan_hash);
     checks{end+1} = make_check('inference_plan_hash_match', plan_hash_ok, ...
@@ -157,17 +183,40 @@ function report = validate_aggregation_inference_artifact(run_dir, cfg)
     dim_ok = verify_dimension_control(inf_dir, manifest);
     checks{end+1} = make_check('dimension_control_valid', dim_ok.pass, dim_ok.detail);
 
+    fe_ok = verify_feature_exploratory_noninferential(summary_T, manifest);
+    checks{end+1} = make_check('feature_exploratory_noninferential', fe_ok.pass, ...
+        fe_ok.detail);
+    if ~fe_ok.pass
+        reasons{end+1} = 'feature_exploratory_inferential_violation'; %#ok<AGROW>
+    end
+
+    completion_ok = verify_inference_completion_consistent(manifest, cfg, ...
+        summary_T, plan, inf_dir);
+    checks{end+1} = make_check( ...
+        'inference_completion_consistent_with_analysis_set', ...
+        completion_ok.pass, completion_ok.detail);
+    if ~completion_ok.pass
+        reasons{end+1} = 'inference_completion_inconsistent'; %#ok<AGROW>
+    end
+
     check_arr = [checks{:}];
     all_pass = all([check_arr.pass]);
 
-    pub_complete = isfield(manifest, 'publication_inference_complete') && ...
-        logical(manifest.publication_inference_complete);
-    if ~strcmp(char(local_get(manifest, 'protocol_tier', '')), 'publication')
-        pub_complete = false;
+    recomputed_pub_complete = recompute_publication_inference_complete( ...
+        manifest, summary_T, plan, inf_dir, all_pass);
+    manifest_pub_complete = logical(local_get(manifest, ...
+        'publication_inference_complete', false));
+    if strcmp(char(local_get(manifest, 'protocol_tier', '')), 'publication') && ...
+            strcmp(manifest_analysis_set, 'feature_exploratory') && ...
+            manifest_pub_complete
+        all_pass = false;
+        recomputed_pub_complete = false;
     end
-    aggregation_complete = all_pass && pub_complete;
+
+    aggregation_complete = all_pass && recomputed_pub_complete;
     checks{end+1} = make_check('aggregation_inference_complete', ...
-        aggregation_complete, sprintf('valid=%d pub_complete=%d', all_pass, pub_complete));
+        aggregation_complete, sprintf('valid=%d recomputed_pub_complete=%d', ...
+        all_pass, recomputed_pub_complete));
 
     manifest_hash = '';
     if isfield(manifest, 'manifest_hash')
@@ -175,7 +224,7 @@ function report = validate_aggregation_inference_artifact(run_dir, cfg)
     end
 
     report = build_report(check_arr, reasons, manifest_hash, all_pass, aggregation_complete);
-    report.publication_inference_complete = pub_complete;
+    report.publication_inference_complete = recomputed_pub_complete;
     report.manifest = manifest;
 end
 
@@ -448,6 +497,115 @@ function out = verify_provenance(manifest, summary_T)
     end
 end
 
+function out = verify_feature_exploratory_noninferential(summary_T, manifest)
+    out = struct('pass', true, 'detail', 'not_applicable');
+    if ~strcmp(char(local_get(manifest, 'analysis_set', '')), 'feature_exploratory')
+        return;
+    end
+    out.detail = 'ok';
+    if logical(local_get(manifest, 'publication_inference_complete', false))
+        out.pass = false;
+        out.detail = 'publication_inference_complete_true';
+        return;
+    end
+    if ~istable(summary_T)
+        return;
+    end
+    for r = 1:height(summary_T)
+        row = summary_T(r, :);
+        if isfinite(double(row.p_value))
+            out.pass = false;
+            out.detail = sprintf('row_%d_finite_p', r);
+            return;
+        end
+        if logical(row.holm_reject)
+            out.pass = false;
+            out.detail = sprintf('row_%d_holm_reject', r);
+            return;
+        end
+        if logical(row.claim_allowed)
+            out.pass = false;
+            out.detail = sprintf('row_%d_claim_allowed', r);
+            return;
+        end
+        if ~strcmp(char(row.executed_action), 'estimate_only')
+            out.pass = false;
+            out.detail = sprintf('row_%d_not_estimate_only', r);
+            return;
+        end
+    end
+end
+
+function out = verify_inference_completion_consistent(manifest, cfg, summary_T, plan, inf_dir)
+    out = struct('pass', true, 'detail', 'ok');
+    analysis_set = char(local_get(manifest, 'analysis_set', ''));
+    tier = char(local_get(manifest, 'protocol_tier', ''));
+    manifest_pub = logical(local_get(manifest, 'publication_inference_complete', false));
+    expected_pub = recompute_publication_inference_complete(manifest, summary_T, ...
+        plan, inf_dir, true);
+
+    if strcmp(analysis_set, 'feature_exploratory')
+        if manifest_pub
+            out.pass = false;
+            out.detail = 'feature_exploratory_manifest_complete_true';
+        end
+        return;
+    end
+
+    if ~strcmp(tier, 'publication')
+        if manifest_pub
+            out.pass = false;
+            out.detail = 'non_publication_manifest_complete_true';
+        end
+        return;
+    end
+
+    if ~is_publication_inferential_analysis_set(analysis_set)
+        if manifest_pub
+            out.pass = false;
+            out.detail = 'noninferential_manifest_complete_true';
+        end
+        return;
+    end
+
+    if manifest_pub ~= expected_pub
+        out.pass = false;
+        out.detail = sprintf('manifest=%d expected=%d', manifest_pub, expected_pub);
+    end
+
+    cfg_set = char(local_get(cfg, 'active_analysis_set', ''));
+    if ~strcmp(analysis_set, cfg_set)
+        out.pass = false;
+        out.detail = sprintf('manifest_cfg_mismatch manifest=%s cfg=%s', ...
+            analysis_set, cfg_set);
+    end
+end
+
+function tf = recompute_publication_inference_complete(manifest, summary_T, plan, inf_dir, structural_pass)
+    tf = false;
+    tier = char(local_get(manifest, 'protocol_tier', ''));
+    analysis_set = char(local_get(manifest, 'analysis_set', ''));
+    if ~strcmp(tier, 'publication') || ~structural_pass
+        return;
+    end
+    if ~is_publication_inferential_analysis_set(analysis_set)
+        return;
+    end
+    fam = verify_families(summary_T, plan, manifest);
+    if ~fam.pass
+        return;
+    end
+    switch analysis_set
+        case 'confirmatory'
+            tf = true;
+        case 'sfa_sensitivity'
+            dim = verify_dimension_control(inf_dir, manifest);
+            tf = dim.pass;
+        otherwise
+            tf = false;
+    end
+end
+
 function out = verify_dimension_control(inf_dir, manifest)
     out = struct('pass', true, 'detail', 'ok');
     if ~strcmp(char(local_get(manifest, 'analysis_set', '')), 'sfa_sensitivity')
@@ -461,13 +619,12 @@ function out = verify_dimension_control(inf_dir, manifest)
         return;
     end
     if strcmp(char(local_get(manifest, 'protocol_tier', '')), 'publication') && ...
-            isfield(manifest, 'publication_inference_complete') && ...
-            logical(manifest.publication_inference_complete)
+            strcmp(char(local_get(manifest, 'analysis_set', '')), 'sfa_sensitivity')
         S = load(path, 'dimension_control_diagnostic');
         d = S.dimension_control_diagnostic;
         if isfield(d, 'overall_pass') && ~logical(d.overall_pass)
             out.pass = false;
-            out.detail = 'dimension_control_failed_but_complete';
+            out.detail = 'dimension_control_failed';
         end
     end
 end

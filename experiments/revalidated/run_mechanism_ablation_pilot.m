@@ -17,7 +17,8 @@ function [result, run_dir] = run_mechanism_ablation_pilot(options)
     this_dir = fileparts(mfilename('fullpath'));
     addpath(this_dir);
 
-    cfg = mechanism_ablation_config('pilot');
+    analysis_set = resolve_runner_analysis_set(options);
+    cfg = mechanism_ablation_config('pilot', analysis_set);
     assert(strcmp(cfg.protocol_tier, 'pilot'), 'Pilot must use protocol_tier=pilot.');
     assert(isequal(cfg.seeds(:)', [1729, 2718, 31415]), ...
         'Pilot must use exactly seeds 1729, 2718, 31415.');
@@ -64,6 +65,7 @@ function [result, run_dir] = run_mechanism_ablation_pilot(options)
         mkdir(cells_dir);
         save_run_manifest(ctx, cfg, struct( ...
             'protocol_tier', cfg.protocol_tier, ...
+            'active_analysis_set', cfg.active_analysis_set, ...
             'protocol_fingerprint', cfg.protocol_fingerprint, ...
             'pilot_not_for_publication', true, ...
             'n_cells', n_cells, ...
@@ -189,6 +191,7 @@ function [result, run_dir] = run_mechanism_ablation_pilot(options)
     end
 
     result = struct();
+    result.analysis_set = cfg.active_analysis_set;
     result.protocol_tier = cfg.protocol_tier;
     result.protocol_fingerprint = cfg.protocol_fingerprint;
     result.pilot_not_for_publication = true;

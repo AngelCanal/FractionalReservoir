@@ -253,15 +253,22 @@ function m = manifest_for_hash(manifest)
 end
 
 function s = sanitize_for_hash(s)
-    if isstruct(s)
-        fn = fieldnames(s);
-        for i = 1:numel(fn)
-            v = s.(fn{i});
-            if isa(v, 'RandStream')
-                s = rmfield(s, fn{i});
-            elseif isstruct(v)
-                s.(fn{i}) = sanitize_for_hash(v);
-            end
+    if ~isstruct(s)
+        return;
+    end
+    if numel(s) ~= 1
+        for i = 1:numel(s)
+            s(i) = sanitize_for_hash(s(i));
+        end
+        return;
+    end
+    fn = fieldnames(s);
+    for i = 1:numel(fn)
+        v = s.(fn{i});
+        if isa(v, 'RandStream')
+            s = rmfield(s, fn{i});
+        elseif isstruct(v)
+            s.(fn{i}) = sanitize_for_hash(v);
         end
     end
 end
