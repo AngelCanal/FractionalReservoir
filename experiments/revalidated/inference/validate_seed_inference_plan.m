@@ -33,6 +33,8 @@ function result = validate_seed_inference_plan(plan)
             'Unexpected protocol_version: %s.', plan.protocol_version);
     end
 
+    validate_frozen_numerical_fields(plan);
+
     registry = plan.hypothesis_registry;
     if ~iscell(registry)
         error('validate_seed_inference_plan:BadRegistry', ...
@@ -115,16 +117,47 @@ function result = validate_seed_inference_plan(plan)
 end
 
 function key = hypothesis_key(h)
-    parts = {h.source_table, h.contrast_id, h.endpoint_id};
-    if isfield(h, 'baseline_name')
-        parts{end+1} = h.baseline_name; %#ok<AGROW>
-    else
-        parts{end+1} = '';
+    baseline = '';
+    if isfield(h, 'baseline_name') && ~isempty(h.baseline_name)
+        baseline = char(h.baseline_name);
     end
-    if isfield(h, 'horizon_rule')
-        parts{end+1} = h.horizon_rule; %#ok<AGROW>
-    else
-        parts{end+1} = '';
+    horizon = '';
+    if isfield(h, 'horizon_rule') && ~isempty(h.horizon_rule)
+        horizon = char(h.horizon_rule);
     end
-    key = strjoin(parts, '|');
+    key = build_inference_hypothesis_key(h.source_table, h.contrast_id, ...
+        h.endpoint_id, baseline, horizon);
+end
+
+function validate_frozen_numerical_fields(plan)
+    if ~isfield(plan, 'alpha') || plan.alpha ~= 0.05
+        error('validate_seed_inference_plan:FrozenAlpha', ...
+            'alpha must be exactly 0.05.');
+    end
+    if ~isfield(plan, 'bootstrap_replicates') || plan.bootstrap_replicates ~= 20000
+        error('validate_seed_inference_plan:FrozenBootstrap', ...
+            'bootstrap_replicates must be exactly 20000.');
+    end
+    if ~isfield(plan, 'sign_flip_exact_max_n') || plan.sign_flip_exact_max_n ~= 16
+        error('validate_seed_inference_plan:FrozenExactMaxN', ...
+            'sign_flip_exact_max_n must be exactly 16.');
+    end
+    if ~isfield(plan, 'sign_flip_monte_carlo_replicates') || ...
+            plan.sign_flip_monte_carlo_replicates ~= 100000
+        error('validate_seed_inference_plan:FrozenMcReplicates', ...
+            'sign_flip_monte_carlo_replicates must be exactly 100000.');
+    end
+    if ~isfield(plan, 'alternative') || ~strcmp(plan.alternative, 'two_sided')
+        error('validate_seed_inference_plan:FrozenAlternative', ...
+            'alternative must be two_sided.');
+    end
+    if ~isfield(plan, 'multiplicity_method') || ...
+            ~strcmp(plan.multiplicity_method, 'holm_bonferroni')
+        error('validate_seed_inference_plan:FrozenMultiplicity', ...
+            'multiplicity_method must be holm_bonferroni.');
+    end
+    if ~isfield(plan, 'independent_unit') || ~strcmp(plan.independent_unit, 'base_seed')
+        error('validate_seed_inference_plan:FrozenIndependentUnit', ...
+            'independent_unit must be base_seed.');
+    end
 end

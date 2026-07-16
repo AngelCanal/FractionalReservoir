@@ -75,7 +75,6 @@ function testPublicationReadinessStructureMayPassInferenceFalse(testCase)
     eval_opts.has_artifact_hashes = false;
     eval_opts.run_dir = run_dir;
     eval_opts.aggregation = agg;
-    eval_opts.aggregation_inference_complete = false;
     report = evaluate_publication_readiness(cfg, eval_opts);
 
     testCase.verifyTrue(report.matched_seed_contrast_structure_complete);

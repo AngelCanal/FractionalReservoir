@@ -21,7 +21,7 @@ function testHelpersDoNotMutateGlobalRng(testCase)
     [sb, ~] = derive_inference_rng_seed(ns_boot, 55021);
     [sf, ~] = derive_inference_rng_seed(ns_flip, 55021);
 
-    bootstrap_seed_effect_ci(effects, 20000, 0.05, sb);
+    bootstrap_seed_effect_ci(effects, 20000, 0.05, sb, ns_boot);
     paired_sign_flip_test(effects, struct('exact_max_n', 16, ...
         'mc_replicates', 100000, 'stream', sf));
     holm_bonferroni_adjust([0.01, 0.04, 0.03], 0.05);

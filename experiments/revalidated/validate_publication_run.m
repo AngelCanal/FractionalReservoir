@@ -76,6 +76,22 @@ function report = validate_publication_run(run_dir, options)
         report.temporal_learning_gate = gate_result;
     end
 
+    inf_val = struct('valid', false, 'detail', 'not_validated', ...
+        'manifest_hash', '');
+    try
+        inf_report = validate_aggregation_inference_artifact(run_dir, cfg);
+        inf_val.valid = inf_report.valid;
+        inf_val.detail = strjoin(inf_report.reasons, ',');
+        if isempty(inf_val.detail)
+            inf_val.detail = 'valid';
+        end
+        inf_val.manifest_hash = inf_report.manifest_hash;
+        inf_val.aggregation_inference_complete = inf_report.aggregation_inference_complete;
+    catch ME
+        inf_val.detail = ME.identifier;
+    end
+    report.inference_validation = inf_val;
+
     % Explicit path immutability reminder for callers.
     report.checks(end+1) = struct( ...
         'name', 'result_path_explicit', ...
@@ -92,21 +108,35 @@ function report = validate_publication_run(run_dir, options)
         'pass', gate_validation_ok, ...
         'detail', gate_validation_detail);
 
+    report.checks(end+1) = struct( ...
+        'name', 'aggregation_inference_independent_validation', ...
+        'pass', inf_val.valid, ...
+        'detail', inf_val.detail);
+
     % Recompute publication_ready with the appended checks (fail closed).
     names = {report.checks.name};
     pass = [report.checks.pass];
     artifact_ok = all(pass(strcmp(names, 'result_path_explicit'))) && ...
         all(pass(strcmp(names, 'temporal_learning_gate_artifact_present'))) && ...
-        all(pass(strcmp(names, 'temporal_learning_gate_independent_validation')));
+        all(pass(strcmp(names, 'temporal_learning_gate_independent_validation'))) && ...
+        all(pass(strcmp(names, 'aggregation_inference_independent_validation')));
     report.all_qa_checks_pass = report.all_qa_checks_pass && artifact_ok;
     if ~isfield(report, 'all_required_secondary_endpoints_complete')
         report.all_required_secondary_endpoints_complete = false;
+    end
+    if ~isfield(report, 'matched_seed_contrast_structure_complete')
+        report.matched_seed_contrast_structure_complete = false;
+    end
+    if ~isfield(report, 'aggregation_inference_complete')
+        report.aggregation_inference_complete = false;
     end
     report.publication_ready = report.publication_protocol_complete && ...
         report.structurally_complete && ...
         report.all_primary_endpoints_finite && ...
         report.all_qa_checks_pass && ...
         report.all_required_secondary_endpoints_complete && ...
+        report.matched_seed_contrast_structure_complete && ...
+        report.aggregation_inference_complete && ...
         report.artifact_package_complete;
 end
 

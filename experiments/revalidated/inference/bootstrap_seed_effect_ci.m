@@ -1,19 +1,34 @@
-function out = bootstrap_seed_effect_ci(effect_oriented, n_replicates, alpha, stream)
+function out = bootstrap_seed_effect_ci(effect_oriented, n_replicates, alpha, stream, rng_namespace)
 %BOOTSTRAP_SEED_EFFECT_CI  Seed-level percentile bootstrap intervals.
 %
 %   out = bootstrap_seed_effect_ci(effect_oriented, n_replicates, alpha, stream)
+%   out = bootstrap_seed_effect_ci(..., rng_namespace)
 %
 % Resamples seed-effect rows with replacement. Does not mutate global RNG.
+% Never persists RandStream handles; only serializable provenance.
 
     if nargin < 4 || isempty(stream)
         error('bootstrap_seed_effect_ci:MissingStream', ...
             'A local RandStream must be supplied.');
+    end
+    if ~isa(stream, 'RandStream')
+        error('bootstrap_seed_effect_ci:InvalidStream', ...
+            'stream must be a RandStream object.');
     end
     if nargin < 3 || isempty(alpha)
         alpha = 0.05;
     end
     if nargin < 2 || isempty(n_replicates)
         n_replicates = 20000;
+    end
+    if ~(isscalar(n_replicates) && isfinite(n_replicates) && ...
+            n_replicates == round(n_replicates) && n_replicates > 0)
+        error('bootstrap_seed_effect_ci:InvalidReplicates', ...
+            'n_replicates must be a positive finite integer.');
+    end
+    if ~(isscalar(alpha) && isfinite(alpha) && alpha > 0 && alpha < 1)
+        error('bootstrap_seed_effect_ci:InvalidAlpha', ...
+            'alpha must satisfy 0 < alpha < 1.');
     end
 
     effect_oriented = effect_oriented(:);
@@ -51,5 +66,9 @@ function out = bootstrap_seed_effect_ci(effect_oriented, n_replicates, alpha, st
     out.median_bootstrap_se = std(boot_median, 0);
     out.rng_algorithm = stream.Type;
     out.rng_seed = stream.Seed;
-    out.rng_stream = stream;
+    if nargin >= 5 && ~isempty(rng_namespace)
+        out.rng_namespace_digest = canonical_sha256(rng_namespace);
+    else
+        out.rng_namespace_digest = '';
+    end
 end

@@ -21,7 +21,7 @@ function [stream, provenance] = derive_inference_rng_seed(namespace, master_seed
     hex8 = digest(1:8);
     seed_int = hex2dec(hex8);
     max_seed = 2^31 - 2;
-    derived_seed = mod(seed_int, max_seed - 1) + 1;
+    derived_seed = mod(seed_int, max_seed) + 1;
 
     stream = RandStream('mt19937ar', 'Seed', derived_seed);
 

@@ -137,6 +137,21 @@ function [result, run_dir] = run_mechanism_ablation_smoke(options)
                 'error_id', ME.identifier, ...
                 'error_message', ME.message);
         end
+        if strcmp(char(local_get(aggregate, 'status', '')), 'ok') && ...
+                logical(local_get(aggregate, 'matched_seed_contrast_structure_complete', false))
+            try
+                inference = run_seed_level_inference(run_dir, struct('save', true));
+                aggregate.inference_status = inference.inference_status;
+                aggregate.aggregation_inference_complete = false;
+            catch ME
+                inference = struct('status', 'failed', 'error_id', ME.identifier, ...
+                    'aggregation_inference_complete', false);
+            end
+        else
+            inference = struct('status', 'skipped', 'aggregation_inference_complete', false);
+        end
+    else
+        inference = struct('status', 'skipped', 'aggregation_inference_complete', false);
     end
 
     % Final cfg is established (including any frozen operating point) — gate once.
@@ -151,8 +166,7 @@ function [result, run_dir] = run_mechanism_ablation_smoke(options)
         'has_artifact_hashes', false, ...
         'run_dir', run_dir, ...
         'temporal_learning_gate', temporal_gate, ...
-        'aggregation', aggregate, ...
-        'aggregation_inference_complete', false));
+        'aggregation', aggregate));
 
     if isfield(temporal_gate, 'evaluation_provenance') && ...
             strcmp(char(temporal_gate.evaluation_provenance.mode), 'injected_test_fixture')
@@ -177,6 +191,15 @@ function [result, run_dir] = run_mechanism_ablation_smoke(options)
     result.run_dir = run_dir;
     result.status = ternary(n_fail == 0, 'ok', 'failed_cells');
     result = attach_readiness_fields(result, readiness);
+    result.inference = inference;
+    result.inference_status = char(local_get(inference, 'inference_status', ...
+        local_get(inference, 'status', 'skipped')));
+    result.aggregation_inference_complete = readiness.aggregation_inference_complete;
+    if isfield(inference, 'inference_manifest_hash')
+        result.inference_manifest_hash = inference.inference_manifest_hash;
+    else
+        result.inference_manifest_hash = '';
+    end
     result.publication_protocol_complete = false;
     result.publication_ready = false;
 
@@ -214,7 +237,7 @@ function result = attach_readiness_fields(result, readiness)
     else
         result.matched_seed_contrast_structure_complete = false;
     end
-    result.aggregation_inference_complete = false;
+    result.aggregation_inference_complete = readiness.aggregation_inference_complete;
     result.artifact_package_complete = readiness.artifact_package_complete;
     result.publication_ready = readiness.publication_ready;
     result.readiness = readiness;

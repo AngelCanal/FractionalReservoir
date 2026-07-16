@@ -26,8 +26,38 @@ function result = evaluate_dimension_control_equivalence(treatment_values, ...
             'treatment, control, and seed_ids must have equal length.');
     end
 
+    if ~all(isfinite(treatment_values))
+        error('evaluate_dimension_control_equivalence:NonFiniteTreatment', ...
+            'treatment_values must be finite.');
+    end
+    if ~all(isfinite(control_values))
+        error('evaluate_dimension_control_equivalence:NonFiniteControl', ...
+            'control_values must be finite.');
+    end
+    if ~all(isfinite(seed_ids))
+        error('evaluate_dimension_control_equivalence:NonFiniteSeed', ...
+            'seed_ids must be finite.');
+    end
+    if ~all(abs(seed_ids - round(seed_ids)) < 1e-12)
+        error('evaluate_dimension_control_equivalence:NonIntegerSeed', ...
+            'seed_ids must be integers.');
+    end
+    if numel(unique(seed_ids)) ~= numel(seed_ids)
+        error('evaluate_dimension_control_equivalence:DuplicateSeed', ...
+            'seed_ids must be unique.');
+    end
+
     abs_tol = cfg_equiv.absolute_tolerance;
     rel_tol = cfg_equiv.relative_tolerance;
+    if ~(isscalar(abs_tol) && isfinite(abs_tol) && abs_tol >= 0)
+        error('evaluate_dimension_control_equivalence:InvalidAbsTol', ...
+            'absolute_tolerance must be finite and nonnegative.');
+    end
+    if ~(isscalar(rel_tol) && isfinite(rel_tol) && rel_tol >= 0)
+        error('evaluate_dimension_control_equivalence:InvalidRelTol', ...
+            'relative_tolerance must be finite and nonnegative.');
+    end
+
     delta_raw = treatment_values - control_values;
 
     allowed_error = abs_tol + rel_tol * max(abs(treatment_values), abs(control_values));

@@ -186,8 +186,17 @@ probability. **No Cliff's delta** (inappropriate for paired same-seed data).
   are deduplicated to one row per base seed.
 - Dale-only references resolve from paired same-seed, same-feature control cells
   (never conventional ESN; never cross-feature).
+- Phase 5B-B (`seed_level_inference_artifact_v1`): execute inference from immutable
+  Phase 5A tables under `run_dir/aggregation/inference/`; independent validation
+  via `validate_aggregation_inference_artifact`; **allowlist testing policy** —
+  only registry entries with `inference_action=test_and_holm` receive Holm
+  correction; all other rows are `estimate_only` regardless of contrast role,
+  endpoint role, or label; source table content hashes bound to Phase 5A manifest;
+  `options.aggregation_inference_complete` forbidden for publication readiness;
+  nonsignificant but correctly computed inference is **complete**; temporal
+  learning gate failure still blocks `publication_ready`.
 - Phase 5B: bootstrap CIs, sign-flip / effect sizes, Holm correction, and
-  final inference validation on the Phase 5A tables (execution in Phase 5B-B).
+  final inference validation on the Phase 5A tables (executed in Phase 5B-B).
 - Keep ODE and DDE stability evidence separate; never attach an ODE LLE to a
   delayed task result. DDE autonomous rollout remains unsupported.
 - Aggregate tables by reading immutable per-seed result files; never silently
@@ -203,7 +212,7 @@ probability. **No Cliff's delta** (inappropriate for paired same-seed data).
 | Instantaneous readout pipeline check (legacy G5) | Ridge plumbing with direct input — **not** reservoir memory evidence; never satisfies publication readiness |
 | G6 | Three-seed pilot completes; structural assertions pass |
 | Matched seed contrast structure (Phase 5A) | Exact expected seed × cell matrix; seed-level contrast tables; no inference |
-| Aggregation inference (Phase 5B) | Required before `publication_ready` |
+| Aggregation inference (Phase 5B) | Validated artifact under `aggregation/inference/`; `publication_inference_complete` from independent reload only |
 | G7 | Full ≥30-seed paired table with provenance and CI from raw cells |
 
 ### 9.1 Temporal learning gate (Phase 4B; implementation validity)

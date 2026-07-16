@@ -92,9 +92,9 @@ function testBootstrapDeterministicAndShape(testCase)
     effects = [0.1, -0.2, 0.3, -0.05, 0.15];
     ns = struct('operation', 'bootstrap', 'contrast_id', 'a', 'endpoint_id', 'b');
     [stream, ~] = derive_inference_rng_seed(ns, 55021);
-    b1 = bootstrap_seed_effect_ci(effects, 20000, 0.05, stream);
+    b1 = bootstrap_seed_effect_ci(effects, 20000, 0.05, stream, ns);
     [stream2, ~] = derive_inference_rng_seed(ns, 55021);
-    b2 = bootstrap_seed_effect_ci(effects, 20000, 0.05, stream2);
+    b2 = bootstrap_seed_effect_ci(effects, 20000, 0.05, stream2, ns);
     testCase.verifyEqual(b1.mean_ci, b2.mean_ci, 'AbsTol', 1e-12);
     testCase.verifyEqual(b1.n_replicates, 20000);
     testCase.verifyEqual(numel(b1.mean_ci), 2);
@@ -105,7 +105,7 @@ end
 function testBootstrapConstantVector(testCase)
     effects = ones(8, 1) * 0.5;
     [stream, ~] = derive_inference_rng_seed(struct('op', 'boot_const'), 55021);
-    b = bootstrap_seed_effect_ci(effects, 20000, 0.05, stream);
+    b = bootstrap_seed_effect_ci(effects, 20000, 0.05, stream, struct('op', 'boot_const'));
     testCase.verifyEqual(b.mean_ci(1), 0.5, 'AbsTol', 1e-12);
     testCase.verifyEqual(b.mean_ci(2), 0.5, 'AbsTol', 1e-12);
 end

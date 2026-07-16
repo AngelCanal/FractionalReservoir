@@ -128,6 +128,7 @@ function [result, run_dir] = run_mechanism_ablation_full(options)
     end
 
     aggregate = struct('status', 'not_computed');
+    inference = struct('status', 'skipped', 'aggregation_inference_complete', false);
     if save_results && n_fail == 0 && ~isempty(cell_results)
         allow_incomplete = used_reduced_lengths || ...
             ~strcmp(cfg.protocol_tier, 'publication') || ...
@@ -138,6 +139,24 @@ function [result, run_dir] = run_mechanism_ablation_full(options)
             agg_opts.allow_incomplete_diagnostic = true;
         end
         aggregate = aggregate_ablation_results(run_dir, agg_opts);
+        if strcmp(char(local_get(aggregate, 'status', '')), 'ok') && ...
+                logical(local_get(aggregate, 'matched_seed_contrast_structure_complete', false)) && ...
+                strcmp(cfg.protocol_tier, 'publication') && ~used_reduced_lengths && ...
+                numel(seeds) == numel(cfg.seeds) && numel(cells) == numel(cfg.cells)
+            inference = run_seed_level_inference(run_dir, struct('save', true));
+            aggregate.inference_status = inference.inference_status;
+            aggregate.aggregation_inference_complete = inference.aggregation_inference_complete;
+        elseif strcmp(char(local_get(aggregate, 'status', '')), 'ok') && ...
+                logical(local_get(aggregate, 'matched_seed_contrast_structure_complete', false))
+            try
+                inference = run_seed_level_inference(run_dir, struct('save', true));
+                aggregate.inference_status = inference.inference_status;
+                aggregate.aggregation_inference_complete = false;
+            catch ME
+                inference = struct('status', 'failed', 'error_id', ME.identifier, ...
+                    'aggregation_inference_complete', false);
+            end
+        end
     end
 
     % Final cfg is established (including frozen OP / smoke rebuild) — gate once.
@@ -151,8 +170,7 @@ function [result, run_dir] = run_mechanism_ablation_full(options)
         'has_artifact_hashes', false, ...
         'run_dir', run_dir, ...
         'temporal_learning_gate', temporal_gate, ...
-        'aggregation', aggregate, ...
-        'aggregation_inference_complete', false));
+        'aggregation', aggregate));
 
     % Hard overrides for reduced/smoke masquerading as full.
     if used_reduced_lengths || ~strcmp(cfg.protocol_tier, 'publication')
@@ -187,7 +205,15 @@ function [result, run_dir] = run_mechanism_ablation_full(options)
     end
     result.matched_seed_contrast_structure_complete = ...
         local_get(readiness, 'matched_seed_contrast_structure_complete', false);
-    result.aggregation_inference_complete = false;
+    result.inference = inference;
+    result.inference_status = char(local_get(inference, 'inference_status', ...
+        local_get(inference, 'status', 'skipped')));
+    result.aggregation_inference_complete = readiness.aggregation_inference_complete;
+    if isfield(inference, 'inference_manifest_hash')
+        result.inference_manifest_hash = inference.inference_manifest_hash;
+    else
+        result.inference_manifest_hash = '';
+    end
     result.artifact_package_complete = readiness.artifact_package_complete;
     result.publication_ready = readiness.publication_ready;
     result.readiness = readiness;

@@ -151,6 +151,21 @@ function [result, run_dir] = run_mechanism_ablation_pilot(options)
                 'error_id', ME.identifier, ...
                 'error_message', ME.message);
         end
+        if strcmp(char(local_get(aggregate, 'status', '')), 'ok') && ...
+                logical(local_get(aggregate, 'matched_seed_contrast_structure_complete', false))
+            try
+                inference = run_seed_level_inference(run_dir, struct('save', true));
+                aggregate.inference_status = inference.inference_status;
+                aggregate.aggregation_inference_complete = false;
+            catch ME
+                inference = struct('status', 'failed', 'error_id', ME.identifier, ...
+                    'aggregation_inference_complete', false);
+            end
+        else
+            inference = struct('status', 'skipped', 'aggregation_inference_complete', false);
+        end
+    else
+        inference = struct('status', 'skipped', 'aggregation_inference_complete', false);
     end
 
     % Final cfg is established (including any frozen operating point) — gate once.
@@ -165,8 +180,7 @@ function [result, run_dir] = run_mechanism_ablation_pilot(options)
         'has_artifact_hashes', false, ...
         'run_dir', run_dir, ...
         'temporal_learning_gate', temporal_gate, ...
-        'aggregation', aggregate, ...
-        'aggregation_inference_complete', false));
+        'aggregation', aggregate));
 
     if isfield(temporal_gate, 'evaluation_provenance') && ...
             strcmp(char(temporal_gate.evaluation_provenance.mode), 'injected_test_fixture')
@@ -189,6 +203,15 @@ function [result, run_dir] = run_mechanism_ablation_pilot(options)
     result.cell_results = cell_results;
     result.seed_baseline_index = seed_baseline_index;
     result.aggregate = aggregate;
+    result.inference = inference;
+    result.inference_status = char(local_get(inference, 'inference_status', ...
+        local_get(inference, 'status', 'skipped')));
+    result.aggregation_inference_complete = readiness.aggregation_inference_complete;
+    if isfield(inference, 'inference_manifest_hash')
+        result.inference_manifest_hash = inference.inference_manifest_hash;
+    else
+        result.inference_manifest_hash = '';
+    end
     result.temporal_learning_gate = temporal_gate;
     result.run_dir = run_dir;
     result.status = ternary(n_fail == 0 && assertions.all_pass, 'ok', 'failed_assertions');

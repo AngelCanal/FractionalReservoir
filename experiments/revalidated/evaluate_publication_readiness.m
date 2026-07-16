@@ -127,11 +127,37 @@ function report = evaluate_publication_readiness(cfg, options)
     checks{end+1} = make_check('matched_seed_contrast_structure_complete', ...
         agg_struct_ok, agg_struct_detail);
 
-    % Phase 5A: inference is never complete; Phase 5B flips this gate.
-    agg_inf_ok = logical(local_get(options, 'aggregation_inference_complete', false));
+    % Phase 5B: inference readiness from independently validated artifact only.
+    if isfield(options, 'aggregation_inference_complete')
+        tier_check = '';
+        if isfield(cfg, 'protocol_tier')
+            tier_check = char(cfg.protocol_tier);
+        end
+        if strcmp(tier_check, 'publication')
+            error('evaluate_publication_readiness:AggregationInferenceBooleanForbidden', ...
+                ['options.aggregation_inference_complete is forbidden for publication ', ...
+                 'readiness; use validate_aggregation_inference_artifact(run_dir, cfg).']);
+        end
+    end
+
+    inf_report = load_and_validate_inference_artifact(options, cfg);
+    checks{end+1} = make_check('aggregation_inference_artifact_present', ...
+        inf_report.artifact_present, inf_report.artifact_present_detail);
+    checks{end+1} = make_check('aggregation_inference_artifact_valid', ...
+        inf_report.artifact_valid, inf_report.artifact_valid_detail);
+    checks{end+1} = make_check('aggregation_inference_source_hashes_match', ...
+        inf_report.source_hashes_match, inf_report.source_hashes_detail);
+    checks{end+1} = make_check('aggregation_inference_seed_set_complete', ...
+        inf_report.seed_set_complete, inf_report.seed_set_detail);
+    checks{end+1} = make_check('aggregation_inference_families_complete', ...
+        inf_report.families_complete, inf_report.families_detail);
+    checks{end+1} = make_check('aggregation_inference_provenance_valid', ...
+        inf_report.provenance_valid, inf_report.provenance_detail);
+    checks{end+1} = make_check('aggregation_inference_no_overrides', ...
+        inf_report.no_overrides, inf_report.no_overrides_detail);
+    agg_inf_ok = inf_report.aggregation_inference_complete;
     checks{end+1} = make_check('aggregation_inference_complete', agg_inf_ok, ...
-        sprintf('aggregation_inference_complete=%d (deferred_to_phase_5b until Phase 5B)', ...
-            agg_inf_ok));
+        sprintf('aggregation_inference_complete=%d', agg_inf_ok));
 
     has_manifest = logical(local_get(options, 'has_manifest', false));
     has_commit_sha = logical(local_get(options, 'has_commit_sha', false));
@@ -652,8 +678,12 @@ function [ok, detail] = check_matched_seed_contrast_structure(options, cfg)
     end
     ok = isfield(agg, 'matched_seed_contrast_structure_complete') && ...
         logical(agg.matched_seed_contrast_structure_complete) && ...
-        strcmp(char(local_get(agg, 'status', '')), 'ok') && ...
-        strcmp(char(local_get(agg, 'inference_status', '')), 'deferred_to_phase_5b');
+        strcmp(char(local_get(agg, 'status', '')), 'ok');
+    inf_status = char(local_get(agg, 'inference_status', ''));
+    if ~isempty(inf_status) && ...
+            ~(strcmp(inf_status, 'deferred_to_phase_5b') || strcmp(inf_status, 'complete'))
+        ok = false;
+    end
     % Partial publication runs cannot satisfy this gate
     if isfield(cfg, 'protocol_tier') && strcmp(char(cfg.protocol_tier), 'publication')
         if isfield(agg, 'status') && ...
@@ -692,5 +722,94 @@ function v = local_get(s, name, default)
     v = s.(name);
     if isempty(v)
         v = default;
+    end
+end
+
+function inf_report = load_and_validate_inference_artifact(options, cfg)
+    inf_report = struct();
+    inf_report.artifact_present = false;
+    inf_report.artifact_present_detail = 'no_run_dir';
+    inf_report.artifact_valid = false;
+    inf_report.artifact_valid_detail = 'not_validated';
+    inf_report.source_hashes_match = false;
+    inf_report.source_hashes_detail = 'not_validated';
+    inf_report.seed_set_complete = false;
+    inf_report.seed_set_detail = 'not_validated';
+    inf_report.families_complete = false;
+    inf_report.families_detail = 'not_validated';
+    inf_report.provenance_valid = false;
+    inf_report.provenance_detail = 'not_validated';
+    inf_report.no_overrides = false;
+    inf_report.no_overrides_detail = 'not_validated';
+    inf_report.aggregation_inference_complete = false;
+
+    run_dir = char(local_get(options, 'run_dir', ''));
+    if isempty(run_dir)
+        inf_report.artifact_present_detail = 'run_dir_missing';
+        return;
+    end
+
+    manifest_path = fullfile(run_dir, 'aggregation', 'inference', ...
+        'inference_manifest.mat');
+    inf_report.artifact_present = isfile(manifest_path);
+    inf_report.artifact_present_detail = manifest_path;
+    if ~inf_report.artifact_present
+        return;
+    end
+
+    try
+        val = validate_aggregation_inference_artifact(run_dir, cfg);
+    catch ME
+        inf_report.artifact_valid_detail = ME.identifier;
+        return;
+    end
+
+    inf_report.artifact_valid = val.valid;
+    inf_report.artifact_valid_detail = strjoin(val.reasons, ',');
+    if isempty(inf_report.artifact_valid_detail)
+        inf_report.artifact_valid_detail = 'valid';
+    end
+
+    inf_report.aggregation_inference_complete = val.aggregation_inference_complete;
+
+    names = {val.checks.name};
+    pass = [val.checks.pass];
+    inf_report.source_hashes_match = named_pass(val.checks, ...
+        'aggregation_inference_source_hashes_match');
+    inf_report.source_hashes_detail = detail_for(val.checks, ...
+        'aggregation_inference_source_hashes_match');
+    inf_report.seed_set_complete = named_pass(val.checks, ...
+        'aggregation_inference_seed_set_complete');
+    inf_report.seed_set_detail = detail_for(val.checks, ...
+        'aggregation_inference_seed_set_complete');
+    inf_report.families_complete = named_pass(val.checks, ...
+        'aggregation_inference_families_complete');
+    inf_report.families_detail = detail_for(val.checks, ...
+        'aggregation_inference_families_complete');
+    inf_report.provenance_valid = named_pass(val.checks, ...
+        'aggregation_inference_provenance_valid');
+    inf_report.provenance_detail = detail_for(val.checks, ...
+        'aggregation_inference_provenance_valid');
+    inf_report.no_overrides = named_pass(val.checks, ...
+        'aggregation_inference_no_overrides');
+    inf_report.no_overrides_detail = detail_for(val.checks, ...
+        'aggregation_inference_no_overrides');
+end
+
+function tf = named_pass(checks, name)
+    idx = find(strcmp({checks.name}, name), 1);
+    if isempty(idx)
+        tf = false;
+    else
+        tf = checks(idx).pass;
+    end
+end
+
+function d = detail_for(checks, name)
+    idx = find(strcmp({checks.name}, name), 1);
+    if isempty(idx)
+        d = 'missing_check';
+    else
+        d = checks(idx).detail;
     end
 end

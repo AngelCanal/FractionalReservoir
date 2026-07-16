@@ -10,6 +10,14 @@ function summary = compute_paired_effect_summary(delta_raw, orientation_multipli
     if nargin < 2 || isempty(orientation_multiplier)
         orientation_multiplier = 1;
     end
+    if ~(isscalar(orientation_multiplier) && isfinite(orientation_multiplier))
+        error('compute_paired_effect_summary:InvalidOrientation', ...
+            'orientation_multiplier must be a finite scalar.');
+    end
+    if abs(orientation_multiplier - 1) > eps && abs(orientation_multiplier + 1) > eps
+        error('compute_paired_effect_summary:InvalidOrientation', ...
+            'orientation_multiplier must be exactly +1 or -1.');
+    end
 
     delta_raw = delta_raw(:);
     if isempty(delta_raw)

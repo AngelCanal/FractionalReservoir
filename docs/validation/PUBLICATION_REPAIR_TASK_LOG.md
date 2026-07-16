@@ -325,3 +325,30 @@ Aggregation; calibration; figures.
 ### Phase 5B-A starting SHA
 
 `6251c68d78d4510ec8cbb1133438944125d4cdee`
+
+## Phase 5B-B checklist (execute validated inference)
+
+- [x] Confirm branch `fix/mesn-publication-repair` at starting SHA `228ffc5`
+- [x] Harden inference helpers (bootstrap, sign-flip, RNG seed, effect summary, dimension control, plan validation)
+- [x] Implement `run_seed_level_inference.m` from immutable Phase 5A tables
+- [x] Allowlist `test_and_holm` vs `estimate_only` classification
+- [x] Holm families frozen (12 + 4 + 27 + 25); smoke/pilot diagnostic-only
+- [x] Write inference artifacts + `validate_aggregation_inference_artifact.m`
+- [x] Repair `evaluate_publication_readiness` (forbid caller Boolean; independent artifact validation)
+- [x] Integrate smoke/pilot/full runners + `validate_publication_run.m`
+- [x] Unit/integration/scientific tests; full suite pass
+- [x] Docs updated; commit; push
+
+### Phase 5B-B starting SHA
+
+`228ffc51c12893a7e3e52ff63b6a84621d111fb3`
+
+| Field | Value |
+|---|---|
+| Status | complete |
+| Inference protocol | `seed_level_inference_v1` |
+| Artifact schema | `seed_level_inference_artifact_v1` |
+| Provenance mode | `executed_from_immutable_phase5a_tables` |
+| Publication inference executed | no (synthetic/diagnostic fixtures only) |
+| `publication_ready` | false (temporal learning gate + calibration remain) |
+| Phase 6 unblocked | no — repair temporal-learning/calibration blockers first |
