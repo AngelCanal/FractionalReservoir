@@ -5,6 +5,7 @@ function written = write_temporal_memory_development_artifacts(run_dir, payload)
 %
 % payload fields:
 %   cfg, tables, control_summary, result, commit_sha, is_test_fixture (optional)
+%   checkpoint (optional; used for registry metadata)
 
     run_dir = char(run_dir);
     if ~isfolder(run_dir)
@@ -15,6 +16,7 @@ function written = write_temporal_memory_development_artifacts(run_dir, payload)
     cfg = payload.cfg;
     commit_sha = char(local_get(payload, 'commit_sha', ''));
     is_fixture = logical(local_get(payload, 'is_test_fixture', false));
+    checkpoint = local_get(payload, 'checkpoint', struct());
 
     hashes = struct();
     hashes.long_table = save_table_pair(run_dir, 'temporal_memory_long_table', ...
@@ -28,7 +30,7 @@ function written = write_temporal_memory_development_artifacts(run_dir, payload)
 
     control_summary = local_get(payload, 'control_summary', tables.control_summary);
     hashes.control_summary = canonical_sha256(sanitize_for_hash(control_summary));
-    atomic_save_results(fullfile(run_dir, 'control_summary.mat'), ...
+    force_atomic_save(fullfile(run_dir, 'control_summary.mat'), ...
         struct('control_summary', control_summary));
 
     result = payload.result;
@@ -36,8 +38,11 @@ function written = write_temporal_memory_development_artifacts(run_dir, payload)
     result.publication_ready = false;
     result.can_authorize_publication = false;
     hashes.diagnostic_result = canonical_sha256(sanitize_for_hash(result));
-    atomic_save_results(fullfile(run_dir, 'diagnostic_result.mat'), ...
+    force_atomic_save(fullfile(run_dir, 'diagnostic_result.mat'), ...
         struct('diagnostic_result', result));
+
+    artifact_registry = build_temporal_memory_artifact_registry(run_dir, cfg, checkpoint);
+    hashes.artifact_registry = char(artifact_registry.registry_content_hash);
 
     alloc = local_get(control_summary, 'allocation', struct());
     manifest = struct();
@@ -47,9 +52,9 @@ function written = write_temporal_memory_development_artifacts(run_dir, payload)
     manifest.protocol_role = char(cfg.protocol_role);
     manifest.protocol_tier = char(cfg.protocol_tier);
     manifest.code_commit_sha = commit_sha;
-    manifest.model_seeds = cfg.model_seeds(:)';
-    manifest.diagnostic_cell_names = cfg.diagnostic_cell_names(:)';
-    manifest.lags = cfg.lags(:)';
+    manifest.model_seeds = cfg.model_seeds(:);
+    manifest.diagnostic_cell_names = cfg.diagnostic_cell_names(:);
+    manifest.lags = cfg.lags(:);
     manifest.row_counts = struct( ...
         'long_table', height(tables.long_table), ...
         'summary_table', height(tables.summary_table), ...
@@ -59,6 +64,7 @@ function written = write_temporal_memory_development_artifacts(run_dir, payload)
         'expected_summary_rows', local_get(tables, 'expected_summary_rows', NaN), ...
         'expected_control_lag_rows', local_get(tables, 'expected_control_lag_rows', NaN));
     manifest.table_content_hashes = hashes;
+    manifest.artifact_registry = artifact_registry;
     manifest.control_allocation = alloc;
     manifest.publication_evidence = false;
     manifest.publication_ready = false;
@@ -70,21 +76,16 @@ function written = write_temporal_memory_development_artifacts(run_dir, payload)
         'Format', 'yyyy-MM-dd''T''HH:mm:ss''Z'''));
     manifest.manifest_content_hash = canonical_sha256(manifest_for_hash(manifest));
 
-    atomic_save_results(fullfile(run_dir, 'diagnostic_manifest.mat'), ...
+    force_atomic_save(fullfile(run_dir, 'diagnostic_manifest.mat'), ...
         struct('diagnostic_manifest', manifest));
 
     json_path = fullfile(run_dir, 'diagnostic_manifest.json');
-    fid = fopen(json_path, 'w');
-    if fid < 0
-        error('write_temporal_memory_development_artifacts:JsonWriteFailed', ...
-            'Could not write %s', json_path);
-    end
-    cleaner = onCleanup(@() fclose(fid)); %#ok<NASGU>
-    fprintf(fid, '%s', jsonencode(manifest));
+    atomic_write_text_file(json_path, jsonencode(manifest));
 
     written = struct();
     written.manifest = manifest;
     written.table_content_hashes = hashes;
+    written.artifact_registry = artifact_registry;
     written.diagnostic_manifest_json = json_path;
 end
 
@@ -93,23 +94,23 @@ function hex = save_table_pair(run_dir, base_name, T)
     csv_path = fullfile(run_dir, [base_name, '.csv']);
     payload = struct();
     payload.(base_name) = T;
-    atomic_save_results(mat_path, payload);
+    force_atomic_save(mat_path, payload);
 
     Tcsv = flatten_table_for_csv(T);
-    if isfile(csv_path)
-        delete(csv_path);
+    tmp_csv = [csv_path, '.tmp'];
+    if isfile(tmp_csv)
+        delete(tmp_csv);
     end
     if height(Tcsv) == 0 && width(Tcsv) == 0
-        fid = fopen(csv_path, 'w');
-        if fid < 0
-            error('write_temporal_memory_development_artifacts:CsvWriteFailed', ...
-                'Could not write %s', csv_path);
-        end
-        fclose(fid);
+        atomic_write_text_file(csv_path, '');
     else
-        writetable(Tcsv, csv_path);
+        writetable(Tcsv, tmp_csv, 'FileType', 'text');
+        if isfile(csv_path)
+            delete(csv_path);
+        end
+        movefile(tmp_csv, csv_path);
     end
-    hex = hash_table_content(T);
+    hex = temporal_memory_table_content_hash(T);
 end
 
 function T = flatten_table_for_csv(T)
@@ -124,19 +125,11 @@ function T = flatten_table_for_csv(T)
     end
 end
 
-function hex = hash_table_content(T)
-    if isempty(T) || height(T) == 0
-        hex = canonical_sha256(struct( ...
-            'empty', true, ...
-            'varnames', {T.Properties.VariableNames}));
-        return;
+function force_atomic_save(path, variables)
+    if isfile(path)
+        delete(path);
     end
-    try
-        S = table2struct(T);
-    catch
-        S = struct('nrows', height(T), 'varnames', {T.Properties.VariableNames});
-    end
-    hex = canonical_sha256(S);
+    atomic_save_results(path, variables);
 end
 
 function m = manifest_for_hash(manifest)

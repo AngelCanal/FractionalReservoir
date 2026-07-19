@@ -46,7 +46,7 @@ function validate_temporal_memory_conventional_artifact(run_dir, seed, cfg)
             'Conventional provenance must be production (or explicit test fixture).');
     end
 
-    recomputed = conventional_bundle_content_hash(b);
+    recomputed = temporal_memory_conventional_bundle_content_hash(b);
     if isfield(b, 'bundle_content_hash') && ~isempty(b.bundle_content_hash)
         if ~strcmp(char(b.bundle_content_hash), recomputed)
             error('validate_temporal_memory_conventional_artifact:HashFail', ...
@@ -54,18 +54,6 @@ function validate_temporal_memory_conventional_artifact(run_dir, seed, cfg)
                  'resume stops rather than replacing.'], seed);
         end
     end
-end
-
-function hex = conventional_bundle_content_hash(b)
-    payload = struct();
-    payload.model_seed = b.model_seed;
-    payload.selected_candidate_index = b.selected_candidate_index;
-    payload.selected_candidate_content_hash = ...
-        local_get(b, 'selected_candidate_content_hash', '');
-    payload.n_candidates = b.n_candidates;
-    payload.selection_lags = b.selection_lags(:);
-    payload.same_reservoir_for_all_lags = b.same_reservoir_for_all_lags;
-    hex = canonical_sha256(payload);
 end
 
 function v = local_get(s, name, default)

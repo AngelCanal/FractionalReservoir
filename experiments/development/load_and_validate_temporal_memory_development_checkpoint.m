@@ -6,7 +6,9 @@ function checkpoint = load_and_validate_temporal_memory_development_checkpoint( 
 %       run_dir, cfg, commit_sha)
 %
 % Rejects protocol/commit/input/order mismatches, unknown or duplicate keys,
-% nonfinite required results, reserved seeds, and any publication authorization.
+% nonfinite required results, reserved seeds, publication authorization, and
+% any semantic/binary hash mismatch. Never silently replaces a completed
+% artifact whose stored hash fails.
 
     run_dir = char(run_dir);
     path = fullfile(run_dir, 'diagnostic_checkpoint.mat');
@@ -30,7 +32,8 @@ function checkpoint = load_and_validate_temporal_memory_development_checkpoint( 
     end
 
     if local_get(checkpoint, 'can_authorize_publication', false) || ...
-            local_get(checkpoint, 'publication_ready', false)
+            local_get(checkpoint, 'publication_ready', false) || ...
+            local_get(checkpoint, 'publication_evidence', false)
         error('load_and_validate_temporal_memory_development_checkpoint:PublicationClaim', ...
             'Checkpoint can never authorize a publication claim.');
     end
@@ -85,6 +88,9 @@ function checkpoint = load_and_validate_temporal_memory_development_checkpoint( 
     end
 
     result_hashes = local_get(checkpoint, 'result_hashes', struct());
+    file_hashes = local_get(checkpoint, 'file_hashes', struct());
+    artifact_roles = local_get(checkpoint, 'artifact_roles', struct());
+
     for i = 1:numel(keys)
         key = keys{i};
         if ~is_known_checkpoint_key(key, expected_cells, expected_seeds)
@@ -96,27 +102,42 @@ function checkpoint = load_and_validate_temporal_memory_development_checkpoint( 
             error('load_and_validate_temporal_memory_development_checkpoint:MissingResultHash', ...
                 'Missing result hash for key %s.', key);
         end
+        expected_hash = char(result_hashes.(field));
+
         if contains(key, 'cell:')
             assert_cell_seed_artifact_finite(run_dir, key);
-            assert_cell_result_hash(run_dir, key, char(result_hashes.(field)));
+            assert_cell_result_hash(run_dir, key, expected_hash);
+            assert_optional_file_hash(run_dir, key, file_hashes, field, ...
+                cell_artifact_relpath(key));
         elseif startsWith(key, 'conventional|')
             assert_conventional_bundle_identity(run_dir, key, cfg);
-            assert_stored_result_hash_matches_conventional(run_dir, key, ...
-                char(result_hashes.(field)));
+            assert_conventional_result_hash(run_dir, key, expected_hash);
+        elseif strcmp(key, 'shared_task_controls')
+            assert_shared_task_hash(run_dir, expected_hash);
+        elseif startsWith(key, 'no_recurrent|')
+            assert_no_recurrent_hash(run_dir, key, expected_hash);
+        elseif startsWith(key, 'shuffled_target|')
+            assert_shuffled_hash(run_dir, key, expected_hash);
+        end
+
+        if isfield(artifact_roles, field) && isempty(artifact_roles.(field))
+            error('load_and_validate_temporal_memory_development_checkpoint:MissingRole', ...
+                'Missing artifact role for key %s.', key);
         end
     end
 
     if strcmp(status, 'complete')
-        n_cells = numel(expected_cells);
-        n_seeds = numel(expected_seeds);
-        expected_n = n_cells * n_seeds + 1 + 3 * n_seeds;
-        % 24 cell-seed + 1 shared task + 3 conventional + 3 no-recurrent + 3 shuffled
-        % when n_cells=8 and n_seeds=3 => 34
-        if numel(keys) ~= expected_n
+        expected_keys = temporal_memory_expected_checkpoint_keys(cfg);
+        if numel(keys) ~= numel(expected_keys) || ...
+                ~isempty(setdiff(expected_keys, keys)) || ...
+                ~isempty(setdiff(keys, expected_keys))
             error('load_and_validate_temporal_memory_development_checkpoint:IncompleteKeys', ...
-                'Complete checkpoint expected %d keys, found %d.', expected_n, numel(keys));
+                ['Complete checkpoint key set mismatch (expected %d unique keys).'], ...
+                numel(expected_keys));
         end
         cell_keys = local_get(checkpoint, 'completed_cell_seed_keys', {});
+        n_cells = numel(expected_cells);
+        n_seeds = numel(expected_seeds);
         if numel(cell_keys) ~= n_cells * n_seeds
             error('load_and_validate_temporal_memory_development_checkpoint:IncompleteKeys', ...
                 'Complete checkpoint expected %d cell-seed keys.', n_cells * n_seeds);
@@ -138,29 +159,106 @@ function assert_cell_result_hash(run_dir, key, expected_hash)
     path = fullfile(run_dir, 'seed_cell_results', ...
         sprintf('seed_%s__%s.mat', tok{2}, tok{1}));
     S = load(path, 'seed_cell_result');
-    got = canonical_sha256(seed_result_hash_payload_local(S.seed_cell_result));
+    got = temporal_memory_seed_result_content_hash(S.seed_cell_result);
     if ~strcmp(got, expected_hash)
         error('load_and_validate_temporal_memory_development_checkpoint:ResultHashMismatch', ...
             'Cell result content hash mismatch for %s.', key);
     end
 end
 
-function assert_stored_result_hash_matches_conventional(run_dir, key, expected_hash)
+function assert_conventional_result_hash(run_dir, key, expected_hash)
     seed = str2double(erase(key, 'conventional|seed:'));
     path = fullfile(run_dir, 'shared', 'conventional', ...
         sprintf('seed_%d_conventional.mat', seed));
     S = load(path, 'conventional_bundle');
     b = S.conventional_bundle;
-    if isfield(b, 'bundle_content_hash')
-        got = char(b.bundle_content_hash);
-    else
-        got = conventional_bundle_content_hash(b);
+    got = temporal_memory_conventional_bundle_content_hash(b);
+    if isfield(b, 'bundle_content_hash') && ~isempty(b.bundle_content_hash) && ...
+            ~strcmp(char(b.bundle_content_hash), got)
+        error('load_and_validate_temporal_memory_development_checkpoint:ConventionalHashFail', ...
+            ['Conventional stored bundle_content_hash disagrees with canonical ', ...
+             'hash for seed %d; resume stops rather than replacing.'], seed);
     end
     if ~strcmp(got, expected_hash)
         error('load_and_validate_temporal_memory_development_checkpoint:ConventionalHashFail', ...
             ['Conventional result hash mismatch for seed %d; ', ...
              'resume stops rather than replacing.'], seed);
     end
+end
+
+function assert_shared_task_hash(run_dir, expected_hash)
+    path = fullfile(run_dir, 'shared', 'task_controls.mat');
+    if ~isfile(path)
+        error('load_and_validate_temporal_memory_development_checkpoint:MissingTaskControls', ...
+            'Missing shared/task_controls.mat.');
+    end
+    S = load(path, 'task_controls');
+    t = S.task_controls;
+    got = canonical_sha256(struct( ...
+        'current', temporal_memory_control_content_hash(t.current_input_only, ...
+            struct('control_name', 'current_input_only', ...
+            'execution_scope', 'shared_task', 'shared_task_identity', 'task')), ...
+        'exact', temporal_memory_control_content_hash(t.exact_history, ...
+            struct('control_name', 'exact_history', ...
+            'execution_scope', 'shared_task', 'shared_task_identity', 'task'))));
+    if ~strcmp(got, expected_hash)
+        error('load_and_validate_temporal_memory_development_checkpoint:ControlHashMismatch', ...
+            'Shared task-control content hash mismatch.');
+    end
+end
+
+function assert_no_recurrent_hash(run_dir, key, expected_hash)
+    seed = str2double(erase(key, 'no_recurrent|seed:'));
+    path = fullfile(run_dir, 'shared', 'reference_controls', ...
+        sprintf('seed_%d_no_recurrent.mat', seed));
+    if ~isfile(path)
+        error('load_and_validate_temporal_memory_development_checkpoint:MissingNoRecurrent', ...
+            'Missing no-recurrent control for seed %d.', seed);
+    end
+    S = load(path, 'no_recurrent_control');
+    got = temporal_memory_control_content_hash(S.no_recurrent_control, ...
+        struct('control_name', 'no_recurrent_coupling', ...
+        'execution_scope', 'reference_cell_per_model_seed', 'model_seed', seed));
+    if ~strcmp(got, expected_hash)
+        error('load_and_validate_temporal_memory_development_checkpoint:ControlHashMismatch', ...
+            'No-recurrent control hash mismatch for seed %d.', seed);
+    end
+end
+
+function assert_shuffled_hash(run_dir, key, expected_hash)
+    seed = str2double(erase(key, 'shuffled_target|seed:'));
+    path = fullfile(run_dir, 'shared', 'reference_controls', ...
+        sprintf('seed_%d_shuffled_target.mat', seed));
+    if ~isfile(path)
+        error('load_and_validate_temporal_memory_development_checkpoint:MissingShuffled', ...
+            'Missing shuffled-target control for seed %d.', seed);
+    end
+    S = load(path, 'shuffled_target_control');
+    got = temporal_memory_control_content_hash(S.shuffled_target_control, ...
+        struct('control_name', 'shuffled_target', ...
+        'execution_scope', 'reference_cell_per_model_seed', 'model_seed', seed));
+    if ~strcmp(got, expected_hash)
+        error('load_and_validate_temporal_memory_development_checkpoint:ControlHashMismatch', ...
+            'Shuffled-target control hash mismatch for seed %d.', seed);
+    end
+end
+
+function assert_optional_file_hash(run_dir, key, file_hashes, field, rel)
+    if ~isstruct(file_hashes) || ~isfield(file_hashes, field) || ...
+            isempty(file_hashes.(field))
+        return;
+    end
+    abs_path = fullfile(run_dir, strrep(rel, '/', filesep));
+    got = temporal_memory_file_sha256(abs_path);
+    if ~strcmp(got, char(file_hashes.(field)))
+        error('load_and_validate_temporal_memory_development_checkpoint:FileHashMismatch', ...
+            'Binary file hash mismatch for %s.', key);
+    end
+end
+
+function rel = cell_artifact_relpath(key)
+    tok = regexp(key, '^cell:([^|]+)\|seed:(\d+)$', 'tokens', 'once');
+    rel = sprintf('seed_cell_results/seed_%s__%s.mat', tok{2}, tok{1});
 end
 
 function verify_win_hashes_against_artifacts(checkpoint, run_dir, cells, seeds)
@@ -204,21 +302,6 @@ function verify_win_hashes_against_artifacts(checkpoint, run_dir, cells, seeds)
             error('load_and_validate_temporal_memory_development_checkpoint:WinHashMismatch', ...
                 'W_in hashes differ across cells for seed %d.', seeds(is));
         end
-    end
-end
-
-function payload = seed_result_hash_payload_local(scored)
-    % Must match run_temporal_memory_development_diagnostics/seed_result_hash_payload.
-    payload = struct();
-    payload.cell_name = scored.cell_name;
-    payload.model_seed = scored.model_seed;
-    payload.lags = scored.lags(:);
-    n = numel(scored.per_lag);
-    payload.nrmse = zeros(n, 1);
-    payload.mc = zeros(n, 1);
-    for i = 1:n
-        payload.nrmse(i) = scored.per_lag(i).metrics.nrmse;
-        payload.mc(i) = scored.per_lag(i).metrics.memory_coefficient;
     end
 end
 
@@ -309,66 +392,7 @@ end
 
 function assert_conventional_bundle_identity(run_dir, key, cfg)
     seed = str2double(erase(key, 'conventional|seed:'));
-    path = fullfile(run_dir, 'shared', 'conventional', ...
-        sprintf('seed_%d_conventional.mat', seed));
-    if ~isfile(path)
-        error('load_and_validate_temporal_memory_development_checkpoint:MissingConventional', ...
-            'Missing conventional bundle for %s.', key);
-    end
-    S = load(path, 'conventional_bundle');
-    b = S.conventional_bundle;
-    cmb = cfg.conventional_memory_baseline;
-    if local_get(b, 'n_candidates', NaN) ~= cmb.candidate_count
-        error('load_and_validate_temporal_memory_development_checkpoint:ConventionalIdentity', ...
-            'Conventional n_candidates mismatch for seed %d.', seed);
-    end
-    if ~isequal(b.selection_lags(:), cmb.selection_lags(:))
-        error('load_and_validate_temporal_memory_development_checkpoint:ConventionalIdentity', ...
-            'Conventional selection_lags mismatch for seed %d.', seed);
-    end
-    if ~isscalar(b.selected_candidate_index) || ~isfinite(b.selected_candidate_index)
-        error('load_and_validate_temporal_memory_development_checkpoint:ConventionalIdentity', ...
-            'Conventional selected_candidate_index must be one scalar.');
-    end
-    idx = [b.per_lag.selected_candidate_index];
-    if ~all(idx == b.selected_candidate_index)
-        error('load_and_validate_temporal_memory_development_checkpoint:ConventionalIdentity', ...
-            'All lag rows must use the same selected candidate.');
-    end
-    if ~logical(b.same_reservoir_for_all_lags)
-        error('load_and_validate_temporal_memory_development_checkpoint:ConventionalIdentity', ...
-            'same_reservoir_for_all_lags must be true.');
-    end
-    if logical(b.test_targets_used_for_selection)
-        error('load_and_validate_temporal_memory_development_checkpoint:ConventionalIdentity', ...
-            'test_targets_used_for_selection must be false.');
-    end
-    if ~strcmp(char(local_get(b, 'provenance', '')), 'production') && ...
-            ~logical(local_get(b, 'is_test_fixture', false))
-        error('load_and_validate_temporal_memory_development_checkpoint:ConventionalIdentity', ...
-            'Conventional provenance must be production (or explicit test fixture).');
-    end
-    stored_hash = '';
-    if isfield(b, 'bundle_content_hash')
-        stored_hash = char(b.bundle_content_hash);
-    end
-    recomputed = conventional_bundle_content_hash(b);
-    if ~isempty(stored_hash) && ~strcmp(stored_hash, recomputed)
-        error('load_and_validate_temporal_memory_development_checkpoint:ConventionalHashFail', ...
-            ['Conventional bundle content hash failed for seed %d; ', ...
-             'resume stops rather than replacing.'], seed);
-    end
-end
-
-function hex = conventional_bundle_content_hash(b)
-    payload = struct();
-    payload.model_seed = b.model_seed;
-    payload.selected_candidate_index = b.selected_candidate_index;
-    payload.selected_candidate_content_hash = b.selected_candidate_content_hash;
-    payload.n_candidates = b.n_candidates;
-    payload.selection_lags = b.selection_lags(:)';
-    payload.same_reservoir_for_all_lags = b.same_reservoir_for_all_lags;
-    hex = canonical_sha256(payload);
+    validate_temporal_memory_conventional_artifact(run_dir, seed, cfg);
 end
 
 function cp = checkpoint_for_hash(checkpoint)

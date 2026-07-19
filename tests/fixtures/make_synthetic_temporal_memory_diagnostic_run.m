@@ -76,8 +76,8 @@ function run_dir = make_synthetic_temporal_memory_diagnostic_run(opts)
             key = temporal_memory_checkpoint_key('cell', cell_name, seed);
             completed_keys{end+1} = key; %#ok<AGROW>
             completed_cell_seed_keys{end+1} = key; %#ok<AGROW>
-            result_hashes.(key_to_field(key)) = canonical_sha256( ...
-                seed_result_hash_payload(scored));
+            result_hashes.(key_to_field(key)) = ...
+                temporal_memory_seed_result_content_hash(scored);
             Win_hashes_by_seed.(sf).(cell_name) = win_hash;
         end
 
@@ -97,7 +97,9 @@ function run_dir = make_synthetic_temporal_memory_diagnostic_run(opts)
         key = temporal_memory_checkpoint_key('no_recurrent', seed);
         completed_keys{end+1} = key; %#ok<AGROW>
         completed_no_recurrent_keys{end+1} = key; %#ok<AGROW>
-        result_hashes.(key_to_field(key)) = canonical_sha256(struct('n', numel(lags)));
+        result_hashes.(key_to_field(key)) = temporal_memory_control_content_hash(nr, ...
+            struct('control_name', 'no_recurrent_coupling', ...
+            'execution_scope', 'reference_cell_per_model_seed', 'model_seed', seed));
 
         sh = synthesize_control(lags, 'shuffled_target', seed + 3);
         shuffled_target_control = sh; %#ok<NASGU>
@@ -106,7 +108,9 @@ function run_dir = make_synthetic_temporal_memory_diagnostic_run(opts)
         key = temporal_memory_checkpoint_key('shuffled_target', seed);
         completed_keys{end+1} = key; %#ok<AGROW>
         completed_shuffled_keys{end+1} = key; %#ok<AGROW>
-        result_hashes.(key_to_field(key)) = canonical_sha256(struct('n', numel(lags) + 1));
+        result_hashes.(key_to_field(key)) = temporal_memory_control_content_hash(sh, ...
+            struct('control_name', 'shuffled_target', ...
+            'execution_scope', 'reference_cell_per_model_seed', 'model_seed', seed));
     end
 
     task_controls = struct();
@@ -115,7 +119,13 @@ function run_dir = make_synthetic_temporal_memory_diagnostic_run(opts)
     save(fullfile(run_dir, 'shared', 'task_controls.mat'), 'task_controls');
     key = temporal_memory_checkpoint_key('shared_task_controls');
     completed_keys{end+1} = key;
-    result_hashes.(key_to_field(key)) = canonical_sha256(struct('shared', true));
+    result_hashes.(key_to_field(key)) = canonical_sha256(struct( ...
+        'current', temporal_memory_control_content_hash(task_controls.current_input_only, ...
+            struct('control_name', 'current_input_only', ...
+            'execution_scope', 'shared_task', 'shared_task_identity', 'task')), ...
+        'exact', temporal_memory_control_content_hash(task_controls.exact_history, ...
+            struct('control_name', 'exact_history', ...
+            'execution_scope', 'shared_task', 'shared_task_identity', 'task'))));
 
     if isfield(opts, 'duplicate_key') && opts.duplicate_key
         completed_keys{end+1} = completed_keys{1};
@@ -236,6 +246,8 @@ function run_dir = make_synthetic_temporal_memory_diagnostic_run(opts)
     checkpoint.input_hashes = input_hashes;
     checkpoint.completed_keys = completed_keys(:);
     checkpoint.result_hashes = result_hashes;
+    checkpoint.file_hashes = struct();
+    checkpoint.artifact_roles = struct();
     checkpoint.completed_cell_seed_keys = completed_cell_seed_keys(:);
     checkpoint.completed_shared_task_controls = true;
     checkpoint.completed_conventional_keys = completed_conventional_keys(:);
@@ -294,32 +306,40 @@ function scored = synthesize_cell(cfg, cell_spec, seed)
     scored.per_lag = per_lag;
     scored.summary = summarize_temporal_memory_curve(lags, mc, lag_metrics);
     scored.memory_coefficients = mc;
+    for i = 1:n
+        per_lag(i).intercept = 0.01;
+        per_lag(i).coefficients = [1; 0.5; 0.25; 0.1];
+        per_lag(i).feature_mean = zeros(1, 4);
+        per_lag(i).feature_scale = ones(1, 4);
+        per_lag(i).lambda_selection_table = struct('lambda', 1e-6, 'score', 0.1);
+        per_lag(i).metrics.constant_prediction = false;
+    end
     scored.feature_diagnostics = struct( ...
         'numerical_rank', 4, ...
         'feature_covariance_effective_rank', 4, ...
+        'rank_tolerance', 1e-12, ...
         'participation_ratio', 3.2, ...
         'feature_participation_ratio', 3.2, ...
         'fraction_numerically_near_constant_features', 0.02, ...
         'mean_feature_standard_deviation', 0.25, ...
         'median_feature_standard_deviation', 0.22, ...
+        'median_absolute_offdiag_feature_correlation', 0.1, ...
+        'maximum_absolute_offdiag_feature_correlation', 0.4, ...
         'mean_firing_rate', 0.42, ...
         'saturation_fraction', 0.04, ...
-        'silence_fraction', 0.06);
+        'silence_fraction', 0.06, ...
+        'n_neurons', 40, ...
+        'packed_state_dimension', 40, ...
+        'activity_from_neuronal_rates', true, ...
+        'packed_states_counted_as_neurons', false);
+    scored.feature_mode = 'r';
+    scored.feature_dimension = 40;
+    scored.include_input = false;
+    scored.simulations_per_split = 1;
+    scored.n_reservoir_simulations = 3;
+    scored.global_rng_unchanged = true;
     scored.n_lags = n;
-end
-
-function payload = seed_result_hash_payload(scored)
-    payload = struct();
-    payload.cell_name = scored.cell_name;
-    payload.model_seed = scored.model_seed;
-    payload.lags = scored.lags(:);
-    n = numel(scored.per_lag);
-    payload.nrmse = zeros(n, 1);
-    payload.mc = zeros(n, 1);
-    for i = 1:n
-        payload.nrmse(i) = scored.per_lag(i).metrics.nrmse;
-        payload.mc(i) = scored.per_lag(i).metrics.memory_coefficient;
-    end
+    scored.per_lag = per_lag;
 end
 
 function bundle = synthesize_conventional(cfg, seed)
@@ -360,14 +380,44 @@ function bundle = synthesize_conventional(cfg, seed)
     bundle.summary = summarize_temporal_memory_curve(lags, mc, lag_metrics);
     bundle.memory_coefficients = mc;
     bundle.protocol_version = 'matched_conventional_memory_curve_v1';
-    payload = struct();
-    payload.model_seed = seed;
-    payload.selected_candidate_index = sel;
-    payload.selected_candidate_content_hash = bundle.selected_candidate_content_hash;
-    payload.n_candidates = 27;
-    payload.selection_lags = bundle.selection_lags(:);
-    payload.same_reservoir_for_all_lags = true;
-    bundle.bundle_content_hash = canonical_sha256(payload);
+    bundle.engine = 'run_conventional_leaky_esn';
+    bundle.candidate_grid_source = 'build_matched_task_baselines_config';
+    bundle.reservoir_seed = seed + 2000;
+    bundle.selection_metric = 'mean_validation_nrmse_over_all_preregistered_lags';
+    bundle.tie_tolerance = 1e-12;
+    bundle.tie_break = 'earliest_candidate_in_frozen_order';
+    bundle.execution_scope = 'once_per_model_seed_shared_across_all_diagnostic_cells';
+    bundle.selected_hyperparameters = struct('spectral_radius', 0.9, 'leak_rate', 0.5, 'input_scaling', 1);
+    table_rows = repmat(struct('candidate_index', NaN, 'spectral_radius', NaN, ...
+        'leak_rate', NaN, 'input_scaling', NaN, 'aggregate_validation_nrmse', NaN, ...
+        'selected_candidate', false), 27, 1);
+    for ic = 1:27
+        table_rows(ic).candidate_index = ic;
+        table_rows(ic).spectral_radius = 0.8 + 0.01 * ic;
+        table_rows(ic).leak_rate = 0.5;
+        table_rows(ic).input_scaling = 1;
+        table_rows(ic).aggregate_validation_nrmse = 0.4 + 0.01 * ic;
+        table_rows(ic).selected_candidate = (ic == sel);
+    end
+    bundle.candidate_selection_table = table_rows;
+    bundle.aggregate_validation_nrmse = [table_rows.aggregate_validation_nrmse]';
+    bundle.per_candidate_per_lag_validation_nrmse = zeros(27, n);
+    bundle.Wres = eye(4);
+    bundle.Win = ones(4, 1);
+    bundle.X_test = zeros(10, 4);
+    bundle.test_targets_used_for_fitting = false;
+    bundle.used_narma_orchestrator = false;
+    bundle.used_mackey_glass_orchestrator = false;
+    for i = 1:n
+        bundle.per_lag(i).hyperparameters = bundle.selected_hyperparameters;
+        bundle.per_lag(i).numerical_rank = 4;
+        bundle.per_lag(i).coefficient_norm = 1;
+        bundle.per_lag(i).intercept = 0;
+        bundle.per_lag(i).coefficients = [1; 0.5];
+        bundle.per_lag(i).feature_mean = [0, 0];
+        bundle.per_lag(i).feature_scale = [1, 1];
+    end
+    bundle.bundle_content_hash = temporal_memory_conventional_bundle_content_hash(bundle);
 end
 
 function ctrl = synthesize_control(lags, name, salt)

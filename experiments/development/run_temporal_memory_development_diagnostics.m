@@ -46,8 +46,15 @@ function [result, run_dir] = run_temporal_memory_development_diagnostics(options
             Scp = load(fullfile(run_dir, 'diagnostic_checkpoint.mat'), ...
                 'diagnostic_checkpoint');
             if strcmp(char(Scp.diagnostic_checkpoint.status), 'complete')
+                % Never return merely because status is complete.
                 load_and_validate_temporal_memory_development_checkpoint( ...
                     run_dir, cfg, commit_sha);
+                vopts = struct('throw_on_fail', true);
+                if allow_fixture
+                    vopts.allow_test_fixture = true;
+                    vopts.cfg_override = cfg;
+                end
+                validate_temporal_memory_development_diagnostics(run_dir, vopts);
                 Sr = load(fullfile(run_dir, 'diagnostic_result.mat'), ...
                     'diagnostic_result');
                 result = Sr.diagnostic_result;
@@ -107,8 +114,9 @@ function [result, run_dir] = run_temporal_memory_development_diagnostics(options
                             allow_fixture, fixture);
                     end
                     persist_cell_result(art_path, scored);
-                    rh = canonical_sha256(seed_result_hash_payload(scored));
-                    checkpoint = mark_key_complete(checkpoint, key, rh, 'cell');
+                    rh = temporal_memory_seed_result_content_hash(scored);
+                    fh = temporal_memory_file_sha256(art_path);
+                    checkpoint = mark_key_complete(checkpoint, key, rh, 'cell', fh);
                     checkpoint = write_temporal_memory_development_checkpoint( ...
                         run_dir, checkpoint);
                 end
@@ -172,7 +180,8 @@ function [result, run_dir] = run_temporal_memory_development_diagnostics(options
             'control_summary', tables.control_summary, ...
             'result', result, ...
             'commit_sha', commit_sha, ...
-            'is_test_fixture', allow_fixture));
+            'is_test_fixture', allow_fixture, ...
+            'checkpoint', checkpoint));
 
         checkpoint.status = 'complete';
         checkpoint.completed_shared_task_controls = true;
@@ -372,6 +381,8 @@ function checkpoint = init_or_load_checkpoint(run_dir, cfg, commit_sha, ...
     checkpoint.input_hashes = input_hashes;
     checkpoint.completed_keys = {};
     checkpoint.result_hashes = struct();
+    checkpoint.file_hashes = struct();
+    checkpoint.artifact_roles = struct();
     checkpoint.completed_cell_seed_keys = {};
     checkpoint.completed_shared_task_controls = false;
     checkpoint.completed_conventional_keys = {};
@@ -417,9 +428,14 @@ function checkpoint = ensure_shared_task_controls(run_dir, checkpoint, cfg, ...
     end
     atomic_save_results(path, struct('task_controls', task));
     rh = canonical_sha256(struct( ...
-        'current', control_hash_payload(task.current_input_only), ...
-        'exact', control_hash_payload(task.exact_history)));
-    checkpoint = mark_key_complete(checkpoint, key, rh, 'shared_task');
+        'current', temporal_memory_control_content_hash(task.current_input_only, ...
+            struct('control_name', 'current_input_only', ...
+            'execution_scope', 'shared_task', 'shared_task_identity', 'task')), ...
+        'exact', temporal_memory_control_content_hash(task.exact_history, ...
+            struct('control_name', 'exact_history', ...
+            'execution_scope', 'shared_task', 'shared_task_identity', 'task'))));
+    fh = temporal_memory_file_sha256(path);
+    checkpoint = mark_key_complete(checkpoint, key, rh, 'shared_task', fh);
     checkpoint.completed_shared_task_controls = true;
     checkpoint = write_temporal_memory_development_checkpoint(run_dir, checkpoint);
 end
@@ -499,10 +515,32 @@ function scored = synthesize_seed_cell_result(cfg, cell_spec, seed)
     fd.saturation_fraction = 0.05;
     fd.silence_fraction = 0.05;
 
+    for i = 1:n
+        per_lag(i).intercept = 0.01 * i;
+        per_lag(i).coefficients = [1; 0.5; 0.25; 0.1];
+        per_lag(i).feature_mean = zeros(1, 4);
+        per_lag(i).feature_scale = ones(1, 4);
+        per_lag(i).lambda_selection_table = struct('lambda', 1e-6, 'score', 0.1);
+        per_lag(i).metrics.constant_prediction = false;
+    end
+    fd.rank_tolerance = 1e-12;
+    fd.median_absolute_offdiag_feature_correlation = 0.1;
+    fd.maximum_absolute_offdiag_feature_correlation = 0.4;
+    fd.n_neurons = 40;
+    fd.packed_state_dimension = 40;
+    fd.activity_from_neuronal_rates = true;
+    fd.packed_states_counted_as_neurons = false;
+
     scored = struct();
     scored.model_seed = seed;
     scored.cell_name = cell_name;
     scored.cell_key = char(cell_spec.cell_key);
+    scored.feature_mode = char(local_get(cell_spec, 'feature_mode', 'r'));
+    scored.feature_dimension = 40;
+    scored.include_input = false;
+    scored.simulations_per_split = 1;
+    scored.n_reservoir_simulations = 3;
+    scored.global_rng_unchanged = true;
     scored.lags = lags;
     scored.per_lag = per_lag;
     scored.summary = summary;
@@ -591,11 +629,12 @@ function checkpoint = ensure_conventional_for_seed(run_dir, checkpoint, cfg, ...
             cfg.lags(:), cfg.lambda_grid(:), mesn_Win, seed, fit_opts);
         scored = score_conventional_memory_curve(bundle, Y_test);
     end
-    scored.bundle_content_hash = conventional_bundle_content_hash(scored);
+    scored.bundle_content_hash = temporal_memory_conventional_bundle_content_hash(scored);
     scored.reused_shared_baseline = true;
     atomic_save_results(path, struct('conventional_bundle', scored));
     rh = scored.bundle_content_hash;
-    checkpoint = mark_key_complete(checkpoint, key, rh, 'conventional');
+    fh = temporal_memory_file_sha256(path);
+    checkpoint = mark_key_complete(checkpoint, key, rh, 'conventional', fh);
     checkpoint = write_temporal_memory_development_checkpoint(run_dir, checkpoint);
 end
 
@@ -619,15 +658,23 @@ function checkpoint = ensure_reference_controls_for_seed(run_dir, checkpoint, ..
         if need_nr
             nr = synthesize_control_curve(cfg.lags, 'no_recurrent_coupling', seed);
             atomic_save_results(path_nr, struct('no_recurrent_control', nr));
-            rh = canonical_sha256(control_hash_payload(nr));
-            checkpoint = mark_key_complete(checkpoint, key_nr, rh, 'no_recurrent');
+            rh = temporal_memory_control_content_hash(nr, struct( ...
+                'control_name', 'no_recurrent_coupling', ...
+                'execution_scope', 'reference_cell_per_model_seed', ...
+                'model_seed', seed));
+            fh = temporal_memory_file_sha256(path_nr);
+            checkpoint = mark_key_complete(checkpoint, key_nr, rh, 'no_recurrent', fh);
             checkpoint = write_temporal_memory_development_checkpoint(run_dir, checkpoint);
         end
         if need_sh
             sh = synthesize_control_curve(cfg.lags, 'shuffled_target', seed + 7);
             atomic_save_results(path_sh, struct('shuffled_target_control', sh));
-            rh = canonical_sha256(control_hash_payload(sh));
-            checkpoint = mark_key_complete(checkpoint, key_sh, rh, 'shuffled');
+            rh = temporal_memory_control_content_hash(sh, struct( ...
+                'control_name', 'shuffled_target', ...
+                'execution_scope', 'reference_cell_per_model_seed', ...
+                'model_seed', seed));
+            fh = temporal_memory_file_sha256(path_sh);
+            checkpoint = mark_key_complete(checkpoint, key_sh, rh, 'shuffled', fh);
             checkpoint = write_temporal_memory_development_checkpoint(run_dir, checkpoint);
         end
         return;
@@ -661,15 +708,23 @@ function checkpoint = ensure_reference_controls_for_seed(run_dir, checkpoint, ..
     if need_nr
         nr = slim_control(ctr.no_recurrent_coupling);
         atomic_save_results(path_nr, struct('no_recurrent_control', nr));
-        rh = canonical_sha256(control_hash_payload(nr));
-        checkpoint = mark_key_complete(checkpoint, key_nr, rh, 'no_recurrent');
+        rh = temporal_memory_control_content_hash(nr, struct( ...
+            'control_name', 'no_recurrent_coupling', ...
+            'execution_scope', 'reference_cell_per_model_seed', ...
+            'model_seed', seed));
+        fh = temporal_memory_file_sha256(path_nr);
+        checkpoint = mark_key_complete(checkpoint, key_nr, rh, 'no_recurrent', fh);
         checkpoint = write_temporal_memory_development_checkpoint(run_dir, checkpoint);
     end
     if need_sh
         sh = slim_control(ctr.shuffled_target);
         atomic_save_results(path_sh, struct('shuffled_target_control', sh));
-        rh = canonical_sha256(control_hash_payload(sh));
-        checkpoint = mark_key_complete(checkpoint, key_sh, rh, 'shuffled');
+        rh = temporal_memory_control_content_hash(sh, struct( ...
+            'control_name', 'shuffled_target', ...
+            'execution_scope', 'reference_cell_per_model_seed', ...
+            'model_seed', seed));
+        fh = temporal_memory_file_sha256(path_sh);
+        checkpoint = mark_key_complete(checkpoint, key_sh, rh, 'shuffled', fh);
         checkpoint = write_temporal_memory_development_checkpoint(run_dir, checkpoint);
     end
 end
@@ -703,7 +758,10 @@ function tf = key_completed(checkpoint, key)
     tf = any(strcmp(keys, key));
 end
 
-function checkpoint = mark_key_complete(checkpoint, key, result_hash, kind)
+function checkpoint = mark_key_complete(checkpoint, key, result_hash, kind, file_hash)
+    if nargin < 5
+        file_hash = '';
+    end
     keys = cellstr(string(local_get(checkpoint, 'completed_keys', {})));
     if any(strcmp(keys, key))
         error('run_temporal_memory_development_diagnostics:DuplicateKey', ...
@@ -715,6 +773,16 @@ function checkpoint = mark_key_complete(checkpoint, key, result_hash, kind)
         checkpoint.result_hashes = struct();
     end
     checkpoint.result_hashes.(field) = result_hash;
+    if ~isfield(checkpoint, 'file_hashes') || isempty(checkpoint.file_hashes)
+        checkpoint.file_hashes = struct();
+    end
+    if ~isempty(file_hash)
+        checkpoint.file_hashes.(field) = file_hash;
+    end
+    if ~isfield(checkpoint, 'artifact_roles') || isempty(checkpoint.artifact_roles)
+        checkpoint.artifact_roles = struct();
+    end
+    checkpoint.artifact_roles.(field) = kind;
     switch kind
         case 'cell'
             ck = cellstr(string(local_get(checkpoint, 'completed_cell_seed_keys', {})));
@@ -757,43 +825,8 @@ function out = slim_control(ctrl)
     end
 end
 
-function payload = seed_result_hash_payload(scored)
-    payload = struct();
-    payload.cell_name = scored.cell_name;
-    payload.model_seed = scored.model_seed;
-    payload.lags = scored.lags(:)';
-    n = numel(scored.per_lag);
-    payload.nrmse = zeros(n, 1);
-    payload.mc = zeros(n, 1);
-    for i = 1:n
-        payload.nrmse(i) = scored.per_lag(i).metrics.nrmse;
-        payload.mc(i) = scored.per_lag(i).metrics.memory_coefficient;
-    end
-end
-
-function payload = control_hash_payload(ctrl)
-    if isfield(ctrl, 'per_lag')
-        per_lag = ctrl.per_lag;
-    else
-        per_lag = ctrl.scored.per_lag;
-    end
-    n = numel(per_lag);
-    payload = struct('n', n, 'nrmse', zeros(n, 1));
-    for i = 1:n
-        payload.nrmse(i) = per_lag(i).metrics.nrmse;
-    end
-end
-
 function hex = conventional_bundle_content_hash(b)
-    payload = struct();
-    payload.model_seed = b.model_seed;
-    payload.selected_candidate_index = b.selected_candidate_index;
-    payload.selected_candidate_content_hash = ...
-        local_get(b, 'selected_candidate_content_hash', '');
-    payload.n_candidates = b.n_candidates;
-    payload.selection_lags = b.selection_lags(:)';
-    payload.same_reservoir_for_all_lags = b.same_reservoir_for_all_lags;
-    hex = canonical_sha256(payload);
+    hex = temporal_memory_conventional_bundle_content_hash(b);
 end
 
 function ctrl = synthesize_control_curve(lags, name, salt)
@@ -855,8 +888,44 @@ function bundle = synthesize_conventional_bundle(cfg, seed)
     bundle.test_targets_used_for_selection = false;
     bundle.provenance = 'synthetic_test_fixture';
     bundle.is_test_fixture = true;
+    bundle.synthetic_provenance = true;
     bundle.per_lag = per_lag;
     bundle.protocol_version = 'matched_conventional_memory_curve_v1';
+    bundle.engine = 'run_conventional_leaky_esn';
+    bundle.candidate_grid_source = 'build_matched_task_baselines_config';
+    bundle.reservoir_seed = seed + 2000;
+    bundle.selection_metric = cfg.conventional_memory_baseline.reservoir_selection_metric;
+    bundle.tie_tolerance = cfg.conventional_memory_baseline.tie_tolerance;
+    bundle.tie_break = cfg.conventional_memory_baseline.tie_break;
+    bundle.execution_scope = cfg.conventional_memory_baseline.execution_scope;
+    bundle.selected_hyperparameters = struct('spectral_radius', 0.9, 'leak_rate', 0.5, 'input_scaling', 1);
+    n_cand = bundle.n_candidates;
+    table_rows = repmat(struct('candidate_index', NaN, 'spectral_radius', NaN, ...
+        'leak_rate', NaN, 'input_scaling', NaN, 'aggregate_validation_nrmse', NaN, ...
+        'selected_candidate', false), n_cand, 1);
+    for ic = 1:n_cand
+        table_rows(ic).candidate_index = ic;
+        table_rows(ic).spectral_radius = 0.8 + 0.01 * ic;
+        table_rows(ic).leak_rate = 0.5;
+        table_rows(ic).input_scaling = 1;
+        table_rows(ic).aggregate_validation_nrmse = 0.5 + 0.01 * ic;
+        table_rows(ic).selected_candidate = (ic == bundle.selected_candidate_index);
+    end
+    bundle.candidate_selection_table = table_rows;
+    bundle.aggregate_validation_nrmse = [table_rows.aggregate_validation_nrmse]';
+    bundle.per_candidate_per_lag_validation_nrmse = zeros(n_cand, numel(lags));
+    bundle.Wres = eye(4);
+    bundle.Win = ones(4, 1);
+    bundle.X_test = zeros(8, 4);
+    for i = 1:numel(lags)
+        bundle.per_lag(i).hyperparameters = bundle.selected_hyperparameters;
+        bundle.per_lag(i).numerical_rank = 4;
+        bundle.per_lag(i).coefficient_norm = 1;
+        bundle.per_lag(i).intercept = 0;
+        bundle.per_lag(i).coefficients = [1; 0.5];
+        bundle.per_lag(i).feature_mean = [0, 0];
+        bundle.per_lag(i).feature_scale = [1, 1];
+    end
 end
 
 function scored = score_synthetic_conventional(bundle, Y_test) %#ok<INUSD>
