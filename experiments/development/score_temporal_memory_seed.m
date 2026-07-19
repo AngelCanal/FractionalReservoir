@@ -34,6 +34,10 @@ function result = score_temporal_memory_seed(bundle, Y_test_by_lag, options)
     result.simulations_per_split = bundle.simulations_per_split;
     result.fit_identity = scored.fit_identity;
     result.n_lags = scored.n_lags;
+    result.global_rng_unchanged = local_get(bundle, 'global_rng_unchanged', false);
+    result.is_test_fixture = local_get(bundle, 'is_test_fixture', false);
+    result.synthetic_provenance = local_get(bundle, 'synthetic_provenance', false);
+    result.provenance = local_get(bundle, 'provenance', 'production');
 
     if isfield(options, 'include_controls') && logical(options.include_controls)
         payload = struct();

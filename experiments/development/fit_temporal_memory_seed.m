@@ -11,10 +11,9 @@ function bundle = fit_temporal_memory_seed(cfg, cell_spec, model_seed, options)
     if nargin < 4 || isempty(options)
         options = struct();
     end
-    if ~isfinite(model_seed)
-        error('fit_temporal_memory_seed:InvalidSeed', 'model_seed is required.');
-    end
-    assert_model_seed_allowed(cfg, model_seed);
+    allow_fixture = isfield(options, 'allow_test_fixture') && ...
+        logical(options.allow_test_fixture);
+    assert_model_seed_allowed(cfg, model_seed, allow_fixture);
 
     global_before = RandStream.getGlobalStream().State;
 
@@ -103,6 +102,13 @@ function bundle = fit_temporal_memory_seed(cfg, cell_spec, model_seed, options)
     bundle.W_in = esn.W_in;
     bundle.esn = esn;
     bundle.fit_uses_test_targets = false;
+    bundle.is_test_fixture = allow_fixture;
+    bundle.synthetic_provenance = allow_fixture;
+    if allow_fixture
+        bundle.provenance = 'synthetic_test_fixture';
+    else
+        bundle.provenance = 'production';
+    end
 
     global_after = RandStream.getGlobalStream().State;
     bundle.global_rng_unchanged = isequal(global_before, global_after);
@@ -112,25 +118,43 @@ function bundle = fit_temporal_memory_seed(cfg, cell_spec, model_seed, options)
     end
 end
 
-function assert_model_seed_allowed(cfg, model_seed)
+function assert_model_seed_allowed(cfg, model_seed, allow_fixture)
+    if ~(isscalar(model_seed) && isnumeric(model_seed) && isfinite(model_seed) && ...
+            model_seed == floor(model_seed))
+        error('fit_temporal_memory_seed:ModelSeedNotExecutable', ...
+            'model_seed must be a finite integer.');
+    end
+    if allow_fixture
+        return;
+    end
+    if ~isfield(cfg, 'model_seeds') || ~ismember(model_seed, cfg.model_seeds(:)')
+        error('fit_temporal_memory_seed:ModelSeedNotExecutable', ...
+            'model_seed %g is not an exact member of cfg.model_seeds.', model_seed);
+    end
     if model_seed == 9003
-        error('fit_temporal_memory_seed:ForbiddenSeed9003', ...
+        error('fit_temporal_memory_seed:ModelSeedNotExecutable', ...
             'v1 test seed 9003 is forbidden.');
     end
     if isfield(cfg, 'forbidden_executed_seeds') && ...
-            any(cfg.forbidden_executed_seeds(:) == model_seed)
-        % Development model seeds are removed from forbidden list; still guard.
-        if isfield(cfg, 'model_seeds') && any(cfg.model_seeds(:) == model_seed)
-            return;
-        end
-        error('fit_temporal_memory_seed:ForbiddenSeed', ...
+            any(cfg.forbidden_executed_seeds(:) == model_seed) && ...
+            ~ismember(model_seed, cfg.model_seeds(:)')
+        error('fit_temporal_memory_seed:ModelSeedNotExecutable', ...
             'Model seed %g is forbidden for execution.', model_seed);
     end
     if isfield(cfg, 'reserved_future_v2')
         reserved = flatten_numeric(cfg.reserved_future_v2);
         if any(reserved(:) == model_seed)
-            error('fit_temporal_memory_seed:ReservedFutureSeed', ...
+            error('fit_temporal_memory_seed:ModelSeedNotExecutable', ...
                 'Reserved future-v2 model seed %g rejected.', model_seed);
+        end
+    end
+    % Reject v1 task/shuffle seeds if somehow presented as model seeds.
+    if isfield(cfg, 'v1_observed')
+        v1 = [cfg.v1_observed.task_seeds(:)', cfg.v1_observed.shuffle_seeds(:)'];
+        if any(v1 == model_seed) && ~ismember(model_seed, cfg.model_seeds(:)')
+            error('fit_temporal_memory_seed:ModelSeedNotExecutable', ...
+                'v1 task/shuffle seed %g is not executable as a model seed.', ...
+                model_seed);
         end
     end
 end

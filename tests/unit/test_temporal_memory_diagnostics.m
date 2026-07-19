@@ -128,7 +128,8 @@ function testOneSimulationPerSplitNotPerLag(testCase)
         'validation_samples', 20, ...
         'test_samples', 20, ...
         'lags', (1:5)', ...
-        'lambda_grid', [0; 1e-4; 1]);
+        'lambda_grid', [0; 1e-4; 1], ...
+        'allow_test_fixture', true);
     bundle = fit_temporal_memory_seed(cfg, cell_spec, 1729, opts);
     testCase.verifyEqual(bundle.n_reservoir_simulations, 3);
     testCase.verifyEqual(bundle.simulations_per_split, 1);
@@ -260,7 +261,8 @@ function testActivityUsesNeuronalRateDimension40(testCase)
         'validation_samples', 15, ...
         'test_samples', 15, ...
         'lags', (1:3)', ...
-        'lambda_grid', [0; 1]);
+        'lambda_grid', [0; 1], ...
+        'allow_test_fixture', true);
     bundle = fit_temporal_memory_seed(cfg, cell_spec, 1729, opts);
     fd = bundle.feature_diagnostics;
     testCase.verifyEqual(fd.n_neurons, 40);
@@ -268,8 +270,9 @@ function testActivityUsesNeuronalRateDimension40(testCase)
     testCase.verifyFalse(fd.packed_states_counted_as_neurons);
     testCase.verifyGreaterThan(fd.packed_state_dimension, 40);
     scored = score_temporal_memory_seed(bundle, bundle.Y_test_protocol);
-    report = validate_temporal_memory_seed_result(scored, cfg);
-    testCase.verifyTrue(report.ok);
+    testCase.verifyTrue(scored.synthetic_provenance);
+    testCase.verifyError(@() validate_temporal_memory_seed_result(scored, cfg), ...
+        'validate_temporal_memory_seed_result:Failed');
 end
 
 %% Seed rejection
@@ -280,13 +283,25 @@ function testReservedFutureSeedsRejected(testCase)
         'validation_samples', 8, 'test_samples', 8, 'lags', 1, ...
         'lambda_grid', 0);
     testCase.verifyError(@() fit_temporal_memory_seed(cfg, cell_spec, 11003, opts), ...
-        'fit_temporal_memory_seed:ForbiddenSeed');
+        'fit_temporal_memory_seed:ModelSeedNotExecutable');
 
     bad_task = cfg.task_seeds;
     bad_task.test = 13007;
     opts.task_seeds = bad_task;
     testCase.verifyError(@() build_temporal_memory_development_splits(cfg, opts), ...
         'build_temporal_memory_development_splits:ForbiddenSeed');
+end
+
+function testArbitraryUnregisteredModelSeedRejected(testCase)
+    cfg = testCase.TestData.cfg;
+    cell_spec = cfg.diagnostic_cells.reference_r;
+    opts = struct('washout_steps', 5, 'train_samples', 8, ...
+        'validation_samples', 8, 'test_samples', 8, 'lags', 1, ...
+        'lambda_grid', 0);
+    testCase.verifyError(@() fit_temporal_memory_seed(cfg, cell_spec, 424242, opts), ...
+        'fit_temporal_memory_seed:ModelSeedNotExecutable');
+    testCase.verifyError(@() fit_temporal_memory_seed(cfg, cell_spec, 10037, opts), ...
+        'fit_temporal_memory_seed:ModelSeedNotExecutable');
 end
 
 function testV1TestSeed9003Rejected(testCase)
@@ -392,4 +407,99 @@ function testSummariesMCSums(testCase)
     testCase.verifyEqual(s.first_lag_memory_below_0_1, 26);
     testCase.verifyFalse(s.memory_crossing_right_censored_at_50);
     testCase.verifyEqual(s.lag10_nrmse, 0.4);
+end
+
+%% Hardened production validator
+function testValidatorRejectsBadCellAndLags(testCase)
+    cfg = testCase.TestData.cfg;
+    r = synthetic_production_result(cfg);
+    r.cell_name = 'not_a_real_cell';
+    testCase.verifyError(@() validate_temporal_memory_seed_result(r, cfg), ...
+        'validate_temporal_memory_seed_result:Failed');
+
+    r = synthetic_production_result(cfg);
+    r.lags = 50:-1:1;
+    for i = 1:50; r.per_lag(i).lag = r.lags(i); end
+    testCase.verifyError(@() validate_temporal_memory_seed_result(r, cfg), ...
+        'validate_temporal_memory_seed_result:Failed');
+
+    r = synthetic_production_result(cfg);
+    r.lags = 1:49;
+    r.per_lag = r.per_lag(1:49);
+    testCase.verifyError(@() validate_temporal_memory_seed_result(r, cfg), ...
+        'validate_temporal_memory_seed_result:Failed');
+end
+
+function testValidatorRejectsMissingDuplicateNonfiniteAndMC(testCase)
+    cfg = testCase.TestData.cfg;
+    r = synthetic_production_result(cfg);
+    r.per_lag(5).lag = 4; % duplicate 4, missing 5
+    testCase.verifyError(@() validate_temporal_memory_seed_result(r, cfg), ...
+        'validate_temporal_memory_seed_result:Failed');
+
+    r = synthetic_production_result(cfg);
+    r.per_lag(3).metrics.nrmse = Inf;
+    testCase.verifyError(@() validate_temporal_memory_seed_result(r, cfg), ...
+        'validate_temporal_memory_seed_result:Failed');
+
+    r = synthetic_production_result(cfg);
+    r.summary.MC_1_10 = r.summary.MC_1_10 + 1;
+    testCase.verifyError(@() validate_temporal_memory_seed_result(r, cfg), ...
+        'validate_temporal_memory_seed_result:Failed');
+
+    r = synthetic_production_result(cfg);
+    r.summary.lag10_nrmse = r.summary.lag10_nrmse + 0.5;
+    testCase.verifyError(@() validate_temporal_memory_seed_result(r, cfg), ...
+        'validate_temporal_memory_seed_result:Failed');
+end
+
+function testValidatorRejectsActivityAndRNG(testCase)
+    cfg = testCase.TestData.cfg;
+    r = synthetic_production_result(cfg);
+    r.feature_diagnostics.n_neurons = 80;
+    testCase.verifyError(@() validate_temporal_memory_seed_result(r, cfg), ...
+        'validate_temporal_memory_seed_result:Failed');
+
+    r = synthetic_production_result(cfg);
+    r.global_rng_unchanged = false;
+    testCase.verifyError(@() validate_temporal_memory_seed_result(r, cfg), ...
+        'validate_temporal_memory_seed_result:Failed');
+end
+
+function testValidatorAcceptsSyntheticProductionShapedResult(testCase)
+    cfg = testCase.TestData.cfg;
+    r = synthetic_production_result(cfg);
+    report = validate_temporal_memory_seed_result(r, cfg);
+    testCase.verifyTrue(report.ok);
+end
+
+function r = synthetic_production_result(cfg)
+    r = struct();
+    r.model_seed = 1729;
+    r.cell_name = 'reference_r';
+    r.cell_key = cfg.diagnostic_cells.reference_r.cell_key;
+    r.lags = (1:50)';
+    r.include_input = false;
+    r.simulations_per_split = 1;
+    r.n_reservoir_simulations = 3;
+    r.global_rng_unchanged = true;
+    r.feature_dimension = 40;
+    r.is_test_fixture = false;
+    r.synthetic_provenance = false;
+    blank = struct('lag', NaN, 'selected_lambda', 0, 'numerical_rank', 5, ...
+        'coefficient_norm', 1, 'metrics', struct('rmse', 0.5, 'nrmse', 0.5, ...
+        'r2', 0.2, 'pearson', 0.4, 'memory_coefficient', 0.16));
+    r.per_lag = repmat(blank, 50, 1);
+    mc = zeros(50, 1);
+    for i = 1:50
+        r.per_lag(i).lag = i;
+        r.per_lag(i).metrics.memory_coefficient = 0.16;
+        r.per_lag(i).metrics.pearson = 0.4;
+        mc(i) = 0.16;
+    end
+    r.summary = summarize_temporal_memory_curve(r.lags, mc, [r.per_lag.metrics]);
+    r.feature_diagnostics = struct('n_neurons', 40, ...
+        'activity_from_neuronal_rates', true, ...
+        'packed_states_counted_as_neurons', false, ...
+        'packed_state_dimension', 120);
 end

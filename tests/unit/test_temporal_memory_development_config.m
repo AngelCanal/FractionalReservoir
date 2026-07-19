@@ -222,6 +222,23 @@ function testScientificFieldsAffectFingerprint(testCase)
     cfg_op.frozen_operating_point.input_scaling = 0.5;
     cfg_op.base.input_scaling = 0.5;
     testCase.verifyNotEqual(fp0, compute_temporal_memory_development_fingerprint(cfg_op));
+
+    cfg_cmb = cfg;
+    cfg_cmb.conventional_memory_baseline.reservoir_selection_metric = 'other';
+    testCase.verifyNotEqual(fp0, compute_temporal_memory_development_fingerprint(cfg_cmb));
+
+    cfg_sel = cfg;
+    cfg_sel.conventional_memory_baseline.selection_lags = 1:25;
+    testCase.verifyNotEqual(fp0, compute_temporal_memory_development_fingerprint(cfg_sel));
+
+    cfg_tie = cfg;
+    cfg_tie.conventional_memory_baseline.tie_tolerance = 1e-8;
+    testCase.verifyNotEqual(fp0, compute_temporal_memory_development_fingerprint(cfg_tie));
+
+    testCase.verifyNotEqual(fp0, ...
+        'fa7670433618a852f9c98732c2b5877cab3409198074aa6feb20833ed6a690ba');
+    testCase.verifyEqual(fp0, ...
+        'bb3ac4fe71985a156c519f1065b99fb1ff3c1c22ae8bc139c46f43cce4a93310');
 end
 
 %% Additional validator / geometry guards

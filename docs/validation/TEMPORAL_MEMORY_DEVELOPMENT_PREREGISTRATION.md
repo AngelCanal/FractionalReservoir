@@ -1,10 +1,19 @@
 # Temporal memory development diagnostics — preregistration
 
-**Status:** frozen before diagnostic outcomes (Phase 5D-A2)  
+**Status:** superseded before scientific execution (Phase 5D-B1-R correction)  
 **Protocol:** `temporal_memory_diagnostic_v1`  
 **Config source of truth:** `experiments/development/temporal_memory_development_config.m`  
 **Seed ledger:** `docs/validation/SEED_ROLE_LEDGER.md`  
 **Architecture under diagnosis:** `nonfractional_mesn_v1` (current non-fractional MESN only)
+
+### Protocol fingerprint history
+
+| Fingerprint | Status |
+|---|---|
+| `fa7670433618a852f9c98732c2b5877cab3409198074aa6feb20833ed6a690ba` | superseded before scientific execution |
+| `bb3ac4fe71985a156c519f1065b99fb1ff3c1c22ae8bc139c46f43cce4a93310` | current after B1-R conventional single-reservoir amendment |
+
+**Supersession reason:** conventional baseline previously permitted per-lag reservoir switching. No diagnostic outcomes inspected; this is a pre-execution correction.
 
 This document freezes protocol identity, diagnostic cells, endpoints, controls,
 seed roles, and descriptive materiality rules **before** any development
@@ -152,6 +161,31 @@ Required controls (existing implementations only):
 - existing matched conventional leaky ESN baseline
 
 Do **not** create a differently tuned conventional ESN for this protocol.
+
+### Conventional memory-curve policy (`matched_conventional_memory_curve_v1`)
+
+Pre-execution correction (Phase 5D-B1-R). No real diagnostic trajectory had been
+run; scientific outcomes did not influence this amendment.
+
+| Field | Value |
+|---|---|
+| `protocol_version` | `matched_conventional_memory_curve_v1` |
+| `engine` | `run_conventional_leaky_esn` |
+| `candidate_grid_source` | `build_matched_task_baselines_config` |
+| `candidate_count` | 27 |
+| `reservoir_selection_unit` | one candidate per model seed for entire lag curve |
+| `reservoir_selection_metric` | mean validation NRMSE over lags `1:50` |
+| `tie_tolerance` | `1e-12` |
+| `tie_break` | earliest candidate in frozen order |
+| `readout_policy` | per-lag lambda on train/val, then refit train+val |
+| `test_targets_used_for_reservoir_selection` | false |
+| `execution_scope` | once per model seed, shared across all diagnostic cells |
+
+### Control allocation (Phase 5D-B2 runner)
+
+- Shared task controls (once per task realization): current-input-only, exact-history
+- Shared model-seed controls (once per model seed): conventional ESN
+- Reference-cell only (`reference_r`): shuffled-target, no-recurrent coupling
 
 ---
 
