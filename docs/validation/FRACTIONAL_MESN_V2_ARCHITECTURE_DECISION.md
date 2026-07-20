@@ -1,12 +1,13 @@
-# Fractional MESN v2 — Architecture Decision (Phase 5D-D)
+# Fractional MESN v2 â€” Architecture Decision (Phase 5D-D)
 
-**Phase:** 5D-D  
-**Branch:** `design/fractional-mesn-v2`  
-**Source SHA:** `579a935044e818a36a86cd0a9cc211142ec6d071`  
-**Status:** mathematical architecture **frozen**; **no implementation** has occurred  
+**Phase:** 5D-D (architecture freeze) + **5D-E1 amendment** (Â§20)
+**Branch:** `design/fractional-mesn-v2`
+**Source SHA (5D-D freeze):** `579a935044e818a36a86cd0a9cc211142ec6d071`
+**Status:** mathematical architecture **frozen** (5D-D); Caputo-L1 **standalone numerical core** implemented and verified (5D-E1); **not** integrated into `SRNN_ESN`
 **Companion review:** [`TEMPORAL_MEMORY_DIAGNOSTIC_SCIENTIFIC_REVIEW.md`](TEMPORAL_MEMORY_DIAGNOSTIC_SCIENTIFIC_REVIEW.md)
+**Numerical core preregistration:** [`FRACTIONAL_MESN_V2_NUMERICAL_CORE_PREREGISTRATION.md`](FRACTIONAL_MESN_V2_NUMERICAL_CORE_PREREGISTRATION.md)
 
-This document freezes the recommended Fractional MESN v2 equations, numerical definition, claim boundary, and validation obligations. It does **not** implement code, alter v1 artifacts, or authorize future-seed execution.
+This document freezes the recommended Fractional MESN v2 equations, numerical definition, claim boundary, and validation obligations. Phase 5D-D itself did not implement code. Phase 5D-E1 (Â§20) freezes and implements only the standalone Caputo-L1 reference core. It does **not** alter v1 artifacts or authorize future-seed execution.
 
 ---
 
@@ -16,11 +17,11 @@ Correct the Phase 5D-C scientific diagnosis and freeze a v2 architecture that ca
 
 1. host a **genuine Caputo fractional derivative** in the neuronal/reservoir state equation;
 2. retain modular **STD**, **SFA**, **Dale law**, and **explicit delays** without conflating them with fractionality;
-3. admit a matched **α=1** control inside the **same discrete v2 architecture**;
+3. admit a matched **Î±=1** control inside the **same discrete v2 architecture**;
 4. support identifiable development work on already-consumed seeds only;
-5. define what may and may not be claimed as “fractional.”
+5. define what may and may not be claimed as â€œfractional.â€
 
-The motivating deficit from 5D-C (corrected in the companion review) is **insufficient effective recurrent memory** under the frozen non-fractional MESN, together with **common-mode / redundant feature geometry** — not “absence of recurrence,” and not a raw-PR-only “readout collapse.”
+The motivating deficit from 5D-C (corrected in the companion review) is **insufficient effective recurrent memory** under the frozen non-fractional MESN, together with **common-mode / redundant feature geometry** â€” not â€œabsence of recurrence,â€ and not a raw-PR-only â€œreadout collapse.â€
 
 ---
 
@@ -90,7 +91,7 @@ SFA/STD always use **current** \(r(t)\), even in DDE mode.
 | Symbol | MATLAB | Dim | Role | Readout? |
 |---|---|---|---|---|
 | \(x\) | `state.x` | \(n\) | membrane / reservoir state | if `which_states='x'` |
-| \(a_E,a_I\) | `state.a_*` | pop × filters | SFA adaptation | only if `'all'` |
+| \(a_E,a_I\) | `state.a_*` | pop Ã— filters | SFA adaptation | only if `'all'` |
 | \(b_E,b_I\) | `state.b_*` | pop | STD resource (presynaptic) | only if `'all'` |
 | \(q\) | computed | \(n\) | SFA-adjusted drive | no |
 | \(r\) | computed | \(n\) | firing rate \(\phi(q)\) | if `which_states='r'` |
@@ -103,7 +104,7 @@ Packed state: \(S=[a_E(:);a_I(:);b_E(:);b_I(:);x(:)]\).
 
 Dale: presynaptic columns \(W_{:,E}\ge 0\), \(W_{:,I}\le 0\). Recurrent scaling: spectral **abscissa** to `level_of_chaos` (frozen diagnostic OP: 0.60). Integrators: `ode23s` / `dde23`.
 
-**Critical STD convention:** recurrent term is \(W(b\odot r)\) — **presynaptic** resource on source rates — not postsynaptic gain on the summed input.
+**Critical STD convention:** recurrent term is \(W(b\odot r)\) â€” **presynaptic** resource on source rates â€” not postsynaptic gain on the summed input.
 
 **Adaptation placement:** SFA enters **through** \(q=x-\sum c_a a\), not as a separate additive current on the \(x\)-RHS. The v2 freeze must preserve that convention unless a separately justified change is introduced later (listed under unresolved decisions).
 
@@ -113,31 +114,31 @@ Dale: presynaptic columns \(W_{:,E}\ge 0\), \(W_{:,I}\le 0\). Recurrent scaling:
 
 | Criterion | A. Readout/feature-only | B. Integer recurrent-gain repair | C. Fractional readout/post only | D. Fractional neuronal state (selected) |
 |---|---|---|---|---|
-| Scientific validity for “fractional ESN” | low | N/A (non-fractional) | **insufficient** | **high** |
+| Scientific validity for â€œfractional ESNâ€ | low | N/A (non-fractional) | **insufficient** | **high** |
 | Reservoir genuinely fractional? | no | no | **no** | **yes** |
-| Recover α=1? | N/A | baseline | N/A | **yes (matched discrete)** |
+| Recover Î±=1? | N/A | baseline | N/A | **yes (matched discrete)** |
 | Compatible with STD | yes | yes | yes | **yes (keep integer-order)** |
 | Compatible with SFA | yes | yes | yes | **yes (keep integer-order)** |
 | Compatible with delays | yes | yes | yes | **yes (keep explicit)** |
-| Computational cost | low | low–med | low | **high (history)** |
+| Computational cost | low | lowâ€“med | low | **high (history)** |
 | Stability / ESP burden | low | medium | low | **high (Volterra memory)** |
-| Confounding risk | medium (geometry only) | medium | **high (mislabeling)** | manageable if α=1 matched |
+| Confounding risk | medium (geometry only) | medium | **high (mislabeling)** | manageable if Î±=1 matched |
 | Paper contribution suitability | weak alone | strong as **control** | **reject as fractional claim** | **primary estimand** |
 
 ### Option assessments
 
-- **A.** `x` vs `r` was directionally consistent but **below materiality**. Ridge already standardizes; raw→standardized PR remains ≈2 with high correlations, so whitening/PCA might help geometry but cannot by themselves supply the missing memory depth versus the conventional ESN. Insufficient as the sole v2 answer to a fractional-architecture program.
-- **B.** Still needed as a **matched integer-order control / repair track** (recurrent gain, Dale-consistent Jacobian calibration, E/I balance, anti-synchrony). Does not create fractionality. Should proceed in parallel conceptually, but the fractional estimand’s primary control is α=1 of **v2**, not historical v1 ODE.
+- **A.** `x` vs `r` was directionally consistent but **below materiality**. Ridge already standardizes; rawâ†’standardized PR remains â‰ˆ2 with high correlations, so whitening/PCA might help geometry but cannot by themselves supply the missing memory depth versus the conventional ESN. Insufficient as the sole v2 answer to a fractional-architecture program.
+- **B.** Still needed as a **matched integer-order control / repair track** (recurrent gain, Dale-consistent Jacobian calibration, E/I balance, anti-synchrony). Does not create fractionality. Should proceed in parallel conceptually, but the fractional estimandâ€™s primary control is Î±=1 of **v2**, not historical v1 ODE.
 - **C.** Fractional filtering of outputs or fractional readout operators does **not** make the reservoir fractional. **Rejected** as sufficient for a fractional-ESN claim.
-- **D.** Place a Caputo derivative on \(x\) with common α. Keep STD/SFA/delays modular and integer-order. Selected.
+- **D.** Place a Caputo derivative on \(x\) with common Î±. Keep STD/SFA/delays modular and integer-order. Selected.
 
 ---
 
 ## 4. Selected architecture
 
-**Selected: Option D — Fractional neuronal/reservoir state equation (Caputo), common order α, modular integer-order STD/SFA/delays, Dale law retained.**
+**Selected: Option D â€” Fractional neuronal/reservoir state equation (Caputo), common order Î±, modular integer-order STD/SFA/delays, Dale law retained.**
 
-Initial policy: **one shared** \(\alpha\) with \(0<\alpha\le 1\). Neuron-specific α values are **out of scope** for the first freeze (identifiability / multiplicity).
+Initial policy: **one shared** \(\alpha\) with \(0<\alpha\le 1\). Neuron-specific Î± values are **out of scope** for the first freeze (identifiability / multiplicity).
 
 ---
 
@@ -156,10 +157,10 @@ For each neuron \(i\),
     + I_{\mathrm{in},i}(t).
 \]
 
-Here \({}^{C}D_{t}^{\alpha}\) is the **Caputo** derivative of order \(\alpha\).  
+Here \({}^{C}D_{t}^{\alpha}\) is the **Caputo** derivative of order \(\alpha\).
 \(\tau_x>0\) has time units; \(\tau_x^{\alpha}\) supplies dimensional consistency so the RHS remains in the same units as \(x\).
 
-**Note on adaptation.** There is **no** separate \(-I_{\mathrm{adapt}}\) on the \(x\)-RHS in v1. Adaptation remains inside the rate map (§5.2). Do not silently move SFA onto the linear \(x\)-current without a new justified design revision.
+**Note on adaptation.** There is **no** separate \(-I_{\mathrm{adapt}}\) on the \(x\)-RHS in v1. Adaptation remains inside the rate map (Â§5.2). Do not silently move SFA onto the linear \(x\)-current without a new justified design revision.
 
 ### 5.2 Rate map, SFA, STD (integer-order auxiliaries)
 
@@ -278,19 +279,19 @@ with \(c_{\alpha,\Delta t}=1/(\Gamma(2-\alpha)(\Delta t)^{\alpha})\).
 
 | Item | Full-history L1 |
 |---|---|
-| Time cost | \(O(N_t)\) steps × \(O(n)\) neurons × \(O(N_t)\) history ⇒ \(O(n N_t^2)\) dominant term |
+| Time cost | \(O(N_t)\) steps Ã— \(O(n)\) neurons Ã— \(O(N_t)\) history â‡’ \(O(n N_t^2)\) dominant term |
 | Memory | store \(x\)-history length \(N_t\) (and delay buffers for \(r,b\)) |
 | Precision | floating-point double; deterministic |
 | Delays | \(O(1)\) indexed/interpolated reads per edge class |
 
-### 6.5 α=1 limit (matched control)
+### 6.5 Î±=1 limit (matched control)
 
 At \(\alpha=1\), Caputo reduces to the ordinary derivative and L1 weights beyond the immediate increment vanish in the classical sense, recovering a declared **matched integer-order discrete scheme** on the same grid, same \(W\), \(W_{\mathrm{in}}\), STD/SFA/delay modules, and readout rules.
 
-**Primary matched control for the fractional estimand:**  
+**Primary matched control for the fractional estimand:**
 same v2 discrete architecture at \(\alpha=1\).
 
-**Do not** claim exact equivalence to the historical v1 adaptive `ode23s`/`dde23` path unless separately demonstrated. Historical v1 remains a secondary reference, not the principal α=1 control.
+**Do not** claim exact equivalence to the historical v1 adaptive `ode23s`/`dde23` path unless separately demonstrated. Historical v1 remains a secondary reference, not the principal Î±=1 control.
 
 ---
 
@@ -298,18 +299,18 @@ same v2 discrete architecture at \(\alpha=1\).
 
 Matched fields between Fractional MESN (\(\alpha<1\)) and v2-\(\alpha=1\):
 
-- \(W\), \(W_{\mathrm{in}}\), Dale signs  
-- network size \(n\)  
-- input sequence \(U(t)\)  
-- STD on/off and parameters  
-- SFA on/off and parameters  
-- delays on/off and \(\delta\)  
-- feature representation (`r` or `x`)  
-- readout dimension and λ protocol  
-- train/validation/test splits  
+- \(W\), \(W_{\mathrm{in}}\), Dale signs
+- network size \(n\)
+- input sequence \(U(t)\)
+- STD on/off and parameters
+- SFA on/off and parameters
+- delays on/off and \(\delta\)
+- feature representation (`r` or `x`)
+- readout dimension and Î» protocol
+- train/validation/test splits
 - activity-range / operating-point policy (explicitly declared)
 
-Avoid “all changes at once” contrasts between historical v1 ODE MESN and a new fractional implementation.
+Avoid â€œall changes at onceâ€ contrasts between historical v1 ODE MESN and a new fractional implementation.
 
 ---
 
@@ -343,7 +344,7 @@ Default: **do not fractionalize** SFA or STD unless a future document separately
 | \(t\), \(\tau_x\), \(\tau_a\), \(\tau_b\), \(\delta\) | seconds |
 | \(x\), \(q\), \(u\) | consistent drive units |
 | \(r\), \(b\), \(c_a\) | dimensionless (rates in \([0,1]\); resources in \([0,1]\)) |
-| \(W\), \(W_{\mathrm{in}}\) | map drive→drive |
+| \(W\), \(W_{\mathrm{in}}\) | map driveâ†’drive |
 | \(\alpha\) | dimensionless |
 | \(\tau_x^{\alpha}\,{}^{C}D_t^{\alpha}x\) | same units as \(x\) |
 
@@ -353,7 +354,7 @@ Dimensional check: LHS and RHS of the membrane equation share units.
 
 ## 11. Computational complexity
 
-See §6.4. Development work may use short trajectories; any production claim comparing α must either use full history or a disclosed, validated truncation.
+See Â§6.4. Development work may use short trajectories; any production claim comparing Î± must either use full history or a disclosed, validated truncation.
 
 ---
 
@@ -376,8 +377,8 @@ Required:
 
 1. Constant function: \({}^{C}D_t^{\alpha} c=0\).
 2. Power function: \({}^{C}D_t^{\alpha} t^{\beta}=\Gamma(\beta+1)/\Gamma(\beta+1-\alpha)\, t^{\beta-\alpha}\).
-3. Fractional relaxation \({}^{C}D_t^{\alpha}x=-\lambda x\) vs Mittag–Leffler solution.
-4. α=1 limit vs declared matched integer-order scheme.
+3. Fractional relaxation \({}^{C}D_t^{\alpha}x=-\lambda x\) vs Mittagâ€“Leffler solution.
+4. Î±=1 limit vs declared matched integer-order scheme.
 5. Time-step convergence under \(\Delta t\) refinement.
 6. Full-history vs truncated/accelerated agreement (when approx exists).
 7. Zero-input equilibrium.
@@ -392,7 +393,7 @@ Required:
 
 ---
 
-## 14. What counts as “properly fractional”
+## 14. What counts as â€œproperly fractionalâ€
 
 The architecture may be called fractional only if **all** hold:
 
@@ -400,11 +401,11 @@ The architecture may be called fractional only if **all** hold:
 2. The numerical update contains the corresponding causal power-law history convolution.
 3. Constant-state Caputo derivatives are zero.
 4. The implementation retains the declared initial-condition convention.
-5. The α=1 limit is verified against the matched discrete scheme.
+5. The Î±=1 limit is verified against the matched discrete scheme.
 6. Reducing history changes the approximation and is disclosed.
 7. Fractional order affects **internal dynamics**, not merely readout filtering.
 8. Stability and empirical state convergence are tested for the fractional implementation.
-9. Fractional vs α=1 comparisons use matched weights, inputs, dimensions, mechanisms, and readout rules.
+9. Fractional vs Î±=1 comparisons use matched weights, inputs, dimensions, mechanisms, and readout rules.
 
 **Rejected as sufficient fractionality:** multiple SFA timescales alone; synaptic delays alone; STD alone; power-law fit to outputs; fractional filtering after readout; merely naming the architecture fractional.
 
@@ -422,15 +423,15 @@ The architecture may be called fractional only if **all** hold:
 
 **Additional controls**
 
-- conventional leaky ESN  
-- current-input-only  
-- no-recurrent coupling  
-- shuffled target  
-- exact history  
-- mechanisms-off  
-- fractional without STD  
-- fractional without SFA  
-- fractional without delays  
+- conventional leaky ESN
+- current-input-only
+- no-recurrent coupling
+- shuffled target
+- exact history
+- mechanisms-off
+- fractional without STD
+- fractional without SFA
+- fractional without delays
 
 ---
 
@@ -464,15 +465,15 @@ Authority: [`SEED_ROLE_LEDGER.md`](SEED_ROLE_LEDGER.md).
 
 **Permitted (after implementation + verification)**
 
-- “Caputo fractional MESN of common order α with integer-order SFA/STD and explicit delays.”
-- Matched α<1 vs α=1 comparisons under the frozen protocol.
-- Claims that the reservoir is fractional **only** when §14 is satisfied.
+- â€œCaputo fractional MESN of common order Î± with integer-order SFA/STD and explicit delays.â€
+- Matched Î±<1 vs Î±=1 comparisons under the frozen protocol.
+- Claims that the reservoir is fractional **only** when Â§14 is satisfied.
 
 **Forbidden**
 
-- Calling v1 / multi-SFA / STD / DDE “fractional.”
+- Calling v1 / multi-SFA / STD / DDE â€œfractional.â€
 - Claiming fractionality from readout-only filters (Option C).
-- Claiming empirical necessity of α≠1 solely from the conventional ESN gap in 5D-C.
+- Claiming empirical necessity of Î±â‰ 1 solely from the conventional ESN gap in 5D-C.
 - Using development diagnostics as publication evidence.
 - Executing reserved future seeds during architecture bring-up.
 
@@ -482,26 +483,106 @@ Authority: [`SEED_ROLE_LEDGER.md`](SEED_ROLE_LEDGER.md).
 
 Deferred to later design/implementation phases (not blockers for this freeze of the **form** of the equations):
 
-1. Exact algebraic semi-implicit L1 rearrangement coefficients and causal index for \(r\) vs \(x_n\).
-2. Whether default readout remains `r` or switches to `x` under a fingerprinted policy.
-3. Whether a parallel integer-order recurrent-gain repair (Option B) is calibrated before or alongside first α sweeps.
-4. Operating-point recalibration policy for v2 (must not silently reuse sealed v1 gate authority).
-5. Prehistory length relative to washout for delayed + fractional startup.
-6. Optional fast convolution / hierarchical memory **as disclosed approximation only**.
-7. Whether \(\tau_x^{\alpha}\) is written with a fixed \(\tau_x=\tau_d\) or a reparameterized τ(α).
-8. Discrete delay interpolation order (linear frozen as default intent; higher-order needs justification).
+1. Whether default readout remains `r` or switches to `x` under a fingerprinted policy.
+2. Nonlinear recurrent integration into the verified Caputo-L1 core (drive construction from \(W\), \(r\), Dale \(W\)).
+3. Auxiliary SFA/STD integration with the fractional \(x\)-step (integer-order auxiliaries; causal index for \(r\)).
+4. Whether a parallel integer-order recurrent-gain repair (Option B) is calibrated before or alongside first Î± sweeps.
+5. Operating-point recalibration policy for v2 (must not silently reuse sealed v1 gate authority).
+6. Discrete delay interpolation order (linear frozen as default intent; higher-order needs justification) and delay-history module on \([t_0-\delta,t_0]\).
+7. Optional fast convolution / hierarchical memory **as disclosed approximation only**.
+8. Whether \(\tau_x^{\alpha}\) is written with a fixed \(\tau_x=\tau_d\) or a reparameterized Ï„(Î±).
+
+**Resolved by Phase 5D-E1** (see Â§20): exact L1 causal algebra / semi-implicit coefficients; core forcing index \(d_{n-1}\); Î±=1 branch; Caputo lower-terminal / no pre-\(t_0\) fractional history; full-history mandate.
 
 ---
 
-## 19. Explicit statement: no implementation has occurred
+## 19. Explicit statement: Phase 5D-D produced documentation only
 
-Phase 5D-D produced **documentation only**:
+Phase 5D-D produced **documentation only** at its freeze:
 
-- no MATLAB source or test code for fractional dynamics;
+- no MATLAB source or test code for fractional dynamics at that time;
 - no new reservoir trajectories;
 - no readout refits;
 - no future-v2 seed execution;
 - no modification of the completed 5D-C run;
 - no modification of `temporal_learning_gate_v1` or sealed v1 artifacts.
 
-**Next phase:** Phase 5D-E1 — preregister and implement the fractional numerical core with analytic verification tests.
+Phase 5D-E1 subsequently implements the **standalone** Caputo-L1 numerical reference core and analytic tests only (see Â§20). It does **not** integrate the core into `SRNN_ESN`.
+
+---
+
+## 20. Phase 5D-E1 amendment â€” Caputo-L1 numerical core freeze
+
+**Phase:** 5D-E1
+**Protocol / schema:** `fractional_mesn_v2_caputo_l1_core_v1`
+**Preregistration:** [`FRACTIONAL_MESN_V2_NUMERICAL_CORE_PREREGISTRATION.md`](FRACTIONAL_MESN_V2_NUMERICAL_CORE_PREREGISTRATION.md)
+
+This amendment **does not delete** Phase 5D-D history. It resolves previously deferred numerical items for the **standalone linear reference core**.
+
+### 20.1 Exact semi-implicit algebra (resolved)
+
+Standalone problem:
+
+\[
+\tau_x^{\alpha}\;{}^{C}D_{t_0}^{\alpha} x(t) = -x(t) + d(t).
+\]
+
+With
+
+\[
+\kappa = \frac{\tau_x^{\alpha}}{\Gamma(2-\alpha)\, h^{\alpha}},
+\qquad
+H_n = \sum_{k=1}^{n-1} w_k\bigl(x_{n-k}-x_{n-k-1}\bigr),
+\]
+
+\[
+x_n = \frac{\kappa\, x_{n-1} - \kappa\, H_n + d_{n-1}}{\kappa + 1},
+\qquad
+H_1 = 0.
+\]
+
+### 20.2 Core forcing index (resolved)
+
+Core forcing uses \(d_{n-1}\) only (API: `drive_previous`). No future drive on the RHS.
+
+### 20.3 Alpha = 1 branch (resolved)
+
+Exact `alpha == 1` branch (backward Euler leak, explicit previous drive):
+
+\[
+x_n = \frac{(\tau_x/h)\, x_{n-1} + d_{n-1}}{(\tau_x/h) + 1}.
+\]
+
+Not claimed equal to historical `ode23s`/`dde23`.
+
+### 20.4 Caputo memory / initial condition (resolved)
+
+- Lower terminal is \(t_0\).
+- Standard IVP uses \(x(t_0)=x_0\).
+- **No** pre-\(t_0\) fractional history in core v1.
+- Delay prehistory on \([t_0-\delta,t_0]\) remains a **separate future module**.
+- Full history is mandatory; truncation forbidden in the reference core.
+
+### 20.5 Time-step convergence (resolved policy)
+
+Convergence claims must account for startup regularity. Do not impose unrealistic \(2-\alpha\) rates on solutions with startup singularities; require monotonic error decrease under refinement for smooth tests and document observed order.
+
+### 20.6 Still unresolved (carry forward)
+
+- \(r\) versus \(x\) readout;
+- nonlinear recurrent integration;
+- auxiliary SFA/STD integration;
+- delay interpolation / delay-history module;
+- operating-point recalibration;
+- gain-repair strategy;
+- accelerated memory approximations.
+
+### 20.7 Integration boundary
+
+Phase 5D-E1 implements only:
+
+`src/algorithms/fractional/*` + unit/analytic tests + this amendment + the preregistration document.
+
+`SRNN_ESN.m` and existing ODE/DDE scientific behavior remain unchanged.
+
+**Next phase:** Phase 5D-E2 â€” integrate the verified core into an isolated Fractional MESN v2 class with matched Î±=1 dynamics, without scientific tuning.
