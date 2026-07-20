@@ -14,20 +14,25 @@ function validate_temporal_memory_artifact_registry(registry, run_dir, cfg, expe
             'Artifact registry has no entries.');
     end
 
+    expected_n = expected_temporal_memory_registry_entry_count(cfg);
+    if numel(entries) ~= expected_n
+        error('validate_temporal_memory_artifact_registry:EntryCount', ...
+            'Expected %d registry entries, got %d.', expected_n, numel(entries));
+    end
+    if local_get(registry, 'n_entries', NaN) ~= expected_n
+        error('validate_temporal_memory_artifact_registry:EntryCount', ...
+            'Registry n_entries (%d) does not match expected %d.', ...
+            local_get(registry, 'n_entries', NaN), expected_n);
+    end
+
     paths = cell(numel(entries), 1);
+    path_roles = cell(numel(entries), 1);
     for i = 1:numel(entries)
         e = entries(i);
         rel = char(e.relative_path);
         paths{i} = rel;
-        if isempty(rel) || startsWith(rel, '/') || startsWith(rel, '\') || ...
-                ~isempty(regexp(rel, '^[A-Za-z]:', 'once'))
-            error('validate_temporal_memory_artifact_registry:AbsolutePath', ...
-                'Registry must not contain absolute paths: %s', rel);
-        end
-        if contains(rel, '..')
-            error('validate_temporal_memory_artifact_registry:PathTraversal', ...
-                'Registry path traversal forbidden: %s', rel);
-        end
+        path_roles{i} = sprintf('%s|%s', rel, char(e.artifact_role));
+        assert_safe_relpath(rel);
         abs_path = fullfile(run_dir, strrep(rel, '/', filesep));
         if ~isfile(abs_path)
             error('validate_temporal_memory_artifact_registry:MissingFile', ...
@@ -44,6 +49,10 @@ function validate_temporal_memory_artifact_registry(registry, run_dir, cfg, expe
         error('validate_temporal_memory_artifact_registry:DuplicatePath', ...
             'Duplicate relative paths in artifact registry.');
     end
+    if numel(path_roles) ~= numel(unique(path_roles))
+        error('validate_temporal_memory_artifact_registry:DuplicatePathRole', ...
+            'Duplicate path/role pairs in artifact registry.');
+    end
 
     expected = expected_registry_paths(cfg);
     missing = setdiff(expected, paths);
@@ -57,30 +66,19 @@ function validate_temporal_memory_artifact_registry(registry, run_dir, cfg, expe
             'Unknown registry entries: %s', strjoin(unknown, ', '));
     end
 
-    fresh = build_temporal_memory_artifact_registry(run_dir, cfg, struct());
-    if ~strcmp(char(registry.registry_content_hash), char(fresh.registry_content_hash))
-        % Compare semantic hashes entry-wise for clearer failures
-        for i = 1:numel(entries)
-            e = entries(i);
-            fe = fresh.entries(strcmp({fresh.entries.relative_path}, e.relative_path));
-            if isempty(fe)
-                continue;
-            end
-            if ~strcmp(char(e.semantic_content_hash), char(fe.semantic_content_hash))
-                error('validate_temporal_memory_artifact_registry:SemanticHashMismatch', ...
-                    'Semantic content hash mismatch for %s.', e.relative_path);
-            end
-            if ~strcmp(char(e.binary_sha256), char(fe.binary_sha256))
-                error('validate_temporal_memory_artifact_registry:BinaryHashMismatch', ...
-                    'Binary file hash mismatch for %s.', e.relative_path);
-            end
-        end
+    got_hash = canonical_sha256(temporal_memory_registry_hash_payload(registry));
+    if ~strcmp(char(registry.registry_content_hash), got_hash)
         error('validate_temporal_memory_artifact_registry:RegistryHashMismatch', ...
-            'Artifact registry content hash mismatch.');
+            'Stored registry_content_hash does not match canonical payload.');
+    end
+
+    fresh = build_temporal_memory_artifact_registry(run_dir, cfg);
+    if ~registries_canonically_equal(registry, fresh)
+        error('validate_temporal_memory_artifact_registry:RegistryMismatch', ...
+            'Stored registry does not match independent rebuild.');
     end
 
     if nargin >= 4 && ~isempty(expected_keys)
-        % Every completed checkpoint key with an artifact role must appear
         ck_keys = {};
         for i = 1:numel(entries)
             k = char(entries(i).producing_checkpoint_key);
@@ -88,12 +86,43 @@ function validate_temporal_memory_artifact_registry(registry, run_dir, cfg, expe
                 ck_keys{end+1} = k; %#ok<AGROW>
             end
         end
-        missing_keys = setdiff(expected_keys(:), ck_keys(:));
-        if ~isempty(missing_keys)
-            error('validate_temporal_memory_artifact_registry:MissingCheckpointKey', ...
-                'Registry missing producing keys: %s', strjoin(missing_keys, ', '));
+        ck_keys = ck_keys(:);
+        missing_keys = setdiff(expected_keys(:), ck_keys);
+        extra_keys = setdiff(ck_keys, expected_keys(:));
+        if ~isempty(missing_keys) || ~isempty(extra_keys)
+            error('validate_temporal_memory_artifact_registry:CheckpointKeyCoverage', ...
+                'Producing checkpoint key coverage mismatch.');
         end
     end
+end
+
+function tf = registries_canonically_equal(a, b)
+    tf = false;
+    if ~strcmp(char(a.schema_version), char(b.schema_version))
+        return;
+    end
+    if a.n_entries ~= b.n_entries
+        return;
+    end
+    if ~strcmp(char(a.registry_content_hash), char(b.registry_content_hash))
+        return;
+    end
+    ea = a.entries;
+    eb = b.entries;
+    if numel(ea) ~= numel(eb)
+        return;
+    end
+    fields = {'relative_path', 'artifact_role', 'binary_sha256', ...
+        'semantic_content_hash', 'schema_version', 'producing_checkpoint_key'};
+    for i = 1:numel(ea)
+        for f = 1:numel(fields)
+            fn = fields{f};
+            if ~strcmp(char(ea(i).(fn)), char(eb(i).(fn)))
+                return;
+            end
+        end
+    end
+    tf = true;
 end
 
 function paths = expected_registry_paths(cfg)
@@ -124,6 +153,26 @@ function paths = expected_registry_paths(cfg)
     paths{end+1} = 'control_summary.mat';
     paths{end+1} = 'diagnostic_result.mat';
     paths = paths(:);
+end
+
+function assert_safe_relpath(rel)
+    rel = strrep(char(rel), '\', '/');
+    if isempty(rel) || startsWith(rel, '/') || startsWith(rel, '\') || ...
+            ~isempty(regexp(rel, '^[A-Za-z]:', 'once'))
+        error('validate_temporal_memory_artifact_registry:AbsolutePath', ...
+            'Registry must not contain absolute paths: %s', rel);
+    end
+    if contains(rel, '..')
+        error('validate_temporal_memory_artifact_registry:PathTraversal', ...
+            'Registry path traversal forbidden: %s', rel);
+    end
+    parts = strsplit(rel, '/');
+    for i = 1:numel(parts)
+        if strcmp(parts{i}, '.') || strcmp(parts{i}, '..')
+            error('validate_temporal_memory_artifact_registry:PathTraversal', ...
+                'Registry path must not contain . or .. components: %s', rel);
+        end
+    end
 end
 
 function v = local_get(s, name, default)

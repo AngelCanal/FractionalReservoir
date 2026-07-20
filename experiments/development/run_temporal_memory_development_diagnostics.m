@@ -180,12 +180,23 @@ function [result, run_dir] = run_temporal_memory_development_diagnostics(options
             'control_summary', tables.control_summary, ...
             'result', result, ...
             'commit_sha', commit_sha, ...
-            'is_test_fixture', allow_fixture, ...
-            'checkpoint', checkpoint));
+            'is_test_fixture', allow_fixture));
 
         checkpoint.status = 'complete';
         checkpoint.completed_shared_task_controls = true;
         checkpoint = write_temporal_memory_development_checkpoint(run_dir, checkpoint);
+
+        load_and_validate_temporal_memory_development_checkpoint(run_dir, cfg, commit_sha);
+        vopts = struct('throw_on_fail', true);
+        if allow_fixture
+            vopts.allow_test_fixture = true;
+            vopts.cfg_override = cfg;
+        end
+        vreport = validate_temporal_memory_development_diagnostics(run_dir, vopts);
+        if ~logical(vreport.ok)
+            error('run_temporal_memory_development_diagnostics:ValidationFailed', ...
+                'Independent validation failed after finalization.');
+        end
 
     catch ME
         gs = RandStream.getGlobalStream();
@@ -456,6 +467,7 @@ function scored = evaluate_mesn_cell(cfg, cell_spec, seed, allow_fixture, fixtur
     scored.W_in = bundle.W_in;
     scored.W_in_hash = canonical_sha256(bundle.W_in);
     scored.W = bundle.W;
+    scored.lambda_grid = bundle.lambda_grid;
     % Retain reference-control inputs for later shared reference computation
     if strcmp(char(scored.cell_name), 'reference_r')
         scored.mesn_features = bundle.mesn_features;
@@ -471,6 +483,7 @@ end
 function scored = synthesize_seed_cell_result(cfg, cell_spec, seed)
     lags = cfg.lags(:);
     n = numel(lags);
+    default_lambda = cfg.lambda_grid(min(2, numel(cfg.lambda_grid)));
     cell_name = char(cell_spec.diagnostic_name);
     cell_idx = find(strcmp(cell_name, cfg.diagnostic_cell_names), 1);
     if isempty(cell_idx); cell_idx = 1; end
@@ -494,7 +507,7 @@ function scored = synthesize_seed_cell_result(cfg, cell_spec, seed)
         m.memory_coefficient = m.pearson^2;
         m.rmse = 0.2 + 0.5 * base;
         per_lag(i).lag = lag;
-        per_lag(i).selected_lambda = 1e-6;
+        per_lag(i).selected_lambda = default_lambda;
         per_lag(i).selected_at_grid_boundary = false;
         per_lag(i).numerical_rank = 4;
         per_lag(i).coefficient_norm = 1 + base;
@@ -520,7 +533,7 @@ function scored = synthesize_seed_cell_result(cfg, cell_spec, seed)
         per_lag(i).coefficients = [1; 0.5; 0.25; 0.1];
         per_lag(i).feature_mean = zeros(1, 4);
         per_lag(i).feature_scale = ones(1, 4);
-        per_lag(i).lambda_selection_table = struct('lambda', 1e-6, 'score', 0.1);
+        per_lag(i).lambda_selection_table = struct('lambda', default_lambda, 'score', 0.1);
         per_lag(i).metrics.constant_prediction = false;
     end
     fd.rank_tolerance = 1e-12;
@@ -556,6 +569,19 @@ end
 
 function persist_cell_result(art_path, scored)
     slim = scored;
+    if isfield(slim, 'W') && ~isempty(slim.W)
+        slim.W_hash = canonical_sha256(slim.W);
+    end
+    if isfield(slim, 'W_in') && ~isempty(slim.W_in)
+        computed_win = canonical_sha256(slim.W_in);
+        if isfield(slim, 'W_in_hash') && ~isempty(slim.W_in_hash) && ...
+                ~strcmp(char(slim.W_in_hash), computed_win)
+            error('run_temporal_memory_development_diagnostics:WinHashMismatch', ...
+                'W_in_hash does not match W_in for cell %s.', ...
+                char(local_get(slim, 'cell_name', '')));
+        end
+        slim.W_in_hash = computed_win;
+    end
     % Drop bulky objects from non-reference cells; keep hash identity
     if ~strcmp(char(local_get(slim, 'cell_name', '')), 'reference_r')
         drop = {'esn', 'mesn_features', 'splits', 'Y_train', 'Y_val', 'Y_test', 'W'};
@@ -629,8 +655,8 @@ function checkpoint = ensure_conventional_for_seed(run_dir, checkpoint, cfg, ...
             cfg.lags(:), cfg.lambda_grid(:), mesn_Win, seed, fit_opts);
         scored = score_conventional_memory_curve(bundle, Y_test);
     end
-    scored.bundle_content_hash = temporal_memory_conventional_bundle_content_hash(scored);
     scored.reused_shared_baseline = true;
+    scored.bundle_content_hash = temporal_memory_conventional_bundle_content_hash(scored);
     atomic_save_results(path, struct('conventional_bundle', scored));
     rh = scored.bundle_content_hash;
     fh = temporal_memory_file_sha256(path);
@@ -860,17 +886,18 @@ end
 function bundle = synthesize_conventional_bundle(cfg, seed)
     lags = cfg.lags(:);
     n = numel(lags);
+    default_lambda = cfg.lambda_grid(min(2, numel(cfg.lambda_grid)));
     n_cand = cfg.conventional_memory_baseline.candidate_count;
     sel = 1;
     per_lag = repmat(struct( ...
         'lag', NaN, ...
         'selected_candidate_index', sel, ...
-        'selected_lambda', 1e-6, ...
+        'selected_lambda', default_lambda, ...
         'metrics', struct()), n, 1);
     for i = 1:n
         per_lag(i).lag = lags(i);
         per_lag(i).selected_candidate_index = sel;
-        per_lag(i).selected_lambda = 1e-6;
+        per_lag(i).selected_lambda = default_lambda;
         per_lag(i).metrics = struct('nrmse', NaN, 'r2', NaN, 'pearson', NaN, ...
             'memory_coefficient', NaN, 'rmse', NaN);
     end

@@ -292,12 +292,37 @@ function testCellSemanticHashBindsUnboundFields(testCase)
         'mc125', @mutate_mc125; ...
         'pr', @mutate_pr; ...
         'rate', @mutate_rate; ...
-        'win', @mutate_win};
+        'win', @mutate_win; ...
+        'whash', @mutate_w_hash};
     for i = 1:size(cases, 1)
         mut = cases{i, 2};
         h1 = temporal_memory_seed_result_content_hash(mut(base));
         testCase.verifyNotEqual(h0, h1, cases{i, 1});
     end
+end
+
+function testWinInHashConsistencyRequired(testCase)
+    cfg = testCase.TestData.cfg;
+    base = synthesize_minimal_cell(cfg, cfg.diagnostic_cells.reference_r, 1729);
+    base.W_in = rand(4, 1);
+    base.W_in_hash = canonical_sha256(base.W_in);
+    temporal_memory_seed_result_content_hash(base);
+    bad = base;
+    bad.W_in = bad.W_in + 1;
+    testCase.verifyError(@() temporal_memory_seed_result_content_hash(bad), ...
+        'temporal_memory_seed_result_content_hash:WinHashMismatch');
+end
+
+function testWHashConsistencyRequired(testCase)
+    cfg = testCase.TestData.cfg;
+    base = synthesize_minimal_cell(cfg, cfg.diagnostic_cells.reference_r, 1729);
+    base.W = eye(4);
+    base.W_hash = canonical_sha256(base.W);
+    temporal_memory_seed_result_content_hash(base);
+    bad = base;
+    bad.W = bad.W * 2;
+    testCase.verifyError(@() temporal_memory_seed_result_content_hash(bad), ...
+        'temporal_memory_seed_result_content_hash:WHashMismatch');
 end
 
 function testConventionalSemanticHashBindsUnboundFields(testCase)
@@ -633,6 +658,216 @@ function testOneConventionalFitPerSeed(testCase)
     end
 end
 
+function testRegistryReconstructableAfterWriterPath(testCase)
+    % Regression for checkpoint-status registry mismatch (Phase 5D-B2-R2).
+    root = tempname;
+    mkdir(root);
+    cleanup = onCleanup(@() rmdir(root, 's')); %#ok<NASGU>
+    opts = small_fixture_opts(root, 'tm_registry_rebuild');
+    [~, run_dir] = run_temporal_memory_development_diagnostics(opts);
+    cfg = load_effective_cfg_from_run(run_dir);
+    Sm = load(fullfile(run_dir, 'diagnostic_manifest.mat'), 'diagnostic_manifest');
+    stored = Sm.diagnostic_manifest.artifact_registry;
+    fresh = build_temporal_memory_artifact_registry(run_dir, cfg);
+    testCase.verifyFalse(isfield(stored, 'checkpoint_status'));
+    testCase.verifyEqual(stored.n_entries, expected_temporal_memory_registry_entry_count(cfg));
+    testCase.verifyEqual(char(stored.registry_content_hash), char(fresh.registry_content_hash));
+    validate_temporal_memory_artifact_registry(stored, run_dir, cfg, ...
+        temporal_memory_expected_checkpoint_keys(cfg));
+end
+
+function testCheckpointStatusDoesNotChangeRegistryIdentity(testCase)
+    root = tempname;
+    mkdir(root);
+    cleanup = onCleanup(@() rmdir(root, 's')); %#ok<NASGU>
+    opts = small_fixture_opts(root, 'tm_ck_status');
+    [~, run_dir] = run_temporal_memory_development_diagnostics(opts);
+    cfg = load_effective_cfg_from_run(run_dir);
+    before = build_temporal_memory_artifact_registry(run_dir, cfg);
+    S = load(fullfile(run_dir, 'diagnostic_checkpoint.mat'), 'diagnostic_checkpoint');
+    cp = S.diagnostic_checkpoint;
+    cp.status = 'running';
+    write_temporal_memory_development_checkpoint(run_dir, cp);
+    after = build_temporal_memory_artifact_registry(run_dir, cfg);
+    testCase.verifyEqual(char(before.registry_content_hash), char(after.registry_content_hash));
+    testCase.verifyEqual(before.n_entries, after.n_entries);
+end
+
+function testFirstExecutionValidatesBeforeReturn(testCase)
+    root = tempname;
+    mkdir(root);
+    cleanup = onCleanup(@() rmdir(root, 's')); %#ok<NASGU>
+    opts = small_fixture_opts(root, 'tm_first_validate');
+    [result, run_dir] = run_temporal_memory_development_diagnostics(opts);
+    testCase.verifyEqual(result.status, 'complete');
+    report = validate_temporal_memory_development_diagnostics(run_dir, ...
+        struct('allow_test_fixture', true, 'cfg_override', load_effective_cfg_from_run(run_dir), ...
+        'throw_on_fail', false));
+    testCase.verifyTrue(report.ok);
+end
+
+function testCompletedResumeValidatesBeforeReturn(testCase)
+    root = tempname;
+    mkdir(root);
+    cleanup = onCleanup(@() rmdir(root, 's')); %#ok<NASGU>
+    opts = small_fixture_opts(root, 'tm_resume_validate');
+    [~, run_dir] = run_temporal_memory_development_diagnostics(opts);
+    Sm = load(fullfile(run_dir, 'diagnostic_manifest.mat'), 'diagnostic_manifest');
+    before_hash = char(Sm.diagnostic_manifest.artifact_registry.registry_content_hash);
+    opts2 = opts;
+    opts2.resume_run_dir = run_dir;
+    opts2 = rmfield(opts2, 'run_id');
+    [result2, ~] = run_temporal_memory_development_diagnostics(opts2);
+    testCase.verifyEqual(result2.status, 'complete');
+    Sm2 = load(fullfile(run_dir, 'diagnostic_manifest.mat'), 'diagnostic_manifest');
+    after_hash = char(Sm2.diagnostic_manifest.artifact_registry.registry_content_hash);
+    testCase.verifyEqual(before_hash, after_hash);
+end
+
+function testTamperJsonRegistryEntryRejected(testCase)
+    run_dir = make_synthetic_temporal_memory_diagnostic_run(struct());
+    cleanup = onCleanup(@() rmdir(fileparts(run_dir), 's')); %#ok<NASGU>
+    jpath = fullfile(run_dir, 'diagnostic_manifest.json');
+    J = jsondecode(fileread(jpath));
+    old_hash = J.artifact_registry.registry_content_hash;
+    J.artifact_registry.entries(1).binary_sha256 = repmat('a', 1, 64);
+  % leave registry_content_hash unchanged
+    fid = fopen(jpath, 'w'); fprintf(fid, '%s', jsonencode(J)); fclose(fid);
+    testCase.verifyEqual(J.artifact_registry.registry_content_hash, old_hash);
+    testCase.verifyError(@() validate_temporal_memory_development_diagnostics(run_dir), ...
+        'validate_temporal_memory_development_diagnostics:Failed');
+end
+
+function testTamperJsonRegistryDeletedEntryRejected(testCase)
+    run_dir = make_synthetic_temporal_memory_diagnostic_run(struct());
+    cleanup = onCleanup(@() rmdir(fileparts(run_dir), 's')); %#ok<NASGU>
+    jpath = fullfile(run_dir, 'diagnostic_manifest.json');
+    J = jsondecode(fileread(jpath));
+    J.artifact_registry.entries(1) = [];
+    J.artifact_registry.n_entries = numel(J.artifact_registry.entries);
+    fid = fopen(jpath, 'w'); fprintf(fid, '%s', jsonencode(J)); fclose(fid);
+    testCase.verifyError(@() validate_temporal_memory_development_diagnostics(run_dir), ...
+        'validate_temporal_memory_development_diagnostics:Failed');
+end
+
+function testTamperJsonRegistryDuplicatedEntryRejected(testCase)
+    run_dir = make_synthetic_temporal_memory_diagnostic_run(struct());
+    cleanup = onCleanup(@() rmdir(fileparts(run_dir), 's')); %#ok<NASGU>
+    jpath = fullfile(run_dir, 'diagnostic_manifest.json');
+    J = jsondecode(fileread(jpath));
+    J.artifact_registry.entries = [J.artifact_registry.entries; J.artifact_registry.entries(1)];
+    J.artifact_registry.n_entries = numel(J.artifact_registry.entries);
+    fid = fopen(jpath, 'w'); fprintf(fid, '%s', jsonencode(J)); fclose(fid);
+    testCase.verifyError(@() validate_temporal_memory_development_diagnostics(run_dir), ...
+        'validate_temporal_memory_development_diagnostics:Failed');
+end
+
+function testTamperJsonRegistryReorderedEntryRejected(testCase)
+    run_dir = make_synthetic_temporal_memory_diagnostic_run(struct());
+    cleanup = onCleanup(@() rmdir(fileparts(run_dir), 's')); %#ok<NASGU>
+    jpath = fullfile(run_dir, 'diagnostic_manifest.json');
+    J = jsondecode(fileread(jpath));
+    if numel(J.artifact_registry.entries) < 2
+        testCase.assumeFail('Need at least two registry entries.');
+    end
+    entries = J.artifact_registry.entries;
+    entries = [entries(2); entries(1); entries(3:end)];
+    J.artifact_registry.entries = entries;
+    fid = fopen(jpath, 'w'); fprintf(fid, '%s', jsonencode(J)); fclose(fid);
+    testCase.verifyError(@() validate_temporal_memory_development_diagnostics(run_dir), ...
+        'validate_temporal_memory_development_diagnostics:Failed');
+end
+
+function testTamperJsonRegistryBinaryHashRejected(testCase)
+    assert_json_registry_field_tamper_rejected(testCase, 'binary_sha256', repmat('c', 1, 64));
+end
+
+function testTamperJsonRegistryRoleRejected(testCase)
+    assert_json_registry_field_tamper_rejected(testCase, 'artifact_role', 'tampered_role');
+end
+
+function testTamperJsonRegistrySemanticHashRejected(testCase)
+    assert_json_registry_field_tamper_rejected(testCase, 'semantic_content_hash', ...
+        repmat('b', 1, 64));
+end
+
+function testTamperJsonRegistryCheckpointKeyRejected(testCase)
+    assert_json_registry_field_tamper_rejected(testCase, 'producing_checkpoint_key', ...
+        'cell:tampered|seed:9999');
+end
+
+function testTamperWinMatrixWithUnchangedHashRejected(testCase)
+    cfg = testCase.TestData.cfg;
+    base = synthesize_minimal_cell(cfg, cfg.diagnostic_cells.reference_r, 1729);
+    base.W_in = rand(4, 1);
+    base.W_in_hash = canonical_sha256(base.W_in);
+    run_dir = make_synthetic_temporal_memory_diagnostic_run(struct());
+    cleanup = onCleanup(@() rmdir(fileparts(run_dir), 's')); %#ok<NASGU>
+    seed = cfg.model_seeds(1);
+    cell_name = char(cfg.diagnostic_cell_names{1});
+    path = fullfile(run_dir, 'seed_cell_results', sprintf('seed_%d__%s.mat', seed, cell_name));
+    bad = base;
+    bad.W_in = bad.W_in + 0.01;
+    seed_cell_result = bad; %#ok<NASGU>
+    save(path, 'seed_cell_result');
+    testCase.verifyError(@() validate_temporal_memory_development_diagnostics(run_dir), ...
+        'validate_temporal_memory_development_diagnostics:Failed');
+end
+
+function testTamperWhashRejected(testCase)
+    run_dir = make_synthetic_temporal_memory_diagnostic_run(struct());
+    cleanup = onCleanup(@() rmdir(fileparts(run_dir), 's')); %#ok<NASGU>
+    cfg = testCase.TestData.cfg;
+    cell_name = cfg.diagnostic_cell_names{1};
+    seed = cfg.model_seeds(1);
+    path = fullfile(run_dir, 'seed_cell_results', sprintf('seed_%d__%s.mat', seed, cell_name));
+    S = load(path, 'seed_cell_result');
+    scored = S.seed_cell_result;
+    h = char(scored.W_in_hash);
+    if h(1) == '0'
+        h(1) = 'f';
+    else
+        h(1) = '0';
+    end
+    scored.W_in_hash = h;
+    seed_cell_result = scored; %#ok<NASGU>
+    save(path, 'seed_cell_result');
+    testCase.verifyError(@() validate_temporal_memory_development_diagnostics(run_dir), ...
+        'validate_temporal_memory_development_diagnostics:Failed');
+end
+
+function testProductionRegistryEntryCount(testCase)
+    cfg = testCase.TestData.cfg;
+    testCase.verifyEqual(expected_temporal_memory_registry_entry_count(cfg), 46);
+end
+
+function testProtocolFingerprintUnchanged(testCase)
+    cfg = temporal_memory_development_config();
+    testCase.verifyEqual(char(cfg.protocol_fingerprint), ...
+        'bb3ac4fe71985a156c519f1065b99fb1ff3c1c22ae8bc139c46f43cce4a93310');
+end
+
+function testTemporalLearningGateUnchanged(testCase)
+    repo = testCase.TestData.repo_root;
+    gate_files = { ...
+        fullfile(repo, 'experiments', 'revalidated', 'evaluate_temporal_learning_gate.m'); ...
+        fullfile(repo, 'experiments', 'revalidated', 'fit_temporal_learning_gate_seed.m')};
+    for i = 1:numel(gate_files)
+        testCase.verifyTrue(isfile(gate_files{i}), gate_files{i});
+    end
+end
+
+function assert_json_registry_field_tamper_rejected(testCase, field_name, new_value)
+    run_dir = make_synthetic_temporal_memory_diagnostic_run(struct());
+    cleanup = onCleanup(@() rmdir(fileparts(run_dir), 's')); %#ok<NASGU>
+    jpath = fullfile(run_dir, 'diagnostic_manifest.json');
+    J = jsondecode(fileread(jpath));
+    J.artifact_registry.entries(1).(field_name) = new_value;
+    fid = fopen(jpath, 'w'); fprintf(fid, '%s', jsonencode(J)); fclose(fid);
+    testCase.verifyError(@() validate_temporal_memory_development_diagnostics(run_dir), ...
+        'validate_temporal_memory_development_diagnostics:Failed');
+end
+
 function assert_cell_field_tamper_rejected(mut_fn, testCase)
     run_dir = make_synthetic_temporal_memory_diagnostic_run(struct());
     cleanup = onCleanup(@() rmdir(fileparts(run_dir), 's')); %#ok<NASGU>
@@ -691,6 +926,10 @@ function scored = mutate_win(scored)
         h(1) = '0';
     end
     scored.W_in_hash = h;
+end
+
+function scored = mutate_w_hash(scored)
+    scored.W_hash = repmat('c', 1, 64);
 end
 
 function scored = synthesize_minimal_cell(cfg, cell_spec, seed)

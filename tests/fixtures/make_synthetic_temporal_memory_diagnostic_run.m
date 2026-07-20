@@ -417,6 +417,7 @@ function bundle = synthesize_conventional(cfg, seed)
         bundle.per_lag(i).feature_mean = [0, 0];
         bundle.per_lag(i).feature_scale = [1, 1];
     end
+    bundle.reused_shared_baseline = true;
     bundle.bundle_content_hash = temporal_memory_conventional_bundle_content_hash(bundle);
 end
 

@@ -5,7 +5,6 @@ function written = write_temporal_memory_development_artifacts(run_dir, payload)
 %
 % payload fields:
 %   cfg, tables, control_summary, result, commit_sha, is_test_fixture (optional)
-%   checkpoint (optional; used for registry metadata)
 
     run_dir = char(run_dir);
     if ~isfolder(run_dir)
@@ -16,7 +15,6 @@ function written = write_temporal_memory_development_artifacts(run_dir, payload)
     cfg = payload.cfg;
     commit_sha = char(local_get(payload, 'commit_sha', ''));
     is_fixture = logical(local_get(payload, 'is_test_fixture', false));
-    checkpoint = local_get(payload, 'checkpoint', struct());
 
     hashes = struct();
     hashes.long_table = save_table_pair(run_dir, 'temporal_memory_long_table', ...
@@ -41,7 +39,7 @@ function written = write_temporal_memory_development_artifacts(run_dir, payload)
     force_atomic_save(fullfile(run_dir, 'diagnostic_result.mat'), ...
         struct('diagnostic_result', result));
 
-    artifact_registry = build_temporal_memory_artifact_registry(run_dir, cfg, checkpoint);
+    artifact_registry = build_temporal_memory_artifact_registry(run_dir, cfg);
     hashes.artifact_registry = char(artifact_registry.registry_content_hash);
 
     alloc = local_get(control_summary, 'allocation', struct());

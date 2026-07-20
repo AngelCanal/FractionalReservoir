@@ -293,6 +293,19 @@ function verify_win_hashes_against_artifacts(checkpoint, run_dir, cells, seeds)
             else
                 continue;
             end
+            if isfield(r, 'W_in') && ~isempty(r.W_in)
+                computed = canonical_sha256(r.W_in);
+                if ~strcmp(got, computed)
+                    error('load_and_validate_temporal_memory_development_checkpoint:WinHashMismatch', ...
+                        'W_in_hash does not match W_in for cell %s seed %d.', cn, seeds(is));
+                end
+            end
+            if isfield(r, 'W_hash') && ~isempty(r.W_hash) && isfield(r, 'W') && ~isempty(r.W)
+                if ~strcmp(char(r.W_hash), canonical_sha256(r.W))
+                    error('load_and_validate_temporal_memory_development_checkpoint:WHashMismatch', ...
+                        'W_hash does not match W for cell %s seed %d.', cn, seeds(is));
+                end
+            end
             if ~strcmp(got, char(hashes.(cn)))
                 error('load_and_validate_temporal_memory_development_checkpoint:WinHashMismatch', ...
                     'W_in hash mismatch for cell %s seed %d.', cn, seeds(is));

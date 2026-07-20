@@ -1,11 +1,12 @@
-function registry = build_temporal_memory_artifact_registry(run_dir, cfg, checkpoint)
+function registry = build_temporal_memory_artifact_registry(run_dir, cfg)
 %BUILD_TEMPORAL_MEMORY_ARTIFACT_REGISTRY  Manifest artifact file registry.
 %
-%   registry = build_temporal_memory_artifact_registry(run_dir, cfg, checkpoint)
+%   registry = build_temporal_memory_artifact_registry(run_dir, cfg)
 %
 % Entries bind relative path, role, binary SHA-256, semantic content hash where
 % applicable, schema version, and producing checkpoint key. Does not include
 % the registry or manifest files themselves (avoids circular self-hashing).
+% Registry identity is independent of checkpoint execution status.
 
     run_dir = char(run_dir);
     cells = cfg.diagnostic_cell_names(:);
@@ -81,17 +82,12 @@ function registry = build_temporal_memory_artifact_registry(run_dir, cfg, checkp
     registry.schema_version = 'temporal_memory_artifact_registry_v1';
     registry.entries = [entries{:}];
     registry.n_entries = numel(registry.entries);
-    if nargin >= 3 && isstruct(checkpoint) && isfield(checkpoint, 'status')
-        registry.checkpoint_status = char(checkpoint.status);
-    else
-        registry.checkpoint_status = '';
-    end
-    registry.registry_content_hash = canonical_sha256(registry_for_hash(registry));
+    registry.registry_content_hash = canonical_sha256( ...
+        temporal_memory_registry_hash_payload(registry));
 end
 
 function entry = make_entry(run_dir, rel, role, schema, ck_key, sem_fn)
-    rel = strrep(char(rel), '\', '/');
-    assert_safe_relpath(rel);
+    rel = normalize_registry_relpath(rel);
     abs_path = fullfile(run_dir, strrep(rel, '/', filesep));
     if ~isfile(abs_path)
         error('build_temporal_memory_artifact_registry:MissingArtifact', ...
@@ -110,19 +106,27 @@ function entry = make_entry(run_dir, rel, role, schema, ck_key, sem_fn)
     end
 end
 
+function rel = normalize_registry_relpath(rel)
+    rel = strrep(char(rel), '\', '/');
+    assert_safe_relpath(rel);
+end
+
 function assert_safe_relpath(rel)
     if isempty(rel) || startsWith(rel, '/') || startsWith(rel, '\') || ...
-            ~isempty(regexp(rel, '^[A-Za-z]:', 'once')) || ...
-            contains(rel, '..')
+            ~isempty(regexp(rel, '^[A-Za-z]:', 'once'))
         error('build_temporal_memory_artifact_registry:UnsafePath', ...
             'Registry path must be relative without traversal: %s', rel);
     end
-end
-
-function r = registry_for_hash(registry)
-    r = registry;
-    if isfield(r, 'registry_content_hash')
-        r = rmfield(r, 'registry_content_hash');
+    if contains(rel, '..')
+        error('build_temporal_memory_artifact_registry:UnsafePath', ...
+            'Registry path traversal forbidden: %s', rel);
+    end
+    parts = strsplit(rel, '/');
+    for i = 1:numel(parts)
+        if strcmp(parts{i}, '.') || strcmp(parts{i}, '..')
+            error('build_temporal_memory_artifact_registry:UnsafePath', ...
+                'Registry path must not contain . or .. components: %s', rel);
+        end
     end
 end
 

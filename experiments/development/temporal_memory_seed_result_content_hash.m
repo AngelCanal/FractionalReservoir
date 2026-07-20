@@ -22,11 +22,14 @@ function payload = temporal_memory_seed_result_hash_payload(scored)
     payload.feature_dimension = local_get(scored, 'feature_dimension', NaN);
     payload.include_input = logical(local_get(scored, 'include_input', false));
     payload.lags = local_get(scored, 'lags', [])';
+    payload.lambda_grid = local_get(scored, 'lambda_grid', [])';
     payload.provenance = char(string(local_get(scored, 'provenance', '')));
     payload.simulations_per_split = local_get(scored, 'simulations_per_split', NaN);
     payload.n_reservoir_simulations = local_get(scored, 'n_reservoir_simulations', NaN);
     payload.global_rng_unchanged = logical(local_get(scored, 'global_rng_unchanged', false));
     payload.W_in_content_hash = resolve_win_hash(scored);
+    payload.W_content_hash = resolve_w_hash(scored);
+    payload.fit_identity = local_get(scored, 'fit_identity', struct());
     payload.is_test_fixture = logical(local_get(scored, 'is_test_fixture', false));
     payload.synthetic_provenance = logical(local_get(scored, 'synthetic_provenance', false));
 
@@ -81,6 +84,8 @@ function payload = temporal_memory_seed_result_hash_payload(scored)
                 'lambda_selection_table');
             if isfield(pl, 'y_hat') && ~isempty(pl.y_hat)
                 lag_rows(i).prediction_vector_content_hash = canonical_sha256(pl.y_hat);
+            elseif isfield(pl, 'predictions') && ~isempty(pl.predictions)
+                lag_rows(i).prediction_vector_content_hash = canonical_sha256(pl.predictions);
             else
                 lag_rows(i).prediction_vector_content_hash = '';
             end
@@ -134,10 +139,40 @@ function payload = temporal_memory_seed_result_hash_payload(scored)
 end
 
 function hex = resolve_win_hash(scored)
+    computed = '';
+    if isfield(scored, 'W_in') && ~isempty(scored.W_in)
+        computed = canonical_sha256(scored.W_in);
+    end
     if isfield(scored, 'W_in_hash') && ~isempty(scored.W_in_hash)
-        hex = char(scored.W_in_hash);
-    elseif isfield(scored, 'W_in') && ~isempty(scored.W_in)
-        hex = canonical_sha256(scored.W_in);
+        stored = char(scored.W_in_hash);
+        if ~isempty(computed) && ~strcmp(stored, computed)
+            error('temporal_memory_seed_result_content_hash:WinHashMismatch', ...
+                'W_in_hash does not match W_in for cell %s.', ...
+                char(string(local_get(scored, 'cell_name', ''))));
+        end
+        hex = stored;
+    elseif ~isempty(computed)
+        hex = computed;
+    else
+        hex = '';
+    end
+end
+
+function hex = resolve_w_hash(scored)
+    computed = '';
+    if isfield(scored, 'W') && ~isempty(scored.W)
+        computed = canonical_sha256(scored.W);
+    end
+    if isfield(scored, 'W_hash') && ~isempty(scored.W_hash)
+        stored = char(scored.W_hash);
+        if ~isempty(computed) && ~strcmp(stored, computed)
+            error('temporal_memory_seed_result_content_hash:WHashMismatch', ...
+                'W_hash does not match W for cell %s.', ...
+                char(string(local_get(scored, 'cell_name', ''))));
+        end
+        hex = stored;
+    elseif ~isempty(computed)
+        hex = computed;
     else
         hex = '';
     end
