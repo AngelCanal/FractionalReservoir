@@ -585,4 +585,47 @@ Phase 5D-E1 implements only:
 
 `SRNN_ESN.m` and existing ODE/DDE scientific behavior remain unchanged.
 
-**Next phase:** Phase 5D-E2 â€” integrate the verified core into an isolated Fractional MESN v2 class with matched Î±=1 dynamics, without scientific tuning.
+**Next phase (superseded by Â§21):** Phase 5D-E2 â€” integrate the verified core into an isolated Fractional MESN v2 class with matched Î±=1 dynamics, without scientific tuning.
+
+---
+
+## 21. Phase 5D-E2 completion â€” isolated engine integration
+
+**Phase:** 5D-E2
+**Status:** **complete**
+**Validated implementation SHA:** `a927036e10506d11e99c930cc99f785e82f9756e`
+**Validation record:** [`FRACTIONAL_MESN_V2_ENGINE_VALIDATION.md`](FRACTIONAL_MESN_V2_ENGINE_VALIDATION.md)
+**Preregistration:** [`FRACTIONAL_MESN_V2_ENGINE_PREREGISTRATION.md`](FRACTIONAL_MESN_V2_ENGINE_PREREGISTRATION.md)
+
+### 21.1 Engine identity
+
+| Item | Value |
+|---|---|
+| Engine schema | `fractional_mesn_v2_engine_v1` |
+| Engine content hash | `38414814b75f35c997e695347ec8f9979660108e053d8f676329758e4fc6971d` |
+| Core schema | `fractional_mesn_v2_caputo_l1_core_v1` |
+| Core content hash | `3ee28c939b113d89e55693777f52786c8e7cdee4b5df629d97ccd40e926bda6f` |
+
+### 21.2 Verified semantics
+
+- `FractionalMESN_v2` is a **value class** with **stateless** `simulate` (no hidden trajectory state).
+- **Complete-history** Caputo stepping: every step passes `X(1:k,:)` to `caputo_l1_semiimplicit_step`.
+- **Causal nâˆ’1 indexing:** `U(k,:)` is `u_{k-1}`; recurrence uses `x_{k-1}` only.
+- **Matched Î±=1 control:** engine always calls the frozen core; the core selects its exact backward-Euler branch. No second engine-level Î±=1 recurrence.
+- **Continuation excluded** in E2 (requires separate preregistration).
+
+### 21.3 Test and isolation record
+
+| Check | Result |
+|---|---|
+| Engine unit tests | 38/38 |
+| Full test suite | 828/828 (790 baseline + 38 new) |
+| `SRNN_ESN`, `SRNN_reservoir`, `SRNN_reservoir_DDE` | unchanged |
+| Production callers of `FractionalMESN_v2` | none |
+| Governed seed / scientific `alpha` execution | none |
+
+### 21.4 Claim boundary and next phase
+
+E2 verifies **engineering integration only**; it provides no evidence that fractionality improves temporal memory or reservoir performance.
+
+**Phase 5D-E3 remains proposed** and requires a **separate preregistration prompt** before adding biological mechanisms, nonlinear recurrence, readout, task benchmarks, scientific `alpha`, gain tuning, or stateful continuation.
