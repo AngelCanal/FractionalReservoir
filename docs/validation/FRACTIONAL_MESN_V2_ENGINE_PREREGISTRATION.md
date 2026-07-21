@@ -26,9 +26,20 @@
 | Full suite | 790/790 |
 | Production path calls to core | none |
 | Governed seeds consumed | none |
+| Historical v1 model/protocol fingerprint | `5a5c7a040768a97a5740a2b84e81b38d4c7d3147a4c8c8cdf6bac402b54f8823` |
+| Phase 5D-C sealed temporal-memory diagnostic protocol fingerprint | `bb3ac4fe71985a156c519f1065b99fb1ff3c1c22ae8bc139c46f43cce4a93310` |
 | Untracked tree | `results/development/` only; untouched |
 
 ---
+
+The historical v1 model/protocol fingerprint protects unchanged v1
+configuration and protocol semantics under
+`compute_protocol_fingerprint(mechanism_ablation_config('publication'))`.
+The Phase 5D-C sealed temporal-memory diagnostic protocol fingerprint
+identifies the separate development-only diagnostic study
+`temporal_memory_diagnostic_v1`. Neither fingerprint is the frozen
+Caputo-L1 core content hash, and neither is the future E2 engine-spec
+content hash.
 
 ## 1. Engine identity
 
@@ -413,14 +424,19 @@ metadata.
     is verified.
 40. All 25 existing Caputo unit tests remain green.
 41. All 10 existing analytic tests remain green.
-42. v1 protocol fingerprint
+42. Historical v1 model/protocol fingerprint
+    (`5a5c7a040768a97a5740a2b84e81b38d4c7d3147a4c8c8cdf6bac402b54f8823`)
+    is unchanged under
+    `compute_protocol_fingerprint(mechanism_ablation_config('publication'))`.
+43. Phase 5D-C sealed temporal-memory diagnostic protocol fingerprint
     (`bb3ac4fe71985a156c519f1065b99fb1ff3c1c22ae8bc139c46f43cce4a93310`)
-    is unchanged.
-43. `SRNN_ESN`, `SRNN_reservoir`, and `SRNN_reservoir_DDE` are unmodified
+    remains diagnostic-study provenance only and must not be relabelled
+    as the historical v1 model/protocol fingerprint.
+44. `SRNN_ESN`, `SRNN_reservoir`, and `SRNN_reservoir_DDE` are unmodified
     (content hash or direct file comparison).
-44. ODE/DDE tests remain green.
-45. Targeted regression suite (110/110) remains green.
-46. Full test suite (790/790) remains green.
+45. ODE/DDE tests remain green.
+46. Targeted regression suite (110/110) remains green.
+47. Full test suite (790/790) remains green.
 
 ---
 
@@ -473,7 +489,10 @@ Any of the following constitutes a hard STOP requiring a new assessment
 before proceeding:
 
 - Frozen core content hash changes or cannot be verified.
-- Baseline protocol fingerprint (`bb3ac4fe…`) changes.
+- Historical v1 model/protocol fingerprint
+  (`5a5c7a040768a97a5740a2b84e81b38d4c7d3147a4c8c8cdf6bac402b54f8823`)
+  changes or cannot be reproduced from
+  `compute_protocol_fingerprint(mechanism_ablation_config('publication'))`.
 - Causal indexing invariant is violated (future input affects past state).
 - History policy is violated (truncation, windowing, or approximation
   detected).
