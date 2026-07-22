@@ -628,7 +628,7 @@ Phase 5D-E1 implements only:
 
 E2 verifies **engineering integration only**; it provides no evidence that fractionality improves temporal memory or reservoir performance.
 
-**Phase 5D-E3 foundation is complete** (see §22). SFA, STD, and delays remain **unimplemented** and require **separate binding preregistration** before any code edit.
+**Phase 5D-E3 foundation is complete** (see §22). **SFA foundation is complete** (see §23). STD and delays remain **unimplemented** and require **separate binding preregistration** before any code edit.
 
 ---
 
@@ -682,4 +682,49 @@ E2 verifies **engineering integration only**; it provides no evidence that fract
 
 E3 verifies **engineering and mechanism plumbing only**; it provides no evidence that fractionality improves temporal memory, ESP, or biological fidelity.
 
-**SFA, STD, and delays remain unimplemented.** Each requires a **separate binding preregistration** before implementation. Readout, task benchmarks, scientific `alpha`, gain tuning, and stateful continuation remain out of scope.
+**SFA foundation is complete** (see §23). **STD and delays remain unimplemented.** Each requires a **separate binding preregistration** before implementation. Readout, task benchmarks, scientific `alpha`, gain tuning, and stateful continuation remain out of scope.
+
+---
+
+## 23. Phase 5D-E3-C completion — SFA foundation
+
+**Phase:** 5D-E3-C (C1 preregistration + C2 SFA step + C3 SFA engine + C4 validation)
+**Status:** **complete**
+**SFA-step implementation commit:** `a771f4298d85b1dee61f0c8a82d4a01ff0f75479`
+**Isolation-test repair commit:** `964e455fd90f74db371a99be1b50986524b55218`
+**SFA-engine implementation commit:** `432d5b926587a6b7521df483724ab0beca16f509`
+**Validated implementation SHA:** `432d5b926587a6b7521df483724ab0beca16f509`
+**Preregistration:** [`FRACTIONAL_MESN_V2_SFA_PREREGISTRATION.md`](FRACTIONAL_MESN_V2_SFA_PREREGISTRATION.md)
+**Validation record:** [`FRACTIONAL_MESN_V2_SFA_VALIDATION.md`](FRACTIONAL_MESN_V2_SFA_VALIDATION.md)
+
+### 23.1 Module and engine identities
+
+| Component | Schema | Content hash |
+|---|---|---|
+| SFA-step module | `mesn_v2_sfa_step_v1` | `7bec90a56bc1df144848b5857eb9bd3565719a4905de4ca9ec7967124eee5fa0` |
+| SFA-enabled engine | `fractional_mesn_v2_mechanistic_sfa_engine_v1` | `c51bc46648b17eb1b32b112665874dc565c49b9678480f58fbd8b4a95bf4ef13` |
+
+### 23.2 Causal SFA semantics
+
+- SFA is **integer-order**; Caputo applies **only** to \(x\).
+- Exact exponential \(n-1\) update driven by \(r_{k-1}\).
+- Causal order: \(x_k\) from \(r_{k-1},u_{k-1}\); \(a_k\) from \(r_{k-1}\); \(q_k\) from \(x_k,a_k\); \(r_k\) after \(q_k\).
+- Layouts: `X,Q,R` are `(N+1)×n`; `A_E` is `(N+1)×n_E×n_a_E`; `A_I` is `(N+1)×n_I×n_a_I`.
+- One Caputo and two SFA-step runtime call sites; no STD or delays.
+
+### 23.3 Test and isolation record
+
+| Check | Result |
+|---|---|
+| SFA-step tests | **24/24** |
+| SFA-engine tests | **22/22** |
+| Repaired no-SFA mechanistic tests | **24/24** |
+| Full test suite | **932/932** (886 + 24 + 22) |
+| Production callers of SFA / no-SFA engines | none |
+| Governed seed / scientific `alpha` / benchmark | none |
+
+### 23.4 Claim boundary and next phase
+
+E3-C verifies **engineering and mechanism integration only**; it provides no evidence that fractionality or SFA improves temporal memory, ESP, or biological fidelity.
+
+**STD and delays remain unimplemented.** Each requires a **separate binding preregistration** before implementation.
