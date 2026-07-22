@@ -619,6 +619,28 @@ function testEngineSchemaHashDependenciesAndBoundedInfo(testCase)
 end
 
 function testNoProductionCallerIntegration(testCase)
+    % Matcher self-checks: exact constructor call, not SFA-prefixed names.
+    must_hit = { ...
+        'FractionalMESN_v2_mechanistic(cfg)', ...
+        'FractionalMESN_v2_mechanistic ( cfg )', ...
+        'engine = FractionalMESN_v2_mechanistic(cfg);'};
+    must_miss = { ...
+        'FractionalMESN_v2_mechanistic_sfa(cfg)', ...
+        'validate_fractional_mesn_v2_mechanistic_config(cfg)', ...
+        'validate_fractional_mesn_v2_mechanistic_sfa_config(cfg)', ...
+        'fractional_mesn_v2_mechanistic_engine_spec()', ...
+        'fractional_mesn_v2_mechanistic_sfa_engine_spec()'};
+    for i = 1:numel(must_hit)
+        testCase.verifyTrue( ...
+            contains_exact_mechanistic_constructor_call(must_hit{i}), ...
+            must_hit{i});
+    end
+    for i = 1:numel(must_miss)
+        testCase.verifyFalse( ...
+            contains_exact_mechanistic_constructor_call(must_miss{i}), ...
+            must_miss{i});
+    end
+
     this_file = mfilename('fullpath');
     repo_root = fileparts(fileparts(fileparts(this_file)));
     src_root = fullfile(repo_root, 'src');
@@ -634,11 +656,18 @@ function testNoProductionCallerIntegration(testCase)
             continue;
         end
         txt = fileread(path);
-        if contains(txt, 'FractionalMESN_v2_mechanistic')
+        if contains_exact_mechanistic_constructor_call(txt)
             hits{end + 1} = path; %#ok<AGROW>
         end
     end
     testCase.verifyEmpty(hits);
+end
+
+function tf = contains_exact_mechanistic_constructor_call(txt)
+    % Exact no-SFA class constructor: identifier + optional whitespace + '('.
+    % Semantic: (?<![A-Za-z0-9_])FractionalMESN_v2_mechanistic\s*(
+    tf = ~isempty(regexp(txt, ...
+        '(?<![A-Za-z0-9_])FractionalMESN_v2_mechanistic\s*\(', 'once'));
 end
 
 function cfg = base_cfg(mode)
