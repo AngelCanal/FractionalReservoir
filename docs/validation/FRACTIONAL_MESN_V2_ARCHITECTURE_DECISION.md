@@ -628,4 +628,58 @@ Phase 5D-E1 implements only:
 
 E2 verifies **engineering integration only**; it provides no evidence that fractionality improves temporal memory or reservoir performance.
 
-**Phase 5D-E3 remains proposed** and requires a **separate preregistration prompt** before adding biological mechanisms, nonlinear recurrence, readout, task benchmarks, scientific `alpha`, gain tuning, or stateful continuation.
+**Phase 5D-E3 foundation is complete** (see §22). SFA, STD, and delays remain **unimplemented** and require **separate binding preregistration** before any code edit.
+
+---
+
+## 22. Phase 5D-E3 completion — mechanistic foundation (no-delay)
+
+**Phase:** 5D-E3 (A preregistration + B1 modules + B2 orchestrator + B3 validation)
+**Status:** **complete**
+**E3-A preregistration commit:** `0fd2a46a6ea45e7dea3664e09bf9319e40012986`
+**E3-B1 implementation SHA:** `e0f8dcc51fd9acffe4f71401e4274fb473350de9`
+**E3-B2 implementation SHA:** `5daa86202fb46e747f0c6ed83362d1ed27adc677`
+**Validated implementation SHA:** `5daa86202fb46e747f0c6ed83362d1ed27adc677`
+**Preregistration:** [`FRACTIONAL_MESN_V2_MECHANISTIC_ENGINE_PREREGISTRATION.md`](FRACTIONAL_MESN_V2_MECHANISTIC_ENGINE_PREREGISTRATION.md)
+**Validation record:** [`FRACTIONAL_MESN_V2_MECHANISTIC_ENGINE_VALIDATION.md`](FRACTIONAL_MESN_V2_MECHANISTIC_ENGINE_VALIDATION.md)
+
+### 22.1 Module and engine identities
+
+| Component | Schema | Content hash |
+|---|---|---|
+| Rate-map module | `mesn_v2_rate_map_v1` | `483b6192099426b1c22f29a35e04d9e22c508826a9d334f8da8b0134b94fe257` |
+| Dale validator | `mesn_v2_dale_validator_v1` | `dba675ded7b3f3f8e91ceb93185171a6fbedc42bba5050a97cca8d830bc3f081` |
+| Mechanistic engine | `fractional_mesn_v2_mechanistic_engine_v1` | `fe9691184cc22a4b4e9afe8d5740badf9442ed535e848f6fbbe94d6c2539fc69` |
+| Frozen Caputo core (dependency) | `fractional_mesn_v2_caputo_l1_core_v1` | `3ee28c939b113d89e55693777f52786c8e7cdee4b5df629d97ccd40e926bda6f` |
+| Frozen E2 engine (limiting control) | `fractional_mesn_v2_engine_v1` | `38414814b75f35c997e695347ec8f9979660108e053d8f676329758e4fc6971d` |
+
+### 22.2 Verified semantics
+
+- `FractionalMESN_v2_mechanistic` is a **value class** with **stateless** `simulate`.
+- Trajectory layout: `U` is `N×n_input`; `X`, `Q`, `R` are `(N+1)×n` with `U(k,:)=u_{k-1}`, `X(j+1,:)=x_j`, `Q(j+1,:)=q_j`, `R(j+1,:)=r_j`.
+- **Causal n−1 indexing:** drive for `x_k` uses `u_{k-1}` and `r_{k-1}` only.
+- **Recurrence:** `W * r_{k-1}` (not `W * x_{k-1}` unless identity mode makes `R=X`).
+- **Complete-history** Caputo stepping: every step passes `X(1:k,:)` to `caputo_l1_semiimplicit_step`.
+- **Matched α=1 control:** engine always calls the frozen core; no second engine-level α=1 recurrence.
+- Rate map: piecewise mode delegates to tracked `piecewiseSigmoid`; identity is engineering-only.
+- Dale law: presynaptic-column signs; explicit caller-supplied signs; no construction/scaling/RNG.
+
+### 22.3 Test and isolation record
+
+| Check | Result |
+|---|---|
+| Rate-map tests | 20/20 |
+| Dale-validator tests | 14/14 |
+| Mechanistic-engine tests | 24/24 |
+| Full test suite | **886/886** (828 E2 baseline + 34 E3-B1 + 24 E3-B2) |
+| `SRNN_ESN`, `SRNN_reservoir`, `SRNN_reservoir_DDE` | unchanged |
+| Frozen E2 and Caputo core files | unchanged |
+| Production callers of `FractionalMESN_v2_mechanistic` | none |
+| Mechanistic engine calls `FractionalMESN_v2` | none |
+| Governed seed / scientific `alpha` / benchmark execution | none |
+
+### 22.4 Claim boundary and next phase
+
+E3 verifies **engineering and mechanism plumbing only**; it provides no evidence that fractionality improves temporal memory, ESP, or biological fidelity.
+
+**SFA, STD, and delays remain unimplemented.** Each requires a **separate binding preregistration** before implementation. Readout, task benchmarks, scientific `alpha`, gain tuning, and stateful continuation remain out of scope.
